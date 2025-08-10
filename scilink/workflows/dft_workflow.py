@@ -18,7 +18,15 @@ from ..agents.sim_agents.vasp_updater import VaspUpdater
 
 class DFTWorkflow:
     """
-    Complete DFT workflow: User request → Structure → Validation → VASP inputs
+    Orchestrates a complete Density Functional Theory (DFT) workflow.
+
+    This workflow takes a high-level user request as a text string, generates an
+    atomic structure using an AI agent, validates its physical and chemical
+    reasonableness, and finally produces a complete set of VASP input files
+    (POSCAR, INCAR, KPOINTS) ready for calculation. It features an iterative
+    refinement loop where a validator agent provides feedback to the structure
+    generator, enabling self-correction for more complex or initially incorrect
+    structures.
     """
 
     def __init__(self,
@@ -31,6 +39,32 @@ class DFTWorkflow:
                  max_refinement_cycles: int = 4,
                  script_timeout: int = 180,
                  vasp_generator_method: str = "llm"):
+        """
+        Initializes the DFT workflow and its constituent agents.
+
+        Args:
+            google_api_key (str, optional): Google API key for Gemini models.
+                Defaults to auto-discovery from environment variables.
+            futurehouse_api_key (str, optional): FutureHouse API key for
+                literature validation. Defaults to auto-discovery.
+            mp_api_key (str, optional): Materials Project API key for structure
+                lookups. Defaults to auto-discovery.
+            generator_model (str, optional): Name of the Gemini model for
+                generating structures and VASP inputs.
+            validator_model (str, optional): Name of the Gemini model for
+                validating structures.
+            output_dir (str, optional): Directory to save all generated files.
+            max_refinement_cycles (int, optional): Maximum number of times the
+                validator can request corrections from the generator.
+            script_timeout (int, optional): Timeout in seconds for executing
+                the AI-generated ASE scripts.
+            vasp_generator_method (str, optional): The method for generating
+                VASP input files. Can be:
+                - "atomate2": Uses the reliable, rule-based
+                  atomate2/pymatgen libraries. Recommended for production.
+                - "llm": Uses a generative AI model. More flexible and
+                  experimental, but less predictable.
+        """
 
         # Auto-discover API keys
         if google_api_key is None:
