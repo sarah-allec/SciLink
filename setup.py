@@ -56,7 +56,7 @@ setup(
         "ase>=0.8.5",
         "aimsgb>=1.1.1",
         "gdown>=5.2.0",
-        "atomate2>=0.4.0",
+        "atomate2>=0.0.21",
     ],
     # Add CLI entry points
     entry_points={
