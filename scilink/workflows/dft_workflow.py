@@ -1,3 +1,5 @@
+# scilink/workflows/dft_workflow.py
+
 import os
 import sys
 import logging
@@ -7,6 +9,7 @@ import json
 from typing import Optional, Dict, Any
 from pathlib import Path
 
+# All necessary agents are imported
 from ..agents.sim_agents.atomate2_utils import Atomate2Input
 from ase.io import read as ase_read
 from ..auth import get_api_key, APIKeyNotFoundError
@@ -143,7 +146,7 @@ class DFTWorkflow:
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
 
-    def run_complete_workflow(self, user_request: str, log_path: Optional[str] = None) -> Dict[str, Any]:
+    def run_complete_workflow(self, user_request: str) -> Dict[str, Any]:
         """
         Run the complete workflow from user request to final VASP inputs.
         """
@@ -195,18 +198,8 @@ class DFTWorkflow:
         print(f"✅ VASP inputs generated: INCAR, KPOINTS, POSCAR")
         print(f"📋 Calculation type: {vasp_result.get('summary', 'N/A')}")
 
-        # Step 3: Error-based INCAR/KPOINTS refinement (if you passed a log)
-        if log_path:
-            print("\n🔄 WORKFLOW STEP 3: Refining INCAR/KPOINTS from VASP log")
-            ref = self.refine_from_log(user_request, log_path)
-            workflow_result["error_refinement"] = ref
-            workflow_result["steps_completed"].append("error_refinement")
-        else:
-            print("ℹ️  skipping error-based refinement")
-
-        # Step 4: Literature Validation and Improvements (optional)
         if self.incar_validator and self.vasp_generator_method == "llm":
-            print(f"\n📚  WORKFLOW STEP 4: Literature Validation")
+            print(f"\n📚  WORKFLOW STEP 3: Literature Validation")
             print(f"{'─'*50}")
 
             improvement_result = self._validate_and_improve_incar(
@@ -219,7 +212,7 @@ class DFTWorkflow:
                 msg = "Skipped, Atomate2 uses expert-defined parameters."
             else:
                 msg = "Skipped, no FutureHouse API key."
-            print(f"\n📚  WORKFLOW STEP 4: Literature Validation")
+            print(f"\n📚  WORKFLOW STEP 3: Literature Validation")
             print(f"{'─'*50}")
             print(f"   {msg}")
             workflow_result["incar_improvement"] = {"status": "skipped", "message": msg}
