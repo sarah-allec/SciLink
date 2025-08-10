@@ -30,7 +30,7 @@ class DFTWorkflow:
                  output_dir: str = "dft_workflow_output",
                  max_refinement_cycles: int = 4,
                  script_timeout: int = 180,
-                 vasp_generator_method: str = "atomate2"):
+                 vasp_generator_method: str = "llm"):
 
         # Auto-discover API keys
         if google_api_key is None:
