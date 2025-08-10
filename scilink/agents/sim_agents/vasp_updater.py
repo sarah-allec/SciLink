@@ -4,7 +4,7 @@ from typing import Dict, Any
 
 from .vasp_agent import VaspInputAgent
 
-class VaspErrorUpdaterAgent:
+class VaspUpdater:
     """
     Inline‐updater: takes the VASP error log + old INCAR/KPOINTS,
     and uses VaspInputAgent.generate_vasp_inputs to propose fixes.

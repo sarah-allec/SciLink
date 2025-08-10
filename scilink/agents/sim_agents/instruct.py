@@ -168,12 +168,7 @@ Your task is to generate appropriate INCAR and KPOINTS files based on:
   - Surface/slab: LDIPOL, DIPOL for dipole corrections
   - Magnetic systems: ISPIN=2, MAGMOM
   - Hybrid functionals: HSE06 parameters if needed
-  - **van der Waals**: include DFT‑D3 corrections (`IVDW = 11`) **only if** the POSCAR geometry indicates a slab, surface, or molecular cluster; otherwise omit.
-  - If you include DFT‑D3 (`IVDW = 11`), also specify one of:
-      - `GGA = PE`    # PBE  
-      - `GGA = PS`    # PBEsol  
-      - `GGA = RP`    # RPBE  
-  - Otherwise omit both `IVDW` and `GGA`.
+  - van der Waals: include DFT‑D3 corrections (`IVDW = 11`) **only if** the POSCAR geometry indicates a slab, surface, or molecular cluster; otherwise omit.
 
 ## KPOINTS File Guidelines:
 - **Grid density**: Balance accuracy vs computational cost
@@ -222,8 +217,7 @@ You MUST provide a JSON response with exactly these keys:
 {{
   "incar": "complete INCAR file content",
   "kpoints": "complete KPOINTS file content", 
-  "summary": "brief calculation description",
-  "explanation": "plain‑English rationale for each change"
+  "summary": "brief calculation description"
 }}
 
 Analyze the provided POSCAR structure and user request, then generate appropriate VASP input files following the guidelines above."""

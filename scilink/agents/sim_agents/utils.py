@@ -384,3 +384,6 @@ def _get_layered_rotations(cell):
         'in_plane': '0x,0y,0z',     # Top view of layer plane
         'oblique': '45x,0y,45z'     # Oblique view for 3D perspective
     }
+
+
+

@@ -3,7 +3,7 @@ from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 from atomate2.vasp.sets.base import VaspInputGenerator
 
-class Atomate2InputAgent:
+class Atomate2Input:
     """
     Wraps Atomate2's VaspInputGenerator to produce VASP inputs for SciLink workflows.
     """
@@ -12,6 +12,7 @@ class Atomate2InputAgent:
                  incar_settings: dict = None,
                  kpoints_settings: dict = None,
                  potcar_settings: dict = None):
+        
         self.gen = VaspInputGenerator(
             user_incar_settings=incar_settings or {},
             user_kpoints_settings=kpoints_settings or {},
