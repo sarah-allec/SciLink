@@ -9,7 +9,7 @@ from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockT
 
 from .base_agent import BaseAnalysisAgent
 
-from .instruct import SAM_MICROSCOPY_CLAIMS_INSTRUCTIONS
+from .instruct import SAM_MICROSCOPY_CLAIMS_INSTRUCTIONS, SAM_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
 
 from .utils import load_image, preprocess_image, convert_numpy_to_jpeg_bytes
 
@@ -26,8 +26,9 @@ class SAMMicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
     def __init__(self,
                  google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05",
+                 local_model: str = None,
                  sam_settings: dict | None = None, enable_human_feedback: bool = False):
-        super().__init__(google_api_key, model_name, enable_human_feedback=enable_human_feedback)
+        super().__init__(google_api_key, model_name, local_model, enable_human_feedback=enable_human_feedback)
         
         self.sam_settings = sam_settings if sam_settings else {}
         self.RUN_SAM = self.sam_settings.get('SAM_ENABLED', True)
@@ -525,3 +526,6 @@ class SAMMicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     
     def _get_claims_instruction_prompt(self) -> str:
         return SAM_MICROSCOPY_CLAIMS_INSTRUCTIONS
+    
+    def _get_measurement_recommendations_prompt(self) -> str:
+        return SAM_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS

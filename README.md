@@ -12,7 +12,7 @@ SciLink employs a system of intelligent agents to automate the research cycle, f
 
 - 🤖 **Agent-Based Architecture**: The framework is built on a collection of specialized agents, each designed for a specific scientific task:
 
-    - 🔬 **Experimental Agents**: Analyze microscopy images (including atomic-resolution and particle-based) or spectroscopy data to extract features and generate scientific claims. An OrchestratorAgent automatically selects the best analysis tool for your data.
+    - 🔬 **Experimental Agents**: Analyze microscopy images or spectroscopy data to extract features and generate scientific claims. An OrchestratorAgent automatically selects the best analysis tool for your data.
 
     - 📚 **Literature Agent**: Queries scientific databases (via FutureHouse's OWL) to validate claims and assess novelty with a nuanced scoring system.
 
@@ -21,6 +21,17 @@ SciLink employs a system of intelligent agents to automate the research cycle, f
 - 🔄 **Automated Workflows**: High-level workflows chain these agents to perform complex tasks, from data analysis to simulation-ready files, with minimal user intervention.
 
 - 🛡️ **Secure by Design**: AI-generated code for creating atomic structures is executed in a security sandbox (Docker, Colab, or VM) to protect your system. The tool will halt if a safe environment is not detected.
+
+- 💻 **Local Model Support**: Choose between powerful cloud APIs or run experimental analysis agents entirely offline with local models, such as Gemma-3 series. This keeps your data on your machine, offering flexibility for privacy, cost, or offline work.
+
+---
+<br>
+
+![Agents](misc/scilink-agents.jpg)
+
+
+![Workflows](misc/scilink-workflows.jpg)
+<br>
 
 ## Statement of Need
 
@@ -35,8 +46,6 @@ SciLink is designed to address those bottlenecks and close the gap between "I th
 - Bridging the experiment-theory gap, automatically translating your experimental data into simulation-ready computational models.
 
 - Reducing the time-to-insight from weeks and months to minutes and hours, enabling you to rapidly iterate on new ideas while your experiment is still running!
-
-
 
 ## Installation
 
@@ -160,6 +169,75 @@ if result['final_status'] == 'success':
 - Uses the results to generate DFTRecommendations.
 - Allows for interactive or automated selection of structures to build.
 - Executes the DFTWorkflow for each selected structure.
+
+
+## Using Individual Agents
+
+While the high-level workflows are the recommended entry point, you can use individual agents for more granular control over specific tasks.
+
+#### Example: Curve Fitting and Analysis
+
+For 1D data like spectra, the `CurveFittingAgent` can find appropriate physical models from the literature, generate a Python script to fit your data, execute it, and interpret the results.
+
+```python
+# 1. Instantiate the CurveFittingAgent
+curve_agent = CurveFittingAgent()
+
+# 2. Define the path to your 1D curve data
+data_path = "data/GaN_PL.npy"
+system_info_path = "data/GaN_PL.json"
+
+# 3. Run the literature-informed fitting and analysis
+result = curve_agent.analyze_for_claims(
+    data_path=data_path,
+    system_info=system_info_path
+)
+
+# 4. Print the results
+print("--- Fitting & Analysis Summary ---")
+print(result['detailed_analysis'])
+
+print("\n--- Fitted Parameters ---")
+print(json.dumps(result.get('fitting_parameters', {}), indent=2))
+
+print(f"\n--- Generated Claims ({len(result['scientific_claims'])}) ---")
+for i, claim in enumerate(result['scientific_claims'], 1):
+    print(f"[{i}] {claim['claim']}")
+```
+
+
+#### Example: Microscopy Image Analysis
+
+Analyze a microscopy image to extract features and generate scientific claims using the `MicroscopyAnalysisAgent`.
+
+```python
+# 1. Instantiate the MicroscopyAnalysisAgent with specific settings
+# Here, we enable automated FFT-NMF analysis for deeper feature analysis.
+agent_settings = {
+    'fft_nmf_settings': {
+        'FFT_NMF_ENABLED': True,
+        'FFT_NMF_AUTO_PARAMS': True  # Let the LLM choose the best parameters
+    }
+}
+microscopy_agent = MicroscopyAnalysisAgent(**agent_settings)
+
+# 2. Define the path to your data
+image_path = "data/graphene_stm.npy"
+system_info_path = "data/graphene_stm.json"
+
+# 3. Run the analysis to generate a detailed summary and scientific claims
+result = microscopy_agent.analyze_microscopy_image_for_claims(
+    image_path=image_path,
+    system_info=system_info_path
+)
+
+# 4. Print the results
+print("--- Analysis Summary ---")
+print(result['detailed_analysis'])
+print(f"\n--- Generated Claims ({len(result['scientific_claims'])}) ---")
+for i, claim in enumerate(result['scientific_claims'], 1):
+    print(f"[{i}] {claim['claim']}")
+```
 
 ## Command-Line Interface
 

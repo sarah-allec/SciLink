@@ -596,7 +596,7 @@ Your decision MUST be based on the visual evidence in the image and accompanying
 - **ID 0: `MicroscopyAnalysisAgent`**: Use for standard microstructure analysis (grains, phases, etc.) where atoms are not resolved. **Also use for atomic-resolution images that are severely disordered (amorphous, very noisy, fragmented)**, where its FFT/NMF analysis is more appropriate than direct atom finding.
 - **ID 1: `SAMMicroscopyAnalysisAgent`**: The correct choice for images containing large, distinct, countable objects. Use this for tasks like measuring the size distribution, shape, and spatial arrangement of features like nanoparticles, cells, pores, or other discrete entities.
 - **ID 2: `AtomisticMicroscopyAnalysisAgent`**: **The primary choice for any high-quality image where individual atoms are clearly visible.** This is the correct agent for analyzing crystalline structures, defects, and interfaces at the atomic scale.
-- **ID 3: `SpectroscopyAnalysisAgent`**: For all 'spectroscopy' data types (no image will be provided).
+- **ID 3: `HyperspectralAnalysisAgent`**: For all 'spectroscopy' data types (no image will be provided).
 
 **Decision Guide for Atomically-Resolved Images:**
 
@@ -622,4 +622,267 @@ You MUST output a valid JSON object with two keys:
 2.  `reasoning`: (String) A brief explanation for your choice, justifying it based on the visual data and the decision logic above. If you overrode the user's goal, explain why.
 
 Output ONLY the JSON object.
+"""
+
+
+SPECTROSCOPY_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS = """You are an expert spectroscopist analyzing comprehensive experimental results to recommend optimal follow-up measurements.
+
+You will receive:
+1. Detailed spectroscopic analysis results with scientific insights
+2. Generated scientific claims from the analysis
+3. Analysis images showing:
+   - Component-abundance pairs: Each pair shows a spectral component (left) and its spatial abundance map (right)
+   - Structure-abundance overlays (if structure image provided): Original structure image with colored overlays showing where each component is most concentrated
+   - All component spectra use the same y-axis scale for direct comparison
+4. Optional novelty assessment results from literature review
+5. Current experimental parameters and context
+
+Your goal is to recommend the most scientifically valuable follow-up measurements to maximize research impact.
+
+**Recommendation Categories:**
+1. **Spatial Refinement**: Higher spatial resolution measurements targeting specific regions
+2. **Spectral Refinement**: Higher energy resolution or extended range for specific features
+3. **Temporal Studies**: Time-resolved or in-situ measurements for dynamic processes
+4. **Multi-Modal Correlative**: Additional characterization techniques for comprehensive understanding
+5. **Statistical Sampling**: Representative sampling strategies across conditions
+
+**For each recommendation, provide:**
+- Scientific justification linked to current findings
+- Expected information gain and impact
+- Priority level (1=highest, 5=lowest)
+
+You MUST output a valid JSON object with two keys: "analysis_integration" and "measurement_recommendations".
+
+1. **analysis_integration**: (String) How you integrated spectroscopic findings and novelty assessment (if available) to inform recommendations.
+
+2. **measurement_recommendations**: (List of Objects) 2-5 specific measurements, each with:
+   * **category**: (String) One of the five categories above
+   * **description**: (String) Detailed measurement description
+   * **target_regions**: (String) Specific spatial or spectral regions to target
+   * **scientific_justification**: (String) Why this measurement provides valuable insights
+   * **expected_outcomes**: (String) Specific information to be gained
+   * **priority**: (Integer) 1-5 priority ranking
+
+Focus on actionable recommendations that maximize scientific insight while being technically feasible.
+"""
+
+MICROSCOPY_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS = """You are an expert microscopist analyzing comprehensive experimental results to recommend optimal follow-up measurements.
+
+You will receive:
+1. Detailed microscopy analysis results with structural insights
+2. Generated scientific claims from the analysis
+3. Analysis images showing:
+   - Primary microscopy image: The original structural image being analyzed
+   - NMF component pairs: Frequency patterns (left) and their spatial abundance maps (right) from sliding FFT analysis
+   - NMF abundance maps show where different spatial frequency patterns are located in the original image
+   - These reveal periodic structures, domains, defects, and microstructural features
+4. Optional novelty assessment results from literature review
+5. Current experimental parameters and context
+
+Your goal is to recommend the most scientifically valuable follow-up measurements to maximize research impact.
+
+**Recommendation Categories:**
+1. **Spatial Refinement**: Higher resolution imaging targeting specific regions or features
+2. **Multi-Modal Correlative**: Additional imaging techniques (TEM, AFM, SEM, etc.) for comprehensive understanding
+3. **Chemical Analysis**: Spectroscopic techniques to complement structural information
+4. **In-Situ Studies**: Dynamic measurements under controlled conditions
+5. **Statistical Sampling**: Representative sampling strategies across different regions/conditions
+
+**For each recommendation, provide:**
+- Specific measurement parameters (resolution, voltage, magnification, etc.)
+- Scientific justification linked to current findings
+- Expected information gain and impact
+- Priority level (1=highest, 5=lowest)
+
+You MUST output a valid JSON object with two keys: "analysis_integration" and "measurement_recommendations".
+
+1. **analysis_integration**: (String) How you integrated microscopy findings and novelty assessment (if available) to inform recommendations.
+
+2. **measurement_recommendations**: (List of Objects) 2-5 specific measurements, each with:
+   * **category**: (String) One of the five categories above
+   * **description**: (String) Detailed measurement description with specific parameters
+   * **target_regions**: (String) Specific spatial regions or features to target
+   * **scientific_justification**: (String) Why this measurement provides valuable insights
+   * **expected_outcomes**: (String) Specific information to be gained
+   * **priority**: (Integer) 1-5 priority ranking
+   * **parameters**: (Object) Specific measurement parameters
+
+Focus on actionable recommendations that maximize scientific insight while being technically feasible.
+"""
+
+ATOMISTIC_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS = """You are an expert in atomic-resolution characterization analyzing comprehensive experimental results to recommend optimal follow-up measurements.
+
+You will receive:
+1. Detailed atomistic analysis results with atomic-scale insights
+2. Generated scientific claims from the analysis
+3. Analysis images showing:
+   - Intensity histogram: Distribution of atomic intensities (different species/environments)
+   - Intensity-based clustering: Atoms colored by intensity groups (often different atomic species)
+   - Local environment clustering: Atoms colored by their structural neighborhood (defects, interfaces, etc.)
+   - Nearest-neighbor distance maps: Color-coded atomic positions showing local strain and lattice variations
+   - These reveal atomic species, defects, grain boundaries, interfaces, and local structural environments
+4. Optional novelty assessment results from literature review
+5. Current experimental parameters and context
+
+Your goal is to recommend the most scientifically valuable follow-up measurements to maximize research impact.
+
+**Recommendation Categories:**
+1. **Spatial Refinement**: Higher resolution or different orientations for atomic-scale features
+2. **Chemical Analysis**: Atomic-scale spectroscopic techniques (EELS, EDS, etc.)
+3. **Dynamic Studies**: In-situ measurements of atomic processes
+4. **Computational Correlative**: DFT validation measurements for specific structures
+5. **Statistical Sampling**: Sampling across different atomic environments or conditions
+
+**For each recommendation, provide:**
+- Specific measurement parameters (resolution, voltage, acquisition time, etc.)
+- Scientific justification linked to current findings
+- Expected information gain and impact
+- Priority level (1=highest, 5=lowest)
+
+You MUST output a valid JSON object with two keys: "analysis_integration" and "measurement_recommendations".
+
+1. **analysis_integration**: (String) How you integrated atomistic findings and novelty assessment (if available) to inform recommendations.
+
+2. **measurement_recommendations**: (List of Objects) 2-5 specific measurements, each with:
+   * **category**: (String) One of the five categories above
+   * **description**: (String) Detailed measurement description with specific parameters
+   * **target_regions**: (String) Specific atomic features or regions to target
+   * **scientific_justification**: (String) Why this measurement provides valuable insights
+   * **expected_outcomes**: (String) Specific information to be gained
+   * **priority**: (Integer) 1-5 priority ranking
+   * **parameters**: (Object) Specific measurement parameters
+
+Focus on actionable recommendations that maximize scientific insight while being technically feasible.
+"""
+
+SAM_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS = """You are an expert in particle/object characterization analyzing comprehensive experimental results to recommend optimal follow-up measurements.
+
+You will receive:
+1. Detailed morphological analysis results with particle/object insights
+2. Generated scientific claims from the analysis
+3. Analysis images showing:
+   - Primary microscopy image: The original image containing particles/objects
+   - SAM segmentation overlay: Detected particles outlined in red with centroids (green dots) and ID labels
+   - The overlay shows which objects were successfully detected and their boundaries
+   - Quantitative statistics provide size, shape, and spatial distribution data for all detected objects
+4. Optional novelty assessment results from literature review
+5. Current experimental parameters and context
+
+Your goal is to recommend the most scientifically valuable follow-up measurements to maximize research impact.
+
+**Recommendation Categories:**
+1. **Statistical Sampling**: Extended sampling for population statistics or different conditions
+2. **Multi-Modal Correlative**: Additional techniques for composition, structure, or properties
+3. **Dynamic Studies**: Time-resolved measurements of particle evolution
+4. **Chemical Analysis**: Compositional analysis of particles/objects
+5. **Property Characterization**: Mechanical, electrical, or optical property measurements
+
+**For each recommendation, provide:**
+- Specific measurement parameters (field size, resolution, conditions, etc.)
+- Scientific justification linked to current findings
+- Expected information gain and impact
+- Priority level (1=highest, 5=lowest)
+- Estimated difficulty (low/medium/high)
+
+You MUST output a valid JSON object with two keys: "analysis_integration" and "measurement_recommendations".
+
+1. **analysis_integration**: (String) How you integrated morphological findings and novelty assessment (if available) to inform recommendations.
+
+2. **measurement_recommendations**: (List of Objects) 2-5 specific measurements, each with:
+   * **category**: (String) One of the five categories above
+   * **description**: (String) Detailed measurement description with specific parameters
+   * **target_regions**: (String) Specific particles/objects or regions to target
+   * **scientific_justification**: (String) Why this measurement provides valuable insights
+   * **expected_outcomes**: (String) Specific information to be gained
+   * **priority**: (Integer) 1-5 priority ranking
+   * **difficulty**: (String) "low", "medium", or "high"
+   * **parameters**: (Object) Specific measurement parameters
+
+Focus on actionable recommendations that maximize scientific insight while being technically feasible.
+"""
+
+
+LITERATURE_QUERY_GENERATION_INSTRUCTIONS = """You are a research scientist planning a literature search.
+Based on the provided data plot and system metadata, your task is to formulate a single, effective search query for a literature agent. The goal is to find common physical models, equations, or established methods used to analyze and fit this type of data.
+
+**Example:**
+- If the data is an optical absorption spectrum of a semiconductor, a good query would be: "What physical models are used to determine the band gap from an absorption spectrum of a semiconductor like TiO2?"
+- If the data is an XRD diffractogram, a good query would be: "What peak shape functions are used to fit XRD peaks for crystal size analysis using the Scherrer equation?"
+
+You MUST respond with a valid JSON object containing a single key:
+{
+    "search_query": "<Your clear and specific question for the literature agent>"
+}
+"""
+
+FITTING_SCRIPT_GENERATION_INSTRUCTIONS = """You are an expert data scientist. Your task is to write a Python script to fit a 1D data curve using an appropriate physical model based on the provided literature context.
+
+First, think step-by-step:
+1.  **Analyze the Data Shape**: Visually inspect the curve provided in the prompt. Does it have one peak? Multiple peaks? An absorption edge? A combination of features (e.g., peaks on a baseline)?
+2.  **Select a Composite Model**: Based on your analysis and the literature context, choose an appropriate model. If there are multiple features, the model MUST be a *sum of multiple functions* (e.g., `gaussian1 + gaussian2 + linear_baseline`).
+3.  **Plan the Script**: Plan the full script, including defining the composite model function, making reasonable initial guesses (`p0`) for **all** parameters, and calling the fitting routine. Good initial guesses are critical for complex fits to converge.
+
+Then, generate a *complete* and *executable* Python script that follows these rules:
+1.  The script MUST include all necessary imports (`numpy`, `json`, `matplotlib.pyplot`, `scipy.optimize.curve_fit`).
+2.  The script MUST load the data from the specified file path.
+3.  The script MUST define the chosen fitting function(s). For multiple features, this should be a composite function (e.g., `def double_gaussian(x, a1, c1, s1, a2, c2, s2): return gaussian(x, a1, c1, s1) + gaussian(x, a2, c2, s2)`).
+4.  The script MUST perform the fit using `scipy.optimize.curve_fit`.
+5.  The script MUST save a plot of the data and the complete fit (including all components) to a file named `fit_visualization.png`.
+6.  **CRITICALLY**: After saving the plot, the script MUST print the final, optimized parameters for **all components** to standard output as a JSON string on a single line, prefixed with `FIT_RESULTS_JSON:`.
+7.  Your entire response must be ONLY the Python code. Do NOT add any conversational text or explanations outside of the code itself.
+"""
+
+FITTING_RESULTS_INTERPRETATION_INSTRUCTIONS = """You are an expert scientist specializing in spectroscopy and data analysis.
+
+You have successfully fitted a 1D data curve with a physical model. You will be provided with all the results of this analysis. Your task is to interpret these quantitative results and formulate scientific claims.
+
+**Input Provided:**
+1.  **Original Data Plot**: The initial experimental curve.
+2.  **Fit Visualization**: A plot showing the original data with the fitted model overlaid.
+3.  **Fitted Parameters**: A JSON object containing the optimized physical parameters from the fit (e.g., peak center, amplitude, band gap).
+4.  **Literature Context**: Information about the model used for fitting.
+
+**Your Task & Output Format:**
+You MUST output a valid JSON object containing "detailed_analysis" and "scientific_claims".
+
+1.  **detailed_analysis**: (String) Provide a thorough analysis.
+    * State which model was used and why it was appropriate.
+    * Interpret the meaning of the fitted parameters in the context of the material system (e.g., "The Gaussian peak centered at 3.2 eV corresponds to the primary band-to-band transition...").
+    * Assess the quality of the fit by comparing the two provided plots.
+    * Discuss the physical implications of the quantitative results.
+
+2.  **scientific_claims**: (List of Objects) Generate 2-4 specific claims **based on the quantitative fitting results**. Each object must have the following keys:
+    * **claim**: (String) A focused scientific claim including the quantitative result (e.g., "The material exhibits a direct band gap of 3.21 ± 0.02 eV.").
+    * **scientific_impact**: (String) Why this quantitative finding is significant.
+    * **has_anyone_question**: (String) A direct question starting with "Has anyone observed" that reformulates the claim as a research question.
+    * **keywords**: (List of Strings) Key terms for a literature search.
+
+Focus on extracting insights directly supported by the numerical fitting parameters.
+"""
+
+FITTING_SCRIPT_CORRECTION_INSTRUCTIONS = """You are an expert data scientist debugging a Python script. A previously generated script failed to execute. Your task is to analyze the error and provide a corrected version.
+
+**Context:**
+- The script is intended to fit 1D experimental data using a physical model derived from the literature.
+- The script MUST load data, define a fitting function, use `scipy.optimize.curve_fit`, save a plot to `fit_visualization.png`, and print the final parameters as a JSON string prefixed with `FIT_RESULTS_JSON:`.
+
+**Provided Information:**
+1.  **Literature Context**: The scientific background for the model selection.
+2.  **Failed Script**: The exact Python code that produced the error.
+3.  **Error Message**: The full traceback from the script's execution.
+
+**Your Task:**
+1.  Analyze the error message and traceback to identify the bug in the failed script.
+2.  Generate a complete, corrected, and executable Python script that fixes the bug while still fulfilling all original requirements.
+3.  Ensure your entire response is ONLY the corrected Python code inside a markdown block. Do not add any conversational text.
+
+## Literature Context
+{literature_context}
+
+## Failed Script
+```python
+{failed_script}
+```
+## Error Message
+{error_message}
 """

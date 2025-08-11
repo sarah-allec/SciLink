@@ -16,6 +16,7 @@ from .instruct import (
     MICROSCOPY_ANALYSIS_INSTRUCTIONS,
     MICROSCOPY_CLAIMS_INSTRUCTIONS,
     FFT_NMF_PARAMETER_ESTIMATION_INSTRUCTIONS,
+    MICROSCOPY_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
 )
 from .utils import load_image, preprocess_image, convert_numpy_to_jpeg_bytes, normalize_and_convert_to_image_bytes
 
@@ -29,8 +30,9 @@ class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
     def __init__(self,
                  google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05",
+                 local_model: str = None,
                  fft_nmf_settings: dict | None = None, enable_human_feedback: bool = True):
-        super().__init__(google_api_key, model_name, enable_human_feedback=enable_human_feedback)
+        super().__init__(google_api_key, model_name, local_model, enable_human_feedback=enable_human_feedback)
         
         self.fft_nmf_settings = fft_nmf_settings if fft_nmf_settings else {}
         self.RUN_FFT_NMF = self.fft_nmf_settings.get('FFT_NMF_ENABLED', False)
@@ -441,3 +443,6 @@ class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     
     def _get_claims_instruction_prompt(self) -> str:
         return MICROSCOPY_CLAIMS_INSTRUCTIONS
+    
+    def _get_measurement_recommendations_prompt(self) -> str:
+        return MICROSCOPY_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
