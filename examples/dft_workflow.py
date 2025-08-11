@@ -7,7 +7,7 @@ scilink.configure('futurehouse', '')
 scilink.configure('materials_project', '')
 
 
-#request = "A heterostructure consisting of a 3 layers of MoS2 (2H phase) on top of a 3 layers of WS2 (2H phase), with a 3x3 lateral cell."
+#request = "A heterostructure consisting of a 2 layers of MoS2 (2H phase) on top of a 2 layers of WS2 (2H phase), with a 3x3 lateral cell."
 #request = "3x3 Cu(100) slab, 4 layers, with a single NH3 molecule adsorbed on hollow site"
 #request = "3x3 Ni(111) slab, 4 layers, with CO adsorbed at top site"
 #request = "5x5 MoS2 monolayer, 2H phase, with a single Sulfur vacancy."
