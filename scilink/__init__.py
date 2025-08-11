@@ -46,6 +46,6 @@ __all__ = [
     'DFTWorkflow', 
     'SpectroscopyNoveltyAssessmentWorkflow',
     'DFTRecommendationsWorkflow',
-    'Experimental2DFT'
+    'Experimental2DFT',
     'ExperimentNoveltyAssessment'
 ]
