@@ -310,6 +310,12 @@ Directory Structure (for novelty/experiment2dft commands):
         help='Maximum structure refinement cycles (default: %(default)s)'
     )
     parser.add_argument(
+        '--vasp-generator',
+        choices=['llm', 'atomate2'],
+        default='llm',
+        help="Method for VASP input generation: 'llm' or 'atomate2' (default: %(default)s)"
+    )
+    parser.add_argument(
         '--script-timeout',
         type=int,
         default=300,
@@ -444,7 +450,8 @@ def run_experiment2dft_workflow(args, data_file: str, metadata_file: str, struct
         'max_wait_time': args.wait_time,
         'max_refinement_cycles': args.max_refinement_cycles,
         'script_timeout': args.script_timeout,
-        'spectroscopy_analysis_enabled': not args.no_spectral_unmixing
+        'spectroscopy_analysis_enabled': not args.no_spectral_unmixing,
+        'vasp_generator_method': args.vasp_generator
     }
     
     # Add data-type specific parameters
