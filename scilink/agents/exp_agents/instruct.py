@@ -77,6 +77,7 @@ You MUST output a valid JSON object containing two keys: "detailed_analysis" and
 
 Focus on formulating claims that are specific enough to be meaningfully compared against literature but general enough to have a reasonable chance of finding matches. 
 Avoid using **overly specific** numbers from the analysis.
+Your question **must be portable** and understandable without seeing the image or having access to the detailed analysis. **DO NOT** use words like "this," "that," "the observed pattern," or "the specific signature." 
 Ensure the final output is ONLY the JSON object and nothing else.
 """
 
@@ -240,6 +241,7 @@ You MUST output a valid JSON object with two keys: "detailed_analysis" and "scie
 Ensure claims are specific enough for meaningful literature comparison but significant enough to be scientifically interesting.
 Prioritize materials science findings over analysis methodology (don't make more than one claim about analysis methodologies) 
 Avoid using **overly specific** numbers from the analysis.
+Your question **must be portable** and understandable without seeing the image or having access to the detailed analysis. **DO NOT** use words like "this," "that," "the observed pattern," or "the specific signature." 
 Ensure the final output is ONLY the JSON object and nothing else.
 """
 
@@ -423,6 +425,7 @@ Focus on formulating claims about:
 
 Ensure claims are specific enough to be meaningfully compared against literature but significant enough to be scientifically interesting. 
 Avoid using **overly specific** numbers from the analysis.
+Your question **must be portable** and understandable without seeing the analysis results. **DO NOT** use words like "this," "that," "the observed pattern," or "the specific signature." 
 Ensure the final output is ONLY the JSON object.
 """
 
@@ -544,6 +547,7 @@ You MUST output a valid JSON object containing two keys: "detailed_analysis" and
 
 Focus on formulating claims that are specific enough to be meaningfully compared against existing literature but general enough to facilitate discovery. 
 Avoid using **overly specific** numbers from the analysis.
+Your question **must be portable** and understandable without seeing the image or having access to the detailed analysis. **DO NOT** use words like "this," "that," "the observed pattern," or "the specific signature." 
 Ensure the final output is ONLY the JSON object and nothing else.
 """
 
