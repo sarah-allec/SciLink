@@ -41,6 +41,7 @@ class Experimental2DFT:
                  max_wait_time: int = 400,
                  max_refinement_cycles: int = 2,
                  script_timeout: int = 300,
+                 vasp_generator_method: str = "llm",
                  spectroscopy_analysis_enabled: bool = True):
         
         # Auto-discover API keys
@@ -101,7 +102,8 @@ class Experimental2DFT:
             validator_model=validator_model,
             output_dir=str(self.output_dir / "generated_structures"),
             max_refinement_cycles=max_refinement_cycles,
-            script_timeout=script_timeout
+            script_timeout=script_timeout,
+            vasp_generator_method=vasp_generator_method
         )
         
         self.logger.info("Experimental2DFT workflow initialized")
