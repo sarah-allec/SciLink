@@ -252,3 +252,115 @@ You MUST respond with a JSON object containing:
 
 Focus on actionable parameter changes. Only suggest adjustments if the literature clearly indicates issues.
 """
+
+"""
+LLM instruction templates for the PackmolGeneratorAgent.
+Contains all major prompts used for molecule extraction, SMILES generation, and PACKMOL script creation.
+"""
+
+MOLECULE_EXTRACTION_TEMPLATE = """
+Analyze this molecular system description and extract ALL molecules mentioned:
+
+"{description}"
+
+For each molecule, provide:
+1. The identifier used in the description
+2. The most likely chemical formula (if determinable)
+3. Alternative names that might work in databases
+4. SMILES string (if you know it)
+5. Estimated count/concentration from context
+
+Respond as JSON:
+{{
+  "molecules": [
+    {{
+      "identifier": "what was mentioned in description",
+      "formula": "chemical formula like H2O, C6H6, etc.",
+      "alternative_names": ["list", "of", "possible", "database", "names"],
+      "smiles": "SMILES string if known",
+      "estimated_count": "number or description like '1.0 M' or 'solvent'"
+    }}
+  ],
+  "box_info": {{
+    "dimensions": "box dimensions from description",
+    "volume_cubic_angstrom": "calculated volume"
+  }}
+}}
+
+Focus on identifying the specific molecules mentioned in the description without using any external examples.
+
+Response:"""
+
+SMILES_GENERATION_TEMPLATE = """
+Provide the SMILES string for this molecule: {molecule_identifier}
+
+IMPORTANT GUIDELINES:
+- For ionic compounds, provide the SIMPLEST possible SMILES that RDKit can handle
+- Avoid complex charged species if possible
+- For metal complexes, try to provide the organic ligand SMILES instead
+- Focus on the main organic component that can be built with standard force fields
+
+If you know a working SMILES, respond with just the SMILES string.
+If uncertain or if it's a complex ionic compound, respond with: UNKNOWN
+
+Examples of simple molecules:
+- "water" -> O
+- "benzene" -> c1ccccc1
+- "methanol" -> CO
+- "acetone" -> CC(=O)C
+
+For complex metal salts, prefer the organic component only.
+
+Molecule: {molecule_identifier}
+SMILES:"""
+
+PACKMOL_SCRIPT_GENERATION_TEMPLATE = """
+You are an expert in PACKMOL for molecular dynamics simulation setup.
+
+ORIGINAL REQUEST: "{description}"
+
+AVAILABLE MOLECULES (successfully built):
+{molecule_list}
+
+YOUR TASK: Generate a complete PACKMOL input script
+
+PACKMOL REFERENCE:
+1. Start with global parameters:
+   tolerance 2.0
+   filetype xyz
+   output {{output_filename}}
+
+2. For each molecule type:
+   structure components/molecule_name.xyz
+     number COUNT
+     inside cube 0. 0. 0. 40.
+   end structure
+
+CONCENTRATION CALCULATIONS:
+- Box volume: 40×40×40 = 64,000 Å³
+- 1 M concentration ≈ 38-40 molecules in this volume
+- 0.1 M concentration ≈ 4-5 molecules in this volume
+- Water solvent: typically 500-2000 molecules
+- Cosolvents: 50-500 molecules depending on ratio
+- Solutes: 10-100 molecules for reasonable concentrations
+
+BEST PRACTICES:
+- Larger molecules need more space (fewer count)
+- Ensure realistic density (don't overpack)
+- Use whole numbers for molecule counts
+- Consider molecular sizes when setting counts
+- For electrolytes, use reasonable ion concentrations
+
+OUTPUT FORMAT (JSON only):
+{{
+  "thought": "Explain your packing strategy and molecule count reasoning",
+  "components": {{
+    "molecule_name": integer_count
+  }},
+  "output_filename": "descriptive_filename.xyz",
+  "packmol_script": "complete script with proper syntax"
+}}
+
+IMPORTANT: Use ONLY the molecules listed above. Do not reference any molecules that failed to build.
+
+Generate the PACKMOL script:"""
