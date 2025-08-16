@@ -1,14 +1,15 @@
-# test_packmol.py
-
 import os
 import logging
 from scilink.agents.sim_agents.packmol_agent import PackmolGeneratorAgent
 
-# --- Configuration ---
-# Ensure the GOOGLE_API_KEY environment variable is set.
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyArXF8SVnInKM7RK9zvGuIjW3j1FiqRaNo")
 MODEL_NAME = "gemini-2.5-flash-preview-05-20"
 OUTPUT_DIR = "packmol_test_output"
+
+#user_request = "Create a 1.0 M ZnOTf solution in H2O with ethyl isopropyl sulfone cosolvent in a 40x40x40 Angstrom box."    
+#user_request = "Create 2,3DHP with 6/7LiOH supporting electrolyte at concentration 0.1 M in a 40x40x40 Angstrom box"
+user_request = "Create 0.15 M NaCl in water in a 40x40x40 Angstrom box"
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
@@ -29,9 +30,7 @@ def main():
         print("Please ensure the 'packmol' executable is in your system's PATH.")
         return
 
-    #user_request = "Create a 1.0 M ZnOTf solution in H2O with ethyl isopropyl sulfone cosolvent in a 40x40x40 Angstrom box."    
-    user_request = "Create 2,3DHP with 6/7LiOH supporting electrolyte at concentration 0.1 M in a 40x40x40 Angstrom box"
-
+    
     print(f"\n📝 Sending request to agent:\n   '{user_request}'")
     print("-" * 50)
     
