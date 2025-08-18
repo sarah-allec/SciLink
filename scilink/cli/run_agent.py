@@ -31,7 +31,8 @@ try:
         SAMMicroscopyAnalysisAgent,
         AtomisticMicroscopyAnalysisAgent,
         HyperspectralAnalysisAgent,
-        CurveFittingAgent
+        CurveFittingAgent,
+        HolisticMicroscopyAgent
     )
     from .agents import add_agent_args
 except ImportError:
@@ -42,7 +43,8 @@ except ImportError:
         SAMMicroscopyAnalysisAgent,
         AtomisticMicroscopyAnalysisAgent,
         HyperspectralAnalysisAgent,
-        CurveFittingAgent
+        CurveFittingAgent,
+        HolisticMicroscopyAgent
     )
     from cli.agents import add_agent_args
 
@@ -55,7 +57,8 @@ AGENT_NAME_TO_CLASS: Dict[str, Type] = {
     'sam': SAMMicroscopyAnalysisAgent,
     'atomistic': AtomisticMicroscopyAnalysisAgent,
     'hyperspectral': HyperspectralAnalysisAgent,
-    'curve': CurveFittingAgent
+    'curve': CurveFittingAgent,
+    'holistic': HolisticMicroscopyAgent
 }
 
 # Map agent names to their expected data file extensions
@@ -64,7 +67,8 @@ AGENT_DATA_REQUIREMENTS: Dict[str, Tuple[str, ...]] = {
     'sam': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz'),
     'atomistic': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz'),
     'hyperspectral': ('.npy', '.npz'),
-    'curve': ('.txt', '.csv', '.dat', '.npy', '.npz')
+    'curve': ('.txt', '.csv', '.dat', '.npy', '.npz'),
+    'holistic': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz')
 }
 
 
@@ -256,7 +260,7 @@ def main():
         print_info(f"Running {agent_class.__name__}...")
         
         # Call the correct analysis method based on the agent class
-        if isinstance(agent_instance, (MicroscopyAnalysisAgent, SAMMicroscopyAnalysisAgent, AtomisticMicroscopyAnalysisAgent)):
+        if isinstance(agent_instance, (MicroscopyAnalysisAgent, SAMMicroscopyAnalysisAgent, AtomisticMicroscopyAnalysisAgent, HolisticMicroscopyAgent)):
             result = agent_instance.analyze_microscopy_image_for_claims(data_file, system_info=metadata_file)
         elif isinstance(agent_instance, HyperspectralAnalysisAgent):
             result = agent_instance.analyze_hyperspectral_data_for_claims(data_file, metadata_path=metadata_file)
