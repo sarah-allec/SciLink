@@ -7,6 +7,7 @@ from .microscopy_agent import MicroscopyAnalysisAgent
 from .sam_microscopy_agent import SAMMicroscopyAnalysisAgent
 from .atomistic_microscopy_agent import AtomisticMicroscopyAnalysisAgent
 from .hyperspectral_analysis_agent import HyperspectralAnalysisAgent
+from .holistic_microscopy_agent import HolisticMicroscopyAgent
 from .instruct import ORCHESTRATOR_INSTRUCTIONS
 from ...auth import get_api_key, APIKeyNotFoundError
 
@@ -16,6 +17,7 @@ AGENT_MAP = {
     1: SAMMicroscopyAnalysisAgent,
     2: AtomisticMicroscopyAnalysisAgent,
     3: HyperspectralAnalysisAgent,
+    4: HolisticMicroscopyAgent
 }
 
 class OrchestratorAgent:
