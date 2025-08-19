@@ -891,3 +891,31 @@ FITTING_SCRIPT_CORRECTION_INSTRUCTIONS = """You are an expert data scientist deb
 ## Error Message
 {error_message}
 """
+
+HOLISTIC_SYNTHESIS_INSTRUCTIONS = """
+You are an expert materials scientist performing a multi-modal synthesis of results from two different analysis methods run on the SAME microscopy image.
+
+You will be given a comprehensive data package for each analysis:
+1.  **Atomistic Analysis:**
+    - A text summary identifying individual atoms, defects, and local structures.
+    - **Analysis Images:** Visual maps showing atomic clustering by intensity, local environment classification, etc.
+2.  **General (FFT-NMF) Analysis:**
+    - A text summary identifying larger-scale domains and periodicities.
+    - **Analysis Images:** Visual maps of NMF components (FFT patterns) and their corresponding abundance maps (spatial locations).
+
+Your task is to act as a senior researcher reviewing all the evidence to formulate a unified analysis.
+
+**Output Format:**
+Provide your response in a single JSON object.
+{{
+  "detailed_analysis": "<Your synthesized, multi-modal analysis text that explicitly references the visual data>",
+  "scientific_claims": [
+    {{
+      "claim": "<A concise scientific claim linking visual evidence from both analyses>",
+      "scientific_impact": "<The potential impact of this synthesized finding>",
+      "has_anyone_question": "<A 'Has anyone...' question for a literature search>",
+      "keywords": ["<keyword1>", "<keyword2>"]
+    }}
+  ]
+}}
+"""
