@@ -10,16 +10,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the build backend (e.g., setuptools, flit, poetry) if not in the base image.
-# And ensure pip is up-to-date to handle pyproject.toml correctly.
-RUN pip install --no-cache-dir --upgrade pip build
+# Install pip-tools to compile dependencies and ensure pip is up-to-date.
+RUN pip install --no-cache-dir --upgrade pip pip-tools
 
-# Copy only the project file first to leverage Docker's layer caching.
+# Copy only the project file to leverage Docker's layer caching.
 COPY pyproject.toml .
 
-# Install Python dependencies. This layer is cached as long as
-# the [project.dependencies] in pyproject.toml doesn't change.
-RUN pip install --no-cache-dir --only-deps .
+# Generate a requirements.txt file from pyproject.toml's dependencies.
+# This layer is cached as long as the dependencies don't change.
+RUN pip-compile --output-file=requirements.txt pyproject.toml
+
+# Install the compiled Python dependencies from the generated file.
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Download and unzip the DCNN model needed by AtomisticMicroscopyAnalysisAgent.
 ENV DCNN_MODEL_GDRIVE_ID=16LFMIEADO3XI8uNqiUoKKlrzWlc1_Q-p
