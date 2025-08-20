@@ -5,36 +5,35 @@ FROM python:3.11-slim as builder
 # Set the working directory inside the container.
 WORKDIR /app
 
-# Install system dependencies needed for the build and model download.
+# Install system dependencies needed by gdown, Pillow, OpenCV, etc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pip-tools to compile dependencies and ensure pip is up-to-date.
-RUN pip install --no-cache-dir --upgrade pip pip-tools
+# Upgrade pip to ensure it's the latest version.
+RUN pip install --no-cache-dir --upgrade pip
 
-# Copy only the project file to leverage Docker's layer caching.
-COPY pyproject.toml .
+# Copy the pre-compiled requirements file first to leverage Docker's layer caching.
+COPY requirements.txt .
 
-# Generate a requirements.txt file from pyproject.toml's dependencies.
-# This layer is cached as long as the dependencies don't change.
-RUN pip-compile --output-file=requirements.txt pyproject.toml
-
-# Install the compiled Python dependencies from the generated file.
+# Install the exact Python dependencies from the locked requirements file.
+# This step is fast because no dependency resolution is needed.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Download and unzip the DCNN model needed by AtomisticMicroscopyAnalysisAgent.
+# This avoids downloading it every time the container runs.
 ENV DCNN_MODEL_GDRIVE_ID=16LFMIEADO3XI8uNqiUoKKlrzWlc1_Q-p
 ENV DCNN_MODEL_DIR=dcnn_trained
 RUN gdown --id ${DCNN_MODEL_GDRIVE_ID} -O ${DCNN_MODEL_DIR}.zip && \
     unzip ${DCNN_MODEL_DIR}.zip -d ${DCNN_MODEL_DIR} && \
     rm ${DCNN_MODEL_DIR}.zip
 
-# Copy your application source code.
+# Copy your application source code and project definition.
+COPY pyproject.toml .
 COPY scilink/ ./scilink/
 
-# Install the scilink package itself (without reinstalling dependencies).
-# This will also pick up the console_scripts entry point.
+# Install the scilink package itself (without reinstalling its dependencies).
+# This will also pick up the console_scripts entry point from pyproject.toml.
 RUN pip install --no-cache-dir --no-deps .
 
 
@@ -42,7 +41,7 @@ RUN pip install --no-cache-dir --no-deps .
 # Start from a clean, minimal base image for the final product.
 FROM python:3.11-slim
 
-# Install the missing runtime system dependencies required by OpenCV.
+# Install the missing system dependency libGL.so.1 required by OpenCV.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
