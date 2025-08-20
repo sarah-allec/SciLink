@@ -5,38 +5,42 @@ FROM python:3.11-slim as builder
 # Set the working directory inside the container.
 WORKDIR /app
 
-# Install system dependencies needed by gdown, Pillow, OpenCV, etc.
+# Install system dependencies needed for the build and model download.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy your requirements file and install the exact Python dependencies.
-# This step is cached by Docker if requirements.txt doesn't change.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the build backend (e.g., setuptools, flit, poetry) if not in the base image.
+# And ensure pip is up-to-date to handle pyproject.toml correctly.
+RUN pip install --no-cache-dir --upgrade pip build
+
+# Copy only the project file first to leverage Docker's layer caching.
+COPY pyproject.toml .
+
+# Install Python dependencies. This layer is cached as long as
+# the [project.dependencies] in pyproject.toml doesn't change.
+RUN pip install --no-cache-dir --only-deps .
 
 # Download and unzip the DCNN model needed by AtomisticMicroscopyAnalysisAgent.
-# This avoids downloading it every time the container runs.
 ENV DCNN_MODEL_GDRIVE_ID=16LFMIEADO3XI8uNqiUoKKlrzWlc1_Q-p
 ENV DCNN_MODEL_DIR=dcnn_trained
 RUN gdown --id ${DCNN_MODEL_GDRIVE_ID} -O ${DCNN_MODEL_DIR}.zip && \
     unzip ${DCNN_MODEL_DIR}.zip -d ${DCNN_MODEL_DIR} && \
     rm ${DCNN_MODEL_DIR}.zip
 
-# Copy your application source code and setup file.
+# Copy your application source code.
 COPY scilink/ ./scilink/
-COPY setup.py .
 
-# Install the scilink package itself into the builder stage.
+# Install the scilink package itself (without reinstalling dependencies).
 # This will also pick up the console_scripts entry point.
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-deps .
 
 
 # --- Stage 2: Final Image ---
 # Start from a clean, minimal base image for the final product.
 FROM python:3.11-slim
 
-# Install the missing system dependency libGL.so.1 required by OpenCV.
+# Install the missing runtime system dependencies required by OpenCV.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
