@@ -23,12 +23,12 @@ def add_agent_args(parser: argparse.ArgumentParser, required: bool = False):
     agent_group.add_argument(
         '--agent',
         type=str,
-        choices=['general', 'sam', 'atomistic', 'hyperspectral', 'curve', 'holistic'],
+        choices=['general-microscopy', 'sam', 'atomistic', 'hyperspectral', 'curve', 'holistic-microscopy'],
         default=None,
         required=required,
         help=(
             "Specify the analysis agent by its short name. "
-            "Choices: 'general', 'sam', 'atomistic', 'hyperspectral', 'curve', 'holistic'. "
+            "Choices: 'general-microscopy', 'sam', 'atomistic', 'hyperspectral', 'curve', 'holistic-microscopy'. "
             f"{'(REQUIRED for this command)' if required else '(Optional: overrides auto-selection)'}"
         )
     )

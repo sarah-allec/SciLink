@@ -8,7 +8,7 @@ Usage:
     scilink-agent [PATH] --agent [AGENT_NAME] [OPTIONS]
 
 Example:
-    scilink-agent my_data/ --agent general --fft-nmf
+    scilink-agent my_data/ --agent general-microscopy --fft-nmf
     scilink-agent image.tif --system-info metadata.json --agent atomistic
     scilink-agent curve_data.csv --agent curve
 """
@@ -16,8 +16,8 @@ Example:
 import argparse
 import sys
 import os
+import logging
 import json
-import numpy as np
 from pathlib import Path
 import textwrap
 import inspect
@@ -53,22 +53,22 @@ except ImportError:
 
 # Map user-friendly names to the actual agent classes
 AGENT_NAME_TO_CLASS: Dict[str, Type] = {
-    'general': MicroscopyAnalysisAgent,
+    'general-microscopy': MicroscopyAnalysisAgent,
     'sam': SAMMicroscopyAnalysisAgent,
     'atomistic': AtomisticMicroscopyAnalysisAgent,
     'hyperspectral': HyperspectralAnalysisAgent,
     'curve': CurveFittingAgent,
-    'holistic': HolisticMicroscopyAgent
+    'holistic-microscopy': HolisticMicroscopyAgent
 }
 
 # Map agent names to their expected data file extensions
 AGENT_DATA_REQUIREMENTS: Dict[str, Tuple[str, ...]] = {
-    'general': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz'),
+    'general-microscopy': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz'),
     'sam': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz'),
     'atomistic': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz'),
     'hyperspectral': ('.npy', '.npz'),
     'curve': ('.txt', '.csv', '.dat', '.npy', '.npz'),
-    'holistic': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz')
+    'holistic-microscopy': ('.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.npy', '.npz')
 }
 
 
@@ -178,6 +178,12 @@ def create_agent_parser() -> argparse.ArgumentParser:
         help="Enable Sliding FFT-NMF analysis for the 'general' microscopy agent."
     )
 
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help="Enable verbose logging to see detailed, real-time agent output."
+    )
+
     add_agent_args(parser, required=True)
     
     return parser
@@ -187,6 +193,13 @@ def main():
     """Main entry point for the scilink-agent CLI."""
     parser = create_agent_parser()
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s: %(name)s: %(message)s',
+            force=True  # Override any existing default logger configuration
+        )
     
     print_header("🔬 SciLink Experimental Agent Runner")
     print_header("=================================")
