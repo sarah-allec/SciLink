@@ -11,7 +11,7 @@ from .analyzers import MicroscopyAnalyzer, SpectroscopyAnalyzer, BaseExperimentA
 
 from ..agents.exp_agents.microscopy_agent import MicroscopyAnalysisAgent
 from ..agents.lit_agents.literature_agent import OwlLiteratureAgent
-from ..agents.lit_agents.novelty_scorer import NoveltyScorer, enhanced_novelty_assessment, display_enhanced_novelty_summary
+from ..agents.lit_agents.novelty_scorer import NoveltyScorer, enhanced_novelty_assessment
 
 import warnings
 from ..auth import get_api_key, APIKeyNotFoundError
@@ -104,7 +104,7 @@ class ExperimentNoveltyAssessment:
         Initialize the unified experiment novelty assessment workflow.
         
         Args:
-            data_type: Type of experimental data ('microscopy', 'spectroscopy', etc.)
+            data_type: Type of experimental data ('microscopy', 'spectroscopy', 'curve')
             google_api_key: Google API key for analysis
             futurehouse_api_key: FutureHouse API key for literature search
             analysis_model: Model name for analysis
@@ -113,7 +113,8 @@ class ExperimentNoveltyAssessment:
             dft_recommendations: Whether to generate DFT recommendations (microscopy only)
             enable_human_feedback: Whether to enable human feedback in analyzers
             display_agent_logs: Whether to show detailed agent logs (default: True)
-            **analyzer_kwargs: Additional arguments passed to the specific analyzer
+            **analyzer_kwargs: Additional keyword arguments passed directly to the
+                underlying Analyzer class.
         """
         # Validate data type
         if data_type not in self.ANALYZER_REGISTRY:

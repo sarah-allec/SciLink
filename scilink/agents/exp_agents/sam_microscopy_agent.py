@@ -20,8 +20,7 @@ from atomai.models import ParticleAnalyzer
 
 class SAMMicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
-    Agent for analyzing microscopy images using Segment Anything Model (SAM) and generative AI models.
-    Refactored to inherit from BaseAnalysisAgent and follows the same pattern as other microscopy agents.
+    Agent for analyzing microscopy images using Segment Anything Model (SAM).
     """
 
     def __init__(self,

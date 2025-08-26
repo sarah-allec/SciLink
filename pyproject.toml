@@ -45,6 +45,7 @@ dependencies = [
 
 [project.scripts]
 scilink = "scilink.cli.workflows:main"
+scilink-agent = "scilink.cli.run_agent:main"
 
 [tool.setuptools]
 include-package-data = true
