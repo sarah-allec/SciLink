@@ -1,5 +1,7 @@
 import json
 import logging
+from abc import ABC, abstractmethod
+from typing import Dict, Any, List
 
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
@@ -41,6 +43,26 @@ class BaseAnalysisAgent:
         
         self._stored_analysis_images = []
         self._stored_analysis_metadata = {}
+
+    @abstractmethod
+    def analyze_for_claims(self, data_path: str, system_info: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+        """
+        Analyze experimental data to generate a detailed summary and scientific claims.
+        This is the primary entry point for any analysis agent.
+        """
+        raise NotImplementedError
+    
+    def _get_stored_analysis_images(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves visual evidence (processed images) generated during the analysis.
+        """
+        return self._stored_analysis_images.copy()
+
+    def _store_analysis_images(self, images: list, metadata: dict = None):
+        """Helper to store analysis images for retrieval by workflows."""
+        self._stored_analysis_images = images.copy() if images else []
+        self._stored_analysis_metadata = metadata or {}
+        self.logger.debug(f"Stored {len(self._stored_analysis_images)} analysis images.")
 
     def _parse_llm_response(self, response) -> tuple[dict | None, dict | None]:
         """

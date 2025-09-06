@@ -746,8 +746,7 @@ Analysis Summary:
         self.logger.error(f"Could not find model files in '{default_path}' or subdirectories.")
         return None
 
-    # Keep existing public interface methods but update them to use the new workflow
-    def analyze_microscopy_image_for_claims(self, image_path: str, system_info: dict | str | None = None):
+    def analyze_for_claims(self, image_path: str, system_info: dict | str | None = None):
         """
         Analyze microscopy image to generate scientific claims
         """

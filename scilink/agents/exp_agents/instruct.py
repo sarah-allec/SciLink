@@ -892,6 +892,7 @@ FITTING_SCRIPT_CORRECTION_INSTRUCTIONS = """You are an expert data scientist deb
 {error_message}
 """
 
+
 HOLISTIC_SYNTHESIS_INSTRUCTIONS = """
 You are an expert materials scientist performing a multi-modal synthesis of results from two different analysis methods run on the SAME microscopy image.
 
@@ -918,4 +919,33 @@ Provide your response in a single JSON object.
     }}
   ]
 }}
+
+
+HOLISTIC_EXPERIMENTAL_SYNTHESIS_INSTRUCTIONS = """
+You are an expert materials scientist tasked with synthesizing findings from a multi-modal characterization of a single sample. You have been provided with analyses from different experimental techniques, which may provide information at different length scales (e.g., local atomic structure vs. bulk crystal phase).
+
+Your primary task is to build a single, cohesive scientific narrative that is consistent with ALL the provided experimental evidence.
+
+To do this, follow these steps:
+
+1.  **First, consider the nature of each analysis provided:**
+    * For **spatially-resolved techniques** (e.g., Microscopy, SEM, TEM, EELS/EDX mapping): Look for direct **spatial correlations**. Does a structural feature seen in an image correspond to a unique signature in a spectral map?
+    * For **bulk-average techniques** (e.g., XRD, DSC, XPS): **Reconcile** these average properties with the local observations. For example, do the phases identified by XRD match the crystal structure seen in TEM? Can local defects or strain observed in microscopy explain peak broadening in the XRD pattern? Is the bulk elemental composition from XPS consistent with the local composition from EDX?
+
+2.  **Formulate a Unified Narrative**: Based on this correlated and reconciled understanding, write a comprehensive 'detailed_analysis'. This narrative should explain how the local, atomic-scale features give rise to the observed bulk properties, or vice-versa.
+
+3.  **Generate Synthesized Claims**: From your unified narrative, generate a list of high-level 'scientific_claims' that are supported by the combined evidence from all techniques.
+
+You MUST respond in a valid JSON format with the following keys:
+{
+    "detailed_analysis": "<Your comprehensive, synthesized scientific narrative that reconciles local and bulk findings>",
+    "scientific_claims": [
+        {
+            "claim": "<A high-level scientific claim based on the combined data>",
+            "scientific_impact": "<The potential impact of this claim>",
+            "has_anyone_question": "<A question for a literature search, formatted as 'Has anyone observed...'>",
+            "keywords": ["<keyword1>", "<keyword2>"]
+        }
+    ]
+}
 """

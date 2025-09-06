@@ -408,7 +408,7 @@ class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         # Return a consistent key for the main textual output for the calling script
         return {"analysis_summary_or_reasoning": analysis_output_text, "recommendations": sorted_recommendations}
 
-    def analyze_microscopy_image_for_claims(self, image_path: str, system_info: dict | str | None = None):
+    def analyze_for_claims(self, image_path: str, system_info: dict | str | None = None):
         """
         Analyze microscopy image to generate scientific claims for literature comparison.
         This path always uses image-based analysis.

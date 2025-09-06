@@ -490,11 +490,10 @@ class SAMMicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             self.logger.exception(f"An unexpected error occurred during SAM image analysis setup: {e}")
             return None, {"error": "An unexpected error occurred during analysis setup", "details": str(e)}
 
-    def analyze_microscopy_image_for_claims(self, image_path: str, system_info: dict | str | None = None):
+    def analyze_for_claims(self, image_path: str, system_info: dict | str | None = None):
         """
         Analyze microscopy image to generate scientific claims for literature comparison.
         This path always uses image-based analysis with SAM segmentation.
-        Now uses base class validation methods.
         """
         result_json, error_dict = self._analyze_image_base(
             image_path, system_info, SAM_MICROSCOPY_CLAIMS_INSTRUCTIONS
