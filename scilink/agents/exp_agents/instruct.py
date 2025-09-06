@@ -919,7 +919,7 @@ Provide your response in a single JSON object.
     }}
   ]
 }}
-
+"""
 
 HOLISTIC_EXPERIMENTAL_SYNTHESIS_INSTRUCTIONS = """
 You are an expert materials scientist tasked with synthesizing findings from a multi-modal characterization of a single sample. You have been provided with analyses from different experimental techniques, which may provide information at different length scales (e.g., local atomic structure vs. bulk crystal phase).
