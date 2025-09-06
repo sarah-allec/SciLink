@@ -86,7 +86,7 @@ class HolisticMicroscopyAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         self.logger.info("✅ Successfully synthesized holistic results.")
         return final_json
 
-    def analyze_microscopy_image_for_claims(self, image_path: str, system_info: Dict, **kwargs) -> Dict[str, Any]:
+    def analyze_for_claims(self, image_path: str, system_info: Dict, **kwargs) -> Dict[str, Any]:
         """
         Runs a sequential, interactive analysis and synthesis workflow.
         """
