@@ -6,11 +6,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from io import BytesIO
 from datetime import datetime
 
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
-
 from .base_agent import BaseAnalysisAgent
-from .utils import convert_numpy_to_jpeg_bytes, normalize_and_convert_to_image_bytes
 from .utils import create_multi_abundance_overlays
 from .instruct import (
     SPECTROSCOPY_ANALYSIS_INSTRUCTIONS, 
@@ -27,8 +23,7 @@ from atomai.stat import SpectralUnmixer
 
 class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
-    Agent for analyzing hyperspectral/spectroscopy data using generative AI models.
-    Refactored to inherit from BaseAnalysisAgent and includes LLM-guided spectral unmixing.
+    Agent for analyzing hyperspectral data
     """
 
     def __init__(self, api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05", 
@@ -86,7 +81,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         import json
         import os
         
-        # Get JSON file path (same name as .npy but with .json extension)
+        # Get JSON file path
         base_path = os.path.splitext(data_path)[0]
         json_path = f"{base_path}.json"
         
@@ -107,7 +102,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     def _llm_estimate_components_from_system(self, hspy_data: np.ndarray, 
                                            system_info: Dict[str, Any] = None) -> int:
         """
-        Step 1: LLM estimates optimal number of components based on system description.
+        LLM estimates optimal number of components based on system description.
         """
         try:
             self.logger.info("\n\n🤖 -------------------- ANALYSIS AGENT STEP: COMPONENT PARAMETER ESTIMATION -------------------- 🤖\n")
@@ -172,7 +167,6 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                            n_comp: int, system_info: Dict[str, Any] = None) -> bytes:
         """
         Create a single summary plot showing all components and abundance maps.
-        Now includes proper energy axis labeling.
         """
         import matplotlib.pyplot as plt
         
@@ -226,7 +220,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     def _llm_compare_visual_results(self, test_images: List[Dict], initial_estimate: int,
                                    system_info: Dict[str, Any] = None) -> int:
         """
-        Step 3: LLM compares visual results to make final decision.
+        LLM compares visual results to make final decision.
         """
         try:
             self.logger.info("\n\n🤖 ------------------ ANALYSIS AGENT STEP: DECIDING ON THE FINAL NUMBER OF COMPONENTS ------------------ 🤖\n")
@@ -995,7 +989,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                 use_simple_colors=True  # Use solid colors for clearer LLM analysis
             )
             
-            # Save the overlay that goes to LLM (following existing pattern)
+            # Save the overlay that goes to LLM
             if save_plots:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"abundance_overlays_{timestamp}.png"

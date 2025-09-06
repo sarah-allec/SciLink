@@ -25,7 +25,7 @@ from atomai.stat import SlidingFFTNMF
 
 class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
-    Agent for analyzing microscopy images using generative AI models
+    Agent for analyzing microscopy images
     """
 
     def __init__(self,
