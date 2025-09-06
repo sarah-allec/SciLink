@@ -582,7 +582,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         
         return structure_image_path, structure_system_info
 
-    def analyze_hyperspectral_data_for_claims(self, data_path: str, metadata_path: Dict[str, Any] | None = None,
+    def analyze_for_claims(self, data_path: str, metadata_path: Dict[str, Any] | None = None,
                                             structure_image_path: str = None, structure_system_info: Dict[str, Any] = None
                                             ) -> Dict[str, Any]:
         """
