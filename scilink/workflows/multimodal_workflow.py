@@ -9,7 +9,10 @@ from pathlib import Path
 from ..agents.exp_agents import (
     AtomisticMicroscopyAnalysisAgent,
     MicroscopyAnalysisAgent,
-    HyperspectralAnalysisAgent
+    SAMMicroscopyAnalysisAgent,
+    HyperspectralAnalysisAgent,
+    CurveFittingAgent
+    
 )
 from ..agents.exp_agents.instruct import HOLISTIC_EXPERIMENTAL_SYNTHESIS_INSTRUCTIONS
 
@@ -65,7 +68,9 @@ class MultiModalExperimentWorkflow:
         # Instantiate each agent with only the arguments it can accept
         self.atomistic_agent = AtomisticMicroscopyAnalysisAgent(**get_agent_kwargs(AtomisticMicroscopyAnalysisAgent))
         self.general_microscopy_agent = MicroscopyAnalysisAgent(**get_agent_kwargs(MicroscopyAnalysisAgent))
-        self.spectroscopy_agent = HyperspectralAnalysisAgent(**get_agent_kwargs(HyperspectralAnalysisAgent))
+        self.sam_agent = SAMMicroscopyAnalysisAgent(**get_agent_kwargs(SAMMicroscopyAnalysisAgent))
+        self.hyperspectral_agent = HyperspectralAnalysisAgent(**get_agent_kwargs(HyperspectralAnalysisAgent))
+        self.curve_agent = CurveFittingAgent(**get_agent_kwargs(CurveFittingAgent))
         
         # The synthesis step uses a generative model directly
         self.synthesis_model = self.atomistic_agent.model # Reuse the configured model instance
@@ -90,7 +95,9 @@ class MultiModalExperimentWorkflow:
         agent_mapping = {
             'atomistic_microscopy': self.atomistic_agent,
             'general_microscopy': self.general_microscopy_agent,
-            'spectroscopy': self.spectroscopy_agent
+            'partciles_microscopy': self.sam_agent,
+            'hyperspectral': self.hyperspectral_agent,
+            '1Dspectroscopy': self.curve_agent
         }
 
         # --- Step 1: Run All Specialist Analyses ---
