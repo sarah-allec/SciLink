@@ -272,15 +272,7 @@ def main():
         
         print_info(f"Running {agent_class.__name__}...")
         
-        # Call the correct analysis method based on the agent class
-        if isinstance(agent_instance, (MicroscopyAnalysisAgent, SAMMicroscopyAnalysisAgent, AtomisticMicroscopyAnalysisAgent, HolisticMicroscopyAgent)):
-            result = agent_instance.analyze_microscopy_image_for_claims(data_file, system_info=metadata_file)
-        elif isinstance(agent_instance, HyperspectralAnalysisAgent):
-            result = agent_instance.analyze_hyperspectral_data_for_claims(data_file, metadata_path=metadata_file)
-        elif isinstance(agent_instance, CurveFittingAgent):
-            result = agent_instance.analyze_for_claims(data_file, system_info=metadata_file)
-        else:
-            raise NotImplementedError(f"Execution logic for {agent_class.__name__} not implemented.")
+        result = agent_instance.analyze_for_claims(data_path=data_file, system_info=metadata_file)
 
         display_analysis_results(result)
 

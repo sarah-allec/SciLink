@@ -78,8 +78,8 @@ class MicroscopyAnalyzer(BaseExperimentAnalyzer):
         
         self.analysis_agent = AnalysisAgentClass(**agent_kwargs)
         
-        return self.analysis_agent.analyze_microscopy_image_for_claims(data_path, system_info=system_info)
-    
+        return self.analysis_agent.analyze_for_claims(data_path, system_info=system_info, **kwargs)
+        
     def get_data_type_name(self) -> str:
         return "microscopy"
 
@@ -124,7 +124,7 @@ class SpectroscopyAnalyzer(BaseExperimentAnalyzer):
         structure_image_path = kwargs.get('structure_image_path')
         structure_system_info = kwargs.get('structure_system_info')
         
-        return self.analysis_agent.analyze_hyperspectral_data_for_claims(
+        return self.analysis_agent.analyze_for_claims(
             data_path,
             metadata_path=system_info,
             structure_image_path=structure_image_path,
