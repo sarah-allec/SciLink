@@ -1,10 +1,9 @@
 import logging
 import json
-from io import StringIO
+import inspect
 from typing import Dict, Any, List
 from pathlib import Path
 
-# Correct Dependency: Workflows import from agents
 from ..agents.exp_agents import (
     AtomisticMicroscopyAnalysisAgent,
     MicroscopyAnalysisAgent,
@@ -35,52 +34,79 @@ class MultiModalExperimentWorkflow:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # The workflow acts as a manager, holding instances of its specialist 'workers' (agents)
-        agent_kwargs = {'google_api_key': google_api_key, 'model_name': model_name, **kwargs}
-        
-        self.atomistic_agent = AtomisticMicroscopyAnalysisAgent(**agent_kwargs)
-        self.general_microscopy_agent = MicroscopyAnalysisAgent(**agent_kwargs)
-        self.spectroscopy_agent = HyperspectralAnalysisAgent(**agent_kwargs)
+        # Base arguments required by all agents
+        common_args = {'google_api_key': google_api_key, 'model_name': model_name}
+
+        def get_agent_kwargs(agent_class):
+            """Helper function to filter kwargs for a specific agent's constructor."""
+            # Get the names of all valid parameters for the agent's __init__ method
+            sig = inspect.signature(agent_class.__init__)
+            valid_params = set(sig.parameters.keys())
+            
+            # Filter the provided kwargs to include only the ones this agent accepts
+            agent_specific_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+            
+            # Combine the common args with the agent-specific ones
+            return {**common_args, **agent_specific_kwargs}
+
+        # Instantiate each agent with only the arguments it can accept
+        self.atomistic_agent = AtomisticMicroscopyAnalysisAgent(**get_agent_kwargs(AtomisticMicroscopyAnalysisAgent))
+        self.general_microscopy_agent = MicroscopyAnalysisAgent(**get_agent_kwargs(MicroscopyAnalysisAgent))
+        self.spectroscopy_agent = HyperspectralAnalysisAgent(**get_agent_kwargs(HyperspectralAnalysisAgent))
         
         # The synthesis step uses a generative model directly
         self.synthesis_model = self.atomistic_agent.model # Reuse the configured model instance
         self.generation_config = self.atomistic_agent.generation_config
 
-    def run(self, data_paths: Dict[str, str], system_info: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, data_inputs: Dict[str, Dict], common_system_info: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Executes the full multi-modal analysis and synthesis pipeline.
 
         Args:
-            data_paths (Dict[str, str]): Maps analysis types to file paths.
-                Example: {'atomistic_microscopy': 'path/to/stem.tif', 'spectroscopy': 'path/to/eels.npy'}
-            system_info (Dict[str, Any]): The system metadata.
-
-        Returns:
-            A dictionary with the final synthesized results and source analyses.
+            data_inputs (Dict[str, Dict]): Maps analysis types to a dict containing
+                'data_path' and an optional 'metadata_path'.
+            common_system_info (Dict[str, Any], optional): A dictionary of metadata
+                that applies to the entire sample (e.g., synthesis details).
         """
         all_results = []
         workflow_status = {"final_status": "started", "steps_completed": []}
 
-        # --- Step 1: Run All Specialist Analyses ---
         self.logger.info("Starting specialist analyses for each data modality...")
-        
-        # This structure is easily extensible with 'elif' for more agents
-        for analysis_type, data_path in data_paths.items():
-            agent = None
-            if analysis_type == 'atomistic_microscopy':
-                agent = self.atomistic_agent
-            elif analysis_type == 'general_microscopy':
-                agent = self.general_microscopy_agent
-            elif analysis_type == 'spectroscopy':
-                agent = self.spectroscopy_agent
 
+        # 1. Define the mapping from the input key to the agent instance.
+        agent_mapping = {
+            'atomistic_microscopy': self.atomistic_agent,
+            'general_microscopy': self.general_microscopy_agent,
+            'spectroscopy': self.spectroscopy_agent
+        }
+
+        # --- Step 1: Run All Specialist Analyses ---
+        for analysis_type, paths in data_inputs.items():
+            agent = agent_mapping.get(analysis_type)
             if agent:
+                data_path = paths.get('data_path')
+                metadata_path = paths.get('metadata_path')
+
+                if not data_path:
+                    self.logger.warning(f"Skipping '{analysis_type}' because 'data_path' is missing.")
+                    continue
+
+                # 2. Load the specific metadata for this analysis.
+                specific_info = {}
+                if metadata_path and Path(metadata_path).exists():
+                    with open(metadata_path, 'r') as f:
+                        specific_info = json.load(f)
+                
+                # 3. Merge common and specific metadata. Specific info takes precedence.
+                final_system_info = {**(common_system_info or {}), **specific_info}
+
                 self.logger.info(f"Running {analysis_type} analysis on {data_path}...")
-                result = agent.analyze_for_claims(data_path, system_info)
-                if result.get("status") == "success" or "detailed_analysis" in result: # Check for success or valid output
+                result = agent.analyze_for_claims(data_path, final_system_info)
+                
+                if "detailed_analysis" in result:
                     all_results.append({'source': analysis_type, 'data': result, 'agent': agent})
                 else:
-                    self.logger.warning(f"{analysis_type} analysis failed or returned no data.")
+                    self.logger.warning(f"{analysis_type} analysis failed or returned no valid data.")
 
         if not all_results:
             workflow_status["final_status"] = "error"
@@ -91,7 +117,17 @@ class MultiModalExperimentWorkflow:
 
         # --- Step 2: Synthesize Results ---
         self.logger.info("Synthesizing results from all modalities...")
-        synthesis_result = self._synthesize_results(all_results, system_info)
+        
+        # 4. Create a single, comprehensive metadata dictionary for the final synthesis step.
+        comprehensive_info = common_system_info or {}
+        for analysis_type, paths in data_inputs.items():
+            metadata_path = paths.get('metadata_path')
+            if metadata_path and Path(metadata_path).exists():
+                with open(metadata_path, 'r') as f:
+                    comprehensive_info.update(json.load(f))
+        
+        # 5. Call the synthesis method with the complete, merged info.
+        synthesis_result = self._synthesize_results(all_results, comprehensive_info)
         
         workflow_status["synthesis_result"] = synthesis_result
         if synthesis_result.get("status") != "success":
@@ -102,9 +138,7 @@ class MultiModalExperimentWorkflow:
         workflow_status["steps_completed"].append("synthesis")
         workflow_status["final_status"] = "success"
         
-        # Save the final result
         self._save_results(workflow_status)
-        
         return workflow_status
 
     def _synthesize_results(self, results: List[Dict], system_info: Dict[str, Any]) -> Dict[str, Any]:
