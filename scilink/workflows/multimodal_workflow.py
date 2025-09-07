@@ -1,5 +1,7 @@
 import logging
 import json
+import sys
+from io import StringIO
 import inspect
 from typing import Dict, Any, List
 from pathlib import Path
@@ -10,6 +12,7 @@ from ..agents.exp_agents import (
     HyperspectralAnalysisAgent
 )
 from ..agents.exp_agents.instruct import HOLISTIC_EXPERIMENTAL_SYNTHESIS_INSTRUCTIONS
+
 
 class MultiModalExperimentWorkflow:
     """
@@ -30,6 +33,16 @@ class MultiModalExperimentWorkflow:
             output_dir (str): The directory to save the final results.
             **kwargs: Additional keyword arguments passed to the specialist agents.
         """
+        self.log_capture = StringIO()
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s: %(name)s: %(message)s',
+            force=True,
+            handlers=[
+                logging.StreamHandler(sys.stdout),
+                logging.StreamHandler(self.log_capture)
+            ]
+        )
         self.logger = logging.getLogger(__name__)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
