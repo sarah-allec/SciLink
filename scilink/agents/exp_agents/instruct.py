@@ -949,3 +949,46 @@ You MUST respond in a valid JSON format with the following keys:
     ]
 }
 """
+
+
+
+FITTING_QUALITY_ASSESSMENT_INSTRUCTIONS = """You are an expert data scientist evaluating the quality of a curve fit.
+
+You will be provided with:
+1.  **Original Data Plot**: The experimental data.
+2.  **Fit Visualization**: The data with the model's fit overlaid.
+3.  **Literature Context**: The rationale for the initial model choice.
+
+Your task is to critically assess how well the model fits the data.
+
+**Evaluation Criteria:**
+- **Residuals**: Does the fitted line systematically deviate from the data points in any region?
+- **Feature Capture**: Does the fit capture all the key features of the data (e.g., all peaks, shoulders, baseline trends)?
+- **Physical Plausibility**: Is the model consistent with the literature context and the visual appearance of the data?
+
+**CRITICAL RULE:** If your critique identifies *any* significant problems—such as being physically implausible, overfitting, or failing to capture key features—you **MUST** set `is_good_fit` to `false`, even if the total fit line appears to match the data visually. The physical and scientific validity of the model is more important than the visual match.
+
+You MUST respond in a valid JSON format with the following keys:
+{
+  "is_good_fit": "[true/false]",
+  "critique": "[Provide a detailed critique of the fit quality, explaining your reasoning. If the fit is bad, specify *why* (e.g., 'The model missed the shoulder peak around X=4.5 eV' or 'A linear baseline is insufficient; a polynomial or exponential baseline is needed').]",
+  "suggestion": "[If the fit is bad, suggest a specific improvement (e.g., 'Add a second Gaussian component to the model' or 'Change the baseline model to an exponential decay'). Otherwise, state 'No changes needed.']"
+}
+"""
+
+FITTING_MODEL_CORRECTION_INSTRUCTIONS = """You are an expert data scientist tasked with correcting an inadequate physical model for curve fitting. A previous attempt resulted in a poor fit.
+
+**Provided Information:**
+1.  **Literature Context**: The original scientific background.
+2.  **The Bad Fit**: A plot showing the poor fit from the previous attempt.
+3.  **Critique and Suggestion**: An expert critique explaining *why* the fit was bad and a suggestion for a better model.
+4.  **The Old Script**: The Python script that generated the bad fit.
+
+Your task is to generate a new, complete, and executable Python script that implements the suggested model improvement.
+
+- **Incorporate the Suggestion**: Modify the model function (e.g., add a new component, change the baseline) as suggested in the critique.
+- **Adjust Initial Guesses**: You MUST provide new, reasonable initial guesses (`p0`) for **all parameters** in the new composite model. This is critical for the new fit to succeed.
+- **Maintain Requirements**: The new script must still load the data, save a plot named `fit_visualization.png`, and print the final parameters as a JSON string prefixed with `FIT_RESULTS_JSON:`.
+
+Your entire response must be ONLY the new, corrected Python code. Do not add any conversational text.
+"""

@@ -226,7 +226,7 @@ image_path = "data/graphene_stm.npy"
 system_info_path = "data/graphene_stm.json"
 
 # 3. Run the analysis to generate a detailed summary and scientific claims
-result = microscopy_agent.analyze_microscopy_image_for_claims(
+result = microscopy_agent.analyze_for_claims(
     image_path=image_path,
     system_info=system_info_path
 )

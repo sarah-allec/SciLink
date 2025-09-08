@@ -13,7 +13,9 @@ from .instruct import (
     LITERATURE_QUERY_GENERATION_INSTRUCTIONS,
     FITTING_SCRIPT_GENERATION_INSTRUCTIONS,
     FITTING_RESULTS_INTERPRETATION_INSTRUCTIONS,
-    FITTING_SCRIPT_CORRECTION_INSTRUCTIONS
+    FITTING_SCRIPT_CORRECTION_INSTRUCTIONS,
+    FITTING_QUALITY_ASSESSMENT_INSTRUCTIONS,
+    FITTING_MODEL_CORRECTION_INSTRUCTIONS
 )
 
 class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
@@ -22,6 +24,7 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
 
     MAX_SCRIPT_ATTEMPTS = 3
+    MAX_MODEL_ATTEMPTS = 2
 
     def __init__(self, google_api_key: str = None, futurehouse_api_key: str = None, 
                  model_name: str = "gemini-2.5-pro-preview-06-05", local_model: str = None, 
@@ -183,6 +186,45 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             "message": f"Failed to generate a working script after {self.MAX_SCRIPT_ATTEMPTS} attempts. Last error: {last_error}",
             "last_script": fitting_script
         }
+    
+    def _evaluate_fit_quality_with_llm(self, original_plot_bytes, fit_plot_bytes, literature_context) -> dict:
+        """Uses an LLM to visually assess the quality of the fit."""
+        self.logger.info("🤖 Assessing the quality of the curve fit...")
+        prompt = [
+            FITTING_QUALITY_ASSESSMENT_INSTRUCTIONS,
+            "## Original Data Plot", {"mime_type": "image/jpeg", "data": original_plot_bytes},
+            "## Fit Visualization", {"mime_type": "image/png", "data": fit_plot_bytes},
+            "## Literature Context\n" + literature_context
+        ]
+        response = self.model.generate_content(prompt, generation_config=self.generation_config)
+        result_json, error = self._parse_llm_response(response)
+        
+        if error or not result_json:
+            self.logger.warning("Failed to get a valid fit quality assessment from LLM. Assuming fit is acceptable.")
+            return {"is_good_fit": True, "critique": "Assessment failed.", "suggestion": "N/A"}
+            
+        return result_json
+    
+    def _request_model_correction(self, old_script, fit_plot_bytes, critique, suggestion, literature_context) -> str:
+        """Asks the LLM to generate a new script with an improved model."""
+        self.logger.info("⚠️ Fit was inadequate. Requesting a new model and script from LLM...")
+        prompt = [
+            FITTING_MODEL_CORRECTION_INSTRUCTIONS,
+            "## Critique of Previous Attempt\n" + critique,
+            "## Suggestion for Improvement\n" + suggestion,
+            "## Plot of the Bad Fit", {"mime_type": "image/png", "data": fit_plot_bytes},
+            "## Original Literature Context\n" + literature_context,
+            "## Old Script That Produced the Bad Fit\n```python\n" + old_script + "\n```"
+        ]
+        
+        response = self.model.generate_content(prompt)
+        script_content = response.text
+        
+        # ... (extract python code from markdown block as in _generate_fitting_script)
+        match = re.search(r"```python\n(.*?)\n```", script_content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        raise ValueError("LLM failed to generate a corrected Python script in a markdown block.")
 
     def analyze_for_claims(self, data_path: str, system_info: dict = None, **kwargs) -> dict:
         self.logger.info(f"Starting advanced curve analysis with fitting for: {data_path}")
@@ -193,69 +235,90 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             original_plot_bytes = self._plot_curve(curve_data, system_info, " (Original Data)")
 
             # Step 1: Search Literature for Fitting Models
-            print(f"\n🤖 -------------------- ANALYSIS AGENT STEP: LITERATURE SEARCH FOR FITTING MODELS -------------------- 🤖")
+            print(f"\n🤖 -------------------- ANALYSIS AGENT STEP: LITERATURE SEARCH -------------------- 🤖")
             lit_query = self._generate_lit_search_query(original_plot_bytes, system_info)
             
-            # Initialize variables
-            literature_context = None
-            saved_lit_files = {}
-
-            # Attempt literature search
             lit_result = self.literature_agent.query_for_models(lit_query)
             
             if lit_result["status"] == "success":
-                self.logger.info("Literature search successful.")
-                print("✅ Literature search successful.")
                 literature_context = lit_result["formatted_answer"]
-                saved_lit_files = self._save_literature_step_results(lit_query, literature_context)
+                print("✅ Literature search successful.")
             else:
-                # This is the new fallback logic
-                warning_message = f"Literature search failed ({lit_result['message']}). Falling back to the LLM's internal knowledge."
+                warning_message = f"Literature search failed ({lit_result['message']}). Falling back to LLM's internal knowledge."
                 self.logger.warning(warning_message)
                 print(f"⚠️  {warning_message}")
-                
-                literature_context = (
-                    "The external literature search failed. Fall back to your internal knowledge. "
-                    "Analyze the plot's shape and the system metadata to propose and implement a suitable physical fitting model."
-                )
+                literature_context = "The external literature search failed. Fall back to your internal knowledge to propose a suitable physical fitting model."
             
-            # Save literature query and report
             saved_lit_files = self._save_literature_step_results(lit_query, literature_context)
 
-            # Step 2 & 3: Generate and Execute Fitting Script with Retry Logic
-            print(f"\n🤖 -------------------- ANALYSIS AGENT STEP: SCRIPT GENERATION & EXECUTION -------------------- 🤖")
-            script_execution_bundle = self._generate_and_execute_fitting_script_with_retry(
-                curve_data, literature_context, data_path
-            )
-
-            if script_execution_bundle["status"] != "success":
-                # Propagate the failure from the retry loop
-                raise RuntimeError(script_execution_bundle["message"])
+            fitting_script = None
+            exec_result = None
+            fit_plot_bytes = None
             
-            exec_result = script_execution_bundle["exec_result"]
+            for model_attempt in range(1, self.MAX_MODEL_ATTEMPTS + 1):
+                print(f"\n🤖 MODELING ATTEMPT {model_attempt}/{self.MAX_MODEL_ATTEMPTS}")
+                
+                # Step 2 & 3: Generate and Execute Script (with code-level retry)
+                if model_attempt > 1:
+                    # On subsequent attempts, the 'literature_context' has been updated with the critique
+                    print(f"\n🤖 --- STEP: GENERATING CORRECTED SCRIPT (from Fit Critique) --- 🤖")
+                else:
+                    print(f"\n🤖 --- STEP: SCRIPT GENERATION & EXECUTION (from Literature) --- 🤖")
+                
+                script_execution_bundle = self._generate_and_execute_fitting_script_with_retry(
+                    curve_data, literature_context, data_path
+                )
+                
+                if script_execution_bundle["status"] != "success":
+                    raise RuntimeError(script_execution_bundle["message"])
 
-            # Step 4: Parse Results
+                fitting_script = script_execution_bundle["final_script"]
+                exec_result = script_execution_bundle["exec_result"]
+
+                # Step 4: Parse Results and Assess Fit Quality
+                fit_plot_path = os.path.join(self.output_dir, "fit_visualization.png")
+                with open(fit_plot_path, "rb") as f:
+                    fit_plot_bytes = f.read()
+
+                assessment = self._evaluate_fit_quality_with_llm(original_plot_bytes, fit_plot_bytes, literature_context)
+                print(f"✅ Fit Assessment Critique: {assessment['critique']}")
+
+                is_good_fit_flag = assessment.get("is_good_fit")
+
+                # This now correctly checks for the boolean True OR the string "true"
+                if is_good_fit_flag is True or str(is_good_fit_flag).lower() == 'true':
+                    print("✅ Fit quality is acceptable. Proceeding to final interpretation.")
+                    break  # Exit the model refinement loop
+                
+                elif model_attempt < self.MAX_MODEL_ATTEMPTS:
+                    print("⚠️ Fit quality is unacceptable. Attempting to correct the model.")
+                    # Update the context for the next attempt with the critique
+                    literature_context += (
+                        f"\n\n--- CRITIQUE OF ATTEMPT {model_attempt} ---\n"
+                        f"Critique: {assessment['critique']}\n"
+                        f"Suggestion for a better model: {assessment['suggestion']}"
+                    )
+                else:
+                    self.logger.warning("Maximum model attempts reached. Using the last fit despite its imperfections.")
+                    print("⚠️ Maximum model attempts reached. Using the last fit despite its imperfections.")
+                    break
+                
+            # Step 5: Final Interpretation (using results from the last successful fit)
             fit_params = {}
-            # The key for stdout is 'stdout', not 'output'
             for line in exec_result.get("stdout", "").splitlines():
                 if line.startswith("FIT_RESULTS_JSON:"):
                     fit_params = json.loads(line.replace("FIT_RESULTS_JSON:", ""))
                     break
             if not fit_params:
-                raise ValueError("Could not parse fitting parameters from script output.")
+                raise ValueError("Could not parse fitting parameters from final script output.")
             
-            fit_plot_path = os.path.join(self.output_dir, "fit_visualization.png")
-            with open(fit_plot_path, "rb") as f:
-                fit_plot_bytes = f.read()
-
-            # Step 5: Final Interpretation and Claim Generation
-            print(f"\n🤖 -------------------- ANALYSIS AGENT STEP: INTERPRETING FIT RESULTS & GENERATING CLAIMS -------------------- 🤖")
+            print(f"\n🤖 -------------------- ANALYSIS AGENT STEP: FINAL INTERPRETATION -------------------- 🤖")
             final_prompt = [
                 FITTING_RESULTS_INTERPRETATION_INSTRUCTIONS,
                 "\n## Original Data Plot", {"mime_type": "image/jpeg", "data": original_plot_bytes},
-                "\n## Fit Visualization", {"mime_type": "image/png", "data": fit_plot_bytes},
-                "\n## Fitted Parameters\n" + json.dumps(fit_params, indent=2),
-                "\n## Literature Context\n" + literature_context,
+                "\n## Final Fit Visualization", {"mime_type": "image/png", "data": fit_plot_bytes},
+                "\n## Final Fitted Parameters\n" + json.dumps(fit_params, indent=2),
+                "\n## Final Literature Context\n" + literature_context,
                 self._build_system_info_prompt_section(system_info)
             ]
             response = self.model.generate_content(final_prompt, generation_config=self.generation_config)
@@ -264,30 +327,22 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             if error_dict:
                 raise RuntimeError(f"Failed to interpret fitting results: {error_dict}")
 
-            # Store the generated plots for the feedback loop
+            # Store the final plots for the feedback loop
             analysis_images = [
                 {'label': 'Original Data Plot', 'data': original_plot_bytes},
-                {'label': 'Fit Visualization', 'data': fit_plot_bytes}
+                {'label': 'Final Fit Visualization', 'data': fit_plot_bytes}
             ]
             self._store_analysis_images(analysis_images)
-
-            # Prepare the initial result for the feedback function
+            
             initial_result = {
                 "detailed_analysis": result_json.get("detailed_analysis"),
                 "scientific_claims": self._validate_scientific_claims(result_json.get("scientific_claims", []))
             }
-
-            # Call the feedback function, which will display the results and ask for input
-            final_result = self._apply_feedback_if_enabled(
-                initial_result,
-                system_info=system_info
-            )
-
-            # 4. Add the unique outputs from this agent back into the final result
+            final_result = self._apply_feedback_if_enabled(initial_result, system_info=system_info)
+            
             final_result["status"] = "success"
             final_result["fitting_parameters"] = fit_params
             final_result["literature_files"] = saved_lit_files
-
             return final_result
 
         except Exception as e:
