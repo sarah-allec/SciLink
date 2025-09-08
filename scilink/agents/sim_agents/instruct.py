@@ -368,46 +368,17 @@ Generate the PACKMOL script:"""
 LAMMPS_INPUT_GENERATION_INSTRUCTIONS = """You are an expert computational materials scientist specializing in LAMMPS (Large-scale Atomic/Molecular Massively Parallel Simulator) calculations.
 
 Your task is to generate appropriate input ('in.lmp') and data ('lmp.data') files based on:
-1. The provided PDB structure file content
-2. The original user request describing the scientific objective
-
-## Calculation Type Recognition:
-Based on the user request, determine the appropriate calculation type(s):
-- **Energy minimization / Structure relaxation**: Optimize the positions of atoms to minimize the total energy of the system.
-- **Molecular dynamics simulations**: Time-dependent simulations to study the behavior of systems under various conditions, including canonical (NVT), isothermal-isobaric (NPT), microcanonical (NVE), or other ensembles.
-- **Thermal and mechanical properties**: Calculation of thermal conductivity, specific heat, bulk modulus, thermal expansion coefficient, and stress-strain relationships.
-- **Defect modeling**: Study the formation and behavior of defects such as vacancies, dislocations, grain boundaries, and voids in materials.
-- **Surface and interface calculations**: Analyze surface properties (e.g., surface energy) or study interfaces such as grain boundaries or heterostructures.
-- **Diffusion and transport properties**: Compute diffusion coefficients, ionic conductivity, and transport properties using mean squared displacement (MSD) or Green-Kubo relations.
-- **Phase transitions**: Simulate and analyze phase changes such as melting, crystallization, and structural transformations.
-- **Reaction dynamics**: Model chemical reactions using reactive force fields (e.g., ReaxFF, AIREBO) to investigate bond breaking/forming phenomena.
-- **Shear and deformation**: Examine how materials behave under shear strain, tensile strain, or compression, often used to calculate mechanical properties.
-- **Adsorption and surface interactions**: Study adsorption of molecules on surfaces or interfaces and analyze molecular interactions.
-- **Heat flux and thermal transport**: Perform simulations to calculate heat flux and study thermal conductivity using equilibrium or nonequilibrium methods.
-- **Vibrational properties**: Study phonon modes and vibrational properties using normal mode analysis or by calculating the vibrational density of states.
-- **Colloidal and granular systems**: Model coarse-grained or mesoscopic systems, including colloids, polymers, or granular flows.
-- **Liquid properties**: Compute viscosity, surface tension, pair distribution functions, and other liquid-state properties.
-
-## Parameter Selection Logic:
-1. **Identify the main scientific objective** from the user request
-2. **Analyze the structure type** (bulk, surface, 2D, defective, liquid, interface, etc.) from the PDB file
-2. **Choose appropriate force field** (conventional or foundation ML-based)
-4. **Choose appropriate calculation workflow** (relax → dynamics → analysis)
-5. **Set parameters based on required accuracy** vs computational efficiency 
-
-## Structure Analysis:
-From the PDB content provided below, analyze:
-- System size and composition
-- Phase (solid, liquid, interface)
-- Dimensionality (bulk, surface/slab, 2D, etc.)
-- Presence of vacuum gaps
-- Chemical elements (check for magnetic species)
-- Cell parameters and symmetry
+1. The provided system description (from a JSON file)
+2. The atomic coordinates of components (from XYZ files)
+3. The original user request describing the scientific objective
 
 ## INPUT DATA:
 
-**PDB Structure File:**
-{pdb_content}
+**System Description:**
+{sample_matrix}
+
+**Atomic Coordinates (XYZ Files):**
+{xyz_files}
 
 **Scientific Objective:**
 {original_request}
@@ -420,5 +391,5 @@ You MUST provide a JSON response with exactly these keys:
   "summary": "brief calculation description"
 }}
 
-Analyze the provided PDB structure and user request, then generate appropriate LAMMPS input files following the guidelines above."""
+Analyze the provided system description, atomic coordinates, and user request. Then generate the appropriate LAMMPS input and data files following the guidelines above."""
 
