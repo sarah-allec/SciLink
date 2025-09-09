@@ -327,11 +327,11 @@ YOUR TASK: Generate a complete PACKMOL input script
 PACKMOL REFERENCE:
 1. Start with global parameters:
    tolerance 2.0
-   filetype xyz
+   filetype pdb
    output {{output_filename}}
 
 2. For each molecule type:
-   structure components/molecule_name.xyz
+   structure components/molecule_name.pdb
      number COUNT
      inside cube 0. 0. 0. 40.
    end structure
@@ -357,7 +357,7 @@ OUTPUT FORMAT (JSON only):
   "components": {{
     "molecule_name": integer_count
   }},
-  "output_filename": "descriptive_filename.xyz",
+  "output_filename": "descriptive_filename.pdb",
   "packmol_script": "complete script with proper syntax"
 }}
 

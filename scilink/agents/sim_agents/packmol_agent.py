@@ -148,7 +148,7 @@ class PackmolGeneratorAgent:
         """Try building with ASE"""
         try:
             mol = molecule(formula)
-            filepath = os.path.join(self.working_dir, "components", f"{safe_name}.xyz")
+            filepath = os.path.join(self.working_dir, "components", f"{safe_name}.pdb")
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             write(filepath, mol)
             self.logger.info(f"✓ Built {formula} via ASE")
@@ -167,7 +167,7 @@ class PackmolGeneratorAgent:
             if atoms is None:
                 return None
                 
-            filepath = os.path.join(self.working_dir, "components", f"{safe_name}.xyz")
+            filepath = os.path.join(self.working_dir, "components", f"{safe_name}.pdb")
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             write(filepath, atoms)
             self.logger.info(f"✓ Built {search_term} via PubChem")
@@ -231,7 +231,7 @@ class PackmolGeneratorAgent:
             from ase import Atoms
             atoms = Atoms(symbols=symbols, positions=positions)
             
-            filepath = os.path.join(self.working_dir, "components", f"{safe_name}.xyz")
+            filepath = os.path.join(self.working_dir, "components", f"{safe_name}.pdb")
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             write(filepath, atoms)
             
@@ -264,7 +264,7 @@ class PackmolGeneratorAgent:
     def _create_comprehensive_packmol_prompt(self, description: str, built_molecules: Dict[str, str]) -> str:
         """Create detailed PACKMOL prompt with educational content"""
         
-        molecule_list = "\n".join([f"- {name}: components/{name}.xyz" for name in built_molecules.keys()])
+        molecule_list = "\n".join([f"- {name}: components/{name}.pdb" for name in built_molecules.keys()])
         
         return PACKMOL_SCRIPT_GENERATION_TEMPLATE.format(
             description=description,
