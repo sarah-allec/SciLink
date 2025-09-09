@@ -7,7 +7,7 @@ from .instruct import LAMMPS_INPUT_GENERATION_INSTRUCTIONS
 
 
 class LammpsInputAgent:
-    """Agent for generating LAMMPS data and input files."""
+    """Agent for generating LAMMPS and pdb2dat input files."""
     
     def __init__(self, api_key: str = None, model_name: str = "gemini-2.5-pro-preview-05-06"):
         # Check for the API key argument or fallback to environment variable
@@ -22,8 +22,8 @@ class LammpsInputAgent:
         self.generation_config = GenerationConfig(response_mime_type="application/json")
         self.logger = logging.getLogger(__name__)
 
-    def generate_lammps_inputs(self, json_path: str, xyz_file_paths: list, original_request: str) -> dict:
-        """Generate LAMMPS data and input files."""
+    def generate_lammps_inputs(self, json_path: str, pdb_file_paths: list, system_pdb: str,original_request: str) -> dict:
+        """Generate LAMMPS and pdb2dat input files."""
         
         # Read JSON file
         try:
@@ -38,45 +38,36 @@ class LammpsInputAgent:
         except KeyError as e:
             return {"status": "error", "message": f"Missing key in JSON file: {e}"}
 
-        # Read XYZ files
-        xyz_contents = {}
+        # Read PDB files
+        pdb_contents = {}
         try:
-            for xyz_file in xyz_file_paths:
-                with open(xyz_file, 'r') as f:
-                    xyz_contents[xyz_file] = f.read()
+            for pdb_file in pdb_file_paths:
+                with open(pdb_file, 'r') as f:
+                    pdb_contents[pdb_file] = f.read()
         except Exception as e:
             return {"status": "error", "message": f"Failed to read XYZ file: {e}"}
 
         # Build prompt
-        formatted_xyz_files = "\n".join([f"--- {file_name} ---\n{file_content}"
-                                         for file_name, file_content in xyz_contents.items()])
+        formatted_pdb_files = "\n".join([f"--- {file_name} ---\n{file_content}"
+                                         for file_name, file_content in pdb_contents.items()])
         prompt = LAMMPS_INPUT_GENERATION_INSTRUCTIONS.format(
             sample_matrix=sample_matrix,
-            xyz_files=formatted_xyz_files,
-            original_request=original_request
+            pdb_files=formatted_pdb_files,
+            original_request=original_request,
+            packmol_output=system_pdb
         )
 
         # Get LLM response
-        #try:
-        #    response = self.model.generate_content(prompt, generation_config=self.generation_config)
-        #    result = json.loads(response.text)
-        #    result["status"] = "success"
-        #    return result
-        #except Exception as e:
-        #    return {"status": "error", "message": f"Generation failed: {e}"}
-
         try:
             response = self.model.generate_content(prompt, generation_config=self.generation_config)
-            print("DEBUG: Raw response text from model:")
-            print(response.text)  # Print raw response for inspection
             result = json.loads(response.text)
             result["status"] = "success"
             return result
         except Exception as e:
-            print(f"DEBUG: Exception during response parsing: {e}")
             return {"status": "error", "message": f"Generation failed: {e}"}
+
     def save_inputs(self, result: dict, output_dir: str = ".") -> dict:
-        """Save input and data files."""
+        """Save input files."""
         if result.get("status") != "success":
             return {"error": "Generation was not successful"}
         
@@ -89,17 +80,17 @@ class LammpsInputAgent:
                 f.write(result["input"])
             saved["input"] = os.path.join(output_dir, "in.lmp")
             
-            # Save lmp.data
-            with open(os.path.join(output_dir, "lmp.data"), 'w') as f:
-                f.write(result["data"])
-            saved["data"] = os.path.join(output_dir, "lmp.data")
+            # Save settings.py
+            with open(os.path.join(output_dir, "settings.py"), 'w') as f:
+                f.write(result["pdb2dat"])
+            saved["pdb2dat"] = os.path.join(output_dir, "settings.py")
             
             return saved
         except Exception as e:
             return {"error": f"Save failed: {e}"}
 
     def apply_improvements(self, original_input: str, validation_result: dict,
-                           json_path: str, xyz_file_paths: list, original_request: str,
+                           json_path: str, pdb_file_paths: list, original_request: str,
                            output_dir: str = ".") -> dict:
         """Regenerate input file using LLM with improvement instructions."""
         
@@ -121,12 +112,12 @@ class LammpsInputAgent:
         except Exception as e:
             return {"status": "error", "message": f"Failed to read JSON file: {e}"}
 
-        # Read XYZ files
-        xyz_contents = {}
+        # Read PDB files
+        pdb_contents = {}
         try:
-            for xyz_file in xyz_file_paths:
-                with open(xyz_file, 'r') as f:
-                    xyz_contents[xyz_file] = f.read()
+            for pdb_file in pdb_file_paths:
+                with open(pdb_file, 'r') as f:
+                    pdb_contents[pdb_file] = f.read()
         except Exception as e:
             return {"status": "error", "message": f"Failed to read XYZ file: {e}"}
 
@@ -140,16 +131,16 @@ class LammpsInputAgent:
         improvement_instructions += "Generate an improved in.lmp file incorporating these changes."
 
         # Build the prompt with original input, improvement instructions, and XYZ content
-        formatted_xyz_files = "\n".join([f"--- {file_name} ---\n{file_content}"
-                                         for file_name, file_content in xyz_contents.items()])
+        formatted_pdb_files = "\n".join([f"--- {file_name} ---\n{file_content}"
+                                         for file_name, file_content in pdb_contents.items()])
         prompt = f"""{LAMMPS_INPUT_GENERATION_INSTRUCTIONS}
 ## ORIGINAL IN.LMP TO IMPROVE:
 {original_input}
 ## {improvement_instructions}
 ## SYSTEM DESCRIPTION:
 {sample_matrix}
-## XYZ FILE CONTENTS:
-{formatted_xyz_files}
+## PDB FILE CONTENTS:
+{formatted_pdb_files}
 ## ORIGINAL SYSTEM DESCRIPTION:
 {original_request}
 Please generate an improved in.lmp file based on the improvement instructions above."""

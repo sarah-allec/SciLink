@@ -367,9 +367,9 @@ Generate the PACKMOL script:"""
 
 LAMMPS_INPUT_GENERATION_INSTRUCTIONS = """You are an expert computational materials scientist specializing in LAMMPS (Large-scale Atomic/Molecular Massively Parallel Simulator) calculations.
 
-Your task is to generate appropriate input ('in.lmp') and data ('lmp.data') files based on:
+Your task is to generate appropriate input ('in.lmp') and pdb2dat input ('settings.py') for generating a LAMMPS data file based on:
 1. The provided system description (from a JSON file)
-2. The atomic coordinates of components (from XYZ files)
+2. The atomic coordinates of components (from PDB files)
 3. The original user request describing the scientific objective
 
 ## INPUT DATA:
@@ -377,17 +377,24 @@ Your task is to generate appropriate input ('in.lmp') and data ('lmp.data') file
 **System Description:**
 {sample_matrix}
 
-**Atomic Coordinates (XYZ Files):**
-{xyz_files}
+**Atomic Coordinates (PDB Files):**
+{pdb_files}
 
 **Scientific Objective:**
 {original_request}
+
+## Format of settings.py
+
+force_field = "appropriately selected force field, e.g., Gaff2"
+charges = "default"
+output_dir = "output"
+pdb_file_path = {packmol_output}
 
 ## Output Requirements:
 You MUST provide a JSON response with exactly these keys:
 {{
   "input": "complete in.lmp file content",
-  "data": "complete lmp.data file content", 
+  "pdb2dat": "complete settings.py file content", 
   "summary": "brief calculation description"
 }}
 
