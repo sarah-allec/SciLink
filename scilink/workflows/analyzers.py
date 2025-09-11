@@ -108,7 +108,7 @@ class SpectroscopyAnalyzer(BaseExperimentAnalyzer):
         }
         
         self.analysis_agent = HyperspectralAnalysisAgent(
-            api_key=google_api_key,
+            google_api_key=google_api_key,
             model_name=analysis_model,
             local_model=local_model,
             spectral_unmixing_settings=spectral_settings,
