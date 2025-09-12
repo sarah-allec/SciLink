@@ -24,38 +24,114 @@ except ImportError:
 
 class MoltemplateInputAgent:
     def __init__(self, api_key=None, model_name="gemini-2.5-pro-preview-05-06", working_dir="moltemplate_run", force_field_dir=None):
+        # Model Configuration
         if not api_key:
             api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("An API key is required. Pass it as an argument or set the 'GOOGLE_API_KEY' environment variable.")
-
-        # Configure the model
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model_name)
         self.generation_config = GenerationConfig(response_mime_type="application/json")
 
-        # Initialize the working directory
+        # Directory Setup
         self.working_dir = working_dir
         os.makedirs(self.working_dir, exist_ok=True)
-
-        self.force_field_dir = force_field_dir  # Optional force field directory path
+        self.force_field_dir = force_field_dir  # Force field directory
         self.force_field_files = self._load_force_field_files(force_field_dir) if force_field_dir else []
-
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Available force field files: {self.force_field_files}")
 
     def _load_force_field_files(self, force_field_dir):
-        """Load available `.lt` files in the specified force field directory."""
+        """Load force field files from the specified directory."""
         if not os.path.exists(force_field_dir):
             raise ValueError(f"Force field directory '{force_field_dir}' does not exist.")
-        return [file for file in os.listdir(force_field_dir) if file.endswith(".lt")]
+        return [
+            os.path.join(force_field_dir, f) for f in os.listdir(force_field_dir)
+            if f.endswith(".lt")
+        ]
+
+    def _validate_force_field_compatibility(self, selected_force_field, molecule_data):
+        """
+        Ensure compatibility between `system.lt` atom types and the selected force field.
+
+        Args:
+            selected_force_field (str): Path to the selected force field file.
+            molecule_data (list): Molecule information extracted from the system description.
+
+        Returns:
+            dict: Mapping of valid atom types, masses, pair coefficients, etc.
+        """
+        if not selected_force_field or not os.path.exists(selected_force_field):
+            raise ValueError(f"Selected force field file '{selected_force_field}' does not exist.")
+
+        # Load the contents of the selected force field file
+        atom_types = {}
+        masses = {}
+        pair_coeffs = {}
+        with open(selected_force_field, 'r') as f:
+            force_field_content = f.read()
+            # Extract atom types and masses
+            mass_pattern = r"@atom:(\w+)\s+([\d\.]+)"
+            for match in re.findall(mass_pattern, force_field_content):
+                atom_types[match[0]] = f"@atom:{match[0]}"
+                masses[match[0]] = float(match[1])
+
+            # Extract pair coefficients (if available)
+            pair_coeff_pattern = r"pair_coeff\s+@atom:(\w+)\s+@atom:(\w+)\s+([\d\.]+)\s+([\d\.]+)"
+            for match in re.findall(pair_coeff_pattern, force_field_content):
+                atom1 = match[0]
+                atom2 = match[1]
+                epsilon = float(match[2])
+                sigma = float(match[3])
+                pair_coeffs[(atom1, atom2)] = (epsilon, sigma)
+
+        # Validate molecule atom types against the force field atom types
+        for mol in molecule_data:
+            identifier = mol.get("identifier")
+            atom_type = mol.get("atom_type", None)
+            if atom_type not in atom_types:
+                self.logger.warning(f"Atom type '{atom_type}' for molecule '{identifier}' not found in force field. "
+                                    f"Attempting to auto-map atom type.")
+                # Attempt auto-mapping (example logic)
+                mapped_atom_type = self._auto_map_atom_type(atom_type, atom_types)
+                if mapped_atom_type:
+                    mol["atom_type"] = mapped_atom_type
+                    self.logger.info(f"Auto-mapped atom type '{atom_type}' to '{mapped_atom_type}'.")
+                else:
+                    raise ValueError(f"Atom type '{atom_type}' for molecule '{identifier}' could not be validated against "
+                                     f"the force field '{selected_force_field}'.")
+
+        return {
+            "atom_types": atom_types,
+            "masses": masses,
+            "pair_coeffs": pair_coeffs
+        }
+
+    def _auto_map_atom_type(self, atom_type, atom_types):
+        """
+        Attempt to auto-map an unsupported atom type to a valid type in the force field.
+
+        Args:
+            atom_type (str): Unsupported atom type.
+            atom_types (dict): Valid atom types defined by the force field.
+
+        Returns:
+            str: A mapped atom type if found, else None.
+        """
+        # Example: Check for partial matches between atom type and force field atom types
+        for valid_atom in atom_types:
+            if atom_type.lower() in valid_atom.lower():
+                return atom_types[valid_atom]
+        return None
 
     def generate_moltemplate_inputs(self, json_path: str, original_request: str) -> dict:
         """
         Generate the Moltemplate input file (`system.lt`) based on the system description.
+    
         Args:
             json_path (str): Path to the JSON file describing the molecular system.
             original_request (str): User-provided description of the simulation goal.
+    
         Returns:
             dict: Response with the generated Moltemplate file or an error message.
         """
@@ -65,14 +141,14 @@ class MoltemplateInputAgent:
                 system_description = json.load(f)
         except Exception as e:
             return {"status": "error", "message": f"Failed to read JSON file: {e}"}
-
-        # Step 2: Extract "Sample matrix" field
+    
+        # Extract "Sample matrix" field
         try:
             sample_matrix = system_description["Sample matrix"]
         except KeyError:
             return {"status": "error", "message": "Missing 'Sample matrix' key in JSON file."}
-
-        # Step 3: Extract molecular components using the LLM
+    
+        # Extract molecular components using the LLM
         extraction_prompt = MOLECULE_EXTRACTION_TEMPLATE.format(description=sample_matrix)
         try:
             response = self.model.generate_content(extraction_prompt, generation_config=self.generation_config)
@@ -81,11 +157,11 @@ class MoltemplateInputAgent:
                 return {"status": "error", "message": "Failed to extract molecular components from 'Sample matrix'."}
         except Exception as e:
             return {"status": "error", "message": f"Molecule extraction failed: {e}"}
-
-        # Step 4: Select the most appropriate force field
+    
+        # Select the most appropriate force field
         if not self.force_field_files:
             return {"status": "error", "message": "No force field files available for selection."}
-
+    
         selection_prompt = f"""
         Based on the following molecular system description:
         "{sample_matrix}"
@@ -95,21 +171,29 @@ class MoltemplateInputAgent:
         """
         try:
             selection_response = self.model.generate_content(selection_prompt, generation_config=self.generation_config)
-            force_field_selection = selection_response.text.strip()
-            if not force_field_selection:
-                return {"status": "error", "message": "Failed to select an appropriate force field."}
+            # Parse the response as JSON and extract the file path
+            selection_data = json.loads(selection_response.text)
+            force_field_selection = selection_data.get("selected_file")
+            if not force_field_selection or not os.path.exists(force_field_selection):
+                raise ValueError(f"Selected force field file '{selection_data}' does not exist.")
             self.logger.info(f"Selected force field: {force_field_selection}")
         except Exception as e:
             return {"status": "error", "message": f"Force field selection failed: {e}"}
-
-        # Step 5: Generate Moltemplate input file
+    
+        # Validate compatibility between system.lt and the selected force field
+        try:
+            force_field_compatibility = self._validate_force_field_compatibility(force_field_selection, molecule_data)
+        except Exception as e:
+            return {"status": "error", "message": f"Force field compatibility validation failed: {e}"}
+    
+        # Generate Moltemplate input file
         try:
             moltemplate_prompt = MOLTEMPLATE_INPUT_GENERATION_INSTRUCTIONS.format(
                 system_description=sample_matrix,
                 molecule_list=", ".join([f"{mol['identifier']}" for mol in molecule_data]),
                 original_request=original_request,
                 force_field=force_field_selection,
-                force_field_files=", ".join(self.force_field_files)  # Include available force field files
+                force_field_files=", ".join(self.force_field_files)
             )
             response = self.model.generate_content(moltemplate_prompt, generation_config=self.generation_config)
             result = json.loads(response.text)
@@ -118,49 +202,3 @@ class MoltemplateInputAgent:
             return result
         except Exception as e:
             return {"status": "error", "message": f"Moltemplate input generation failed: {e}"}
-
-    def save_inputs(self, result: dict, output_dir: str = ".") -> dict:
-        """
-        Save the generated Moltemplate input files (`system.lt`) to the specified directory.
-        Args:
-            result (dict): Response from `generate_moltemplate_inputs`.
-            output_dir (str): Directory where files will be saved. Default is current directory.
-        Returns:
-            dict: A dictionary with saved file paths or an error message.
-        """
-        if result.get("status") != "success":
-            return {"status": "error", "message": "Moltemplate input generation was not successful."}
-
-        os.makedirs(output_dir, exist_ok=True)
-        saved_files = {}
-        errors = []
-
-        try:
-            # Save the `system.lt` file
-            if "system_lt" in result:
-                lt_filepath = os.path.join(output_dir, "system.lt")
-                with open(lt_filepath, 'w') as f:
-                    f.write(result["system_lt"])
-                saved_files["system_lt"] = lt_filepath
-
-            # Save additional outputs if present
-            for key, content in result.items():
-                if key in ["system_lt", "status"] or not isinstance(content, str):
-                    continue
-                try:
-                    filepath = os.path.join(output_dir, f"{key}.txt")
-                    with open(filepath, 'w') as f:
-                        f.write(content)
-                    saved_files[key] = filepath
-                except Exception as e:
-                    errors.append({key: str(e)})
-                    continue
-
-            return {"status": "success", "saved_files": saved_files, "errors": errors if errors else None}
-        except Exception as e:
-            import traceback
-            return {
-                "status": "error",
-                "message": f"Failed to save files due to a critical error: {e}",
-                "traceback": traceback.format_exc()
-            }
