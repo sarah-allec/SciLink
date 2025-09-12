@@ -365,38 +365,71 @@ IMPORTANT: Use ONLY the molecules listed above. Do not reference any molecules t
 
 Generate the PACKMOL script:"""
 
-LAMMPS_INPUT_GENERATION_INSTRUCTIONS = """You are an expert computational materials scientist specializing in LAMMPS (Large-scale Atomic/Molecular Massively Parallel Simulator) calculations.
+MOLTEMPLATE_INPUT_GENERATION_INSTRUCTIONS = """
+You are an expert computational materials scientist specializing in molecular simulations and Moltemplate file generation for LAMMPS input and data files.
+Your task is to generate a complete Moltemplate input file `system.lt` based on:
+1. The provided system description (JSON file)
+2. The atomic coordinates and molecular information (PDB files generated for molecular components)
+3. The original user request (scientific objective)
+4. The selected force field from the available options
 
-Your task is to generate appropriate input ('in.lmp') and pdb2dat input ('settings.py') for generating a LAMMPS data file based on:
-1. The provided system description (from a JSON file)
-2. The atomic coordinates of components (from PDB files)
-3. The original user request describing the scientific objective
+## GUIDELINES:
+1. **System Description Analysis**:
+   - Analyze the JSON system description to determine molecular components, system dimensions, and atomic interactions.
+   - Identify any special requirements for combining molecules (e.g., concentrations, stacking order, bonding rules, interaction definitions, etc.).
+   - Consider constraints (e.g., fixed layers, geometric boundaries).
+
+2. **Force Field Selection**:
+   - Based on the molecular components and user request, use the selected force field or `.lt` file that best matches the system description. Ensure compatibility between molecule types and the force field.
+   - If the selected force field includes machine-learned potentials, ensure that instructions for using those potentials are included (e.g., importing additional parameter files or specifying training models).
+
+3. **Molecular Components**:
+   - Use all successfully built molecular components (PDB files provided) for the Moltemplate system.
+   - For each molecule type:
+     - Name the molecule explicitly in the Moltemplate file (e.g., `molecule MoleculeName {{ ... }}`).
+     - Place molecules according to the system description (e.g., inside a box, cube, or specified spatial arrangements).
+   - Ensure all molecule definitions are consistent with the selected force field (e.g., atom types, pair coefficients).
+
+4. **System Assembly**:
+   - Generate Moltemplate code that places molecules in a simulation box with proper positioning and initial configuration.
+   - Ensure that bonded atoms and molecular hierarchies are clearly defined (e.g., rigid vs flexible structures, inclusion of nonbonded interactions).
+   - If applicable, ensure that boundary conditions and box geometry align with the user's request and the force-field requirements.
+
+5. **Force Field Integration**:
+   - The generated file MUST include proper imports for the selected force field (`import force_field.lt` or similar).
+   - For machine-learned potentials:
+     - Include instructions specific to the ML force field (e.g., reference additional files, specify training data used).
+     - Ensure compatibility with LAMMPS-style commands if non-standard potentials are applied.
+
+6. **File-Saving Requirements**:
+   - The generated Moltemplate file MUST contain:
+     - Molecule definitions (`define MoleculeName {{ ... }}`)
+     - Spatial placement (`mol MoleculeName translate x y z`)
+     - LAMMPS-compatible topology and assignments for masses, pair_coeffs, bond_coeffs, and angle_coeffs.
+   - CRITICALLY: After successful generation, print _exactly_ this confirmation line: `SYSTEM_LT_SAVED:system.lt`. No other output should precede or follow this specific line unless it's part of error handling.
 
 ## INPUT DATA:
+**System Description (User Request):**
+{system_description}  # The user-provided description of the system (e.g., "0.5 M NaCl, in H2O")
 
-**System Description:**
-{sample_matrix}
+**Available Force Fields (.lt files):**
+{force_field_files}  # List of appropriate force field files from the specified directory
 
-**Atomic Coordinates (PDB Files):**
-{pdb_files}
+**Molecular Components (PDB Files):**
+{molecule_list}  # Condensed list of molecules successfully built or downloaded
 
-**Scientific Objective:**
-{original_request}
-
-## Format of settings.py
-
-force_field = "appropriately selected force field, e.g., Gaff2"
-charges = "default"
-output_dir = "output"
-pdb_file_path = {packmol_output}
+**Original Scientific Objective:**
+{original_request}  # Brief outline of the user's ultimate simulation goal (e.g., density study, equilibration)
 
 ## Output Requirements:
-You MUST provide a JSON response with exactly these keys:
+Your response MUST be formatted as valid JSON with the following keys:
 {{
-  "input": "complete in.lmp file content",
-  "pdb2dat": "complete settings.py file content", 
-  "summary": "brief calculation description"
+  "thought": "Explain the rationale behind your molecular organization and choice of force field. Justify the placement of molecules and interaction logic based on the user's request and system description.",
+  "selected_force_field": "Name of the selected .lt file or machine-learned potential used in the simulation.",
+  "system_lt": "The complete Moltemplate input file content that integrates the selected force field.",
+  "summary": "Brief summary describing the assembled system (e.g., molecular counts, box dimensions, force field used, special instructions)."
 }}
 
-Analyze the provided system description, atomic coordinates, and user request. Then generate the appropriate LAMMPS input and data files following the guidelines above."""
-
+Ensure consistency between the provided system description, molecules, force field, and scientific objective. Final output must be compatible with Moltemplate hierarchy syntax and ready to generate LAMMPS input/data files.
+Generate the Moltemplate input file:
+"""
