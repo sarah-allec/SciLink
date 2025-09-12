@@ -371,42 +371,76 @@ Your task is to generate a complete Moltemplate input file `system.lt` based on:
 1. The provided system description (JSON file)
 2. The atomic coordinates and molecular information (PDB files generated for molecular components)
 3. The original user request (scientific objective)
-4. The selected force field from the available options
+4. The selected force field from the available options.
 
 ## GUIDELINES:
+### General Rules:
+- Ensure all syntax strictly conforms to Moltemplate requirements.
+- Do NOT include unsupported constructs such as variable assignments, scripting logic, or arithmetic (e.g., `Nwaters = 1433` or `$Nwaters`) directly in `.lt` files; instead, specify explicit numerical values for molecule counts and box dimensions.
+- Ensure atom types, bond types, and angle types are consistent with the selected force field.
+
 1. **System Description Analysis**:
-   - Analyze the JSON system description to determine molecular components, system dimensions, and atomic interactions.
-   - Identify any special requirements for combining molecules (e.g., concentrations, stacking order, bonding rules, interaction definitions, etc.).
-   - Consider constraints (e.g., fixed layers, geometric boundaries).
+    - Analyze the provided system description and user request to determine:
+        - Molecular components and their counts (e.g., "1433 water molecules").
+        - Simulation box dimensions and boundary conditions (e.g., "35.0 x 35.0 x 35.0").
+        - Atomic constraints or fixed components (e.g., lower slab layers, stacking orders).
+    - Include these directly in the `.lt` file as explicit numerical values.
 
-2. **Force Field Selection**:
-   - Based on the molecular components and user request, use the selected force field or `.lt` file that best matches the system description. Ensure compatibility between molecule types and the force field.
-   - If the selected force field includes machine-learned potentials, ensure that instructions for using those potentials are included (e.g., importing additional parameter files or specifying training models).
+2. **Force Field Integration**:
+    - Write the selected force field into the `import` statement at the top of the file.
+    - Ensure proper definitions exist in the imported `.lt` file for:
+        - Atom types (`@atom:name`).
+        - Bond types (`@bond:name`).
+        - Angle types (`@angle:name`), if applicable.
 
-3. **Molecular Components**:
-   - Use all successfully built molecular components (PDB files provided) for the Moltemplate system.
-   - For each molecule type:
-     - Name the molecule explicitly in the Moltemplate file (e.g., `molecule MoleculeName {{ ... }}`).
-     - Place molecules according to the system description (e.g., inside a box, cube, or specified spatial arrangements).
-   - Ensure all molecule definitions are consistent with the selected force field (e.g., atom types, pair coefficients).
+3. **Molecular Definitions**:
+    - Use Moltemplate syntax to explicitly define atoms, bonds, and angles for each molecule.
+    - Ensure proper syntax for molecule definitions:
+        - **Atoms**:
+          ```
+          write("Data Atoms") {{
+              $atom:id @atom:type charge x y z
+          }}
+          ```
+        - **Bonds**:
+          ```
+          write("Data Bonds") {{
+              $bond:id @bond:type $atom:id1 $atom:id2
+          }}
+          ```
+        - **Angles**:
+          ```
+          write("Data Angles") {{
+              $angle:id @angle:type $atom:id1 $atom:id2 $atom:id3
+          }}
+          ```
 
-4. **System Assembly**:
-   - Generate Moltemplate code that places molecules in a simulation box with proper positioning and initial configuration.
-   - Ensure that bonded atoms and molecular hierarchies are clearly defined (e.g., rigid vs flexible structures, inclusion of nonbonded interactions).
-   - If applicable, ensure that boundary conditions and box geometry align with the user's request and the force-field requirements.
+4. **Simulation Box and Boundary Conditions**:
+    - Add box dimensions explicitly using `write_once("Data Boundary")`:
+      ```
+      write_once("Data Boundary") {{
+          x_min x_max xlo xhi
+          y_min y_max ylo yhi
+          z_min z_max zlo zhi
+      }}
+      ```
+    - Do NOT reference undefined variables (`x_min`, `x_max`); instead, directly write numerical values (e.g., `0.0 35.0`).
 
-5. **Force Field Integration**:
-   - The generated file MUST include proper imports for the selected force field (`import force_field.lt` or similar).
-   - For machine-learned potentials:
-     - Include instructions specific to the ML force field (e.g., reference additional files, specify training data used).
-     - Ensure compatibility with LAMMPS-style commands if non-standard potentials are applied.
+5. **Create Molecules**:
+    - Instantiate molecules using Moltemplate's `new` keyword. Ensure that molecule counts are explicitly written (e.g., `new H2O [1433]`):
+      - Correct: `new MoleculeName [COUNT]`
+      - Incorrect: `new MoleculeName [$VariableName]`
 
 6. **File-Saving Requirements**:
-   - The generated Moltemplate file MUST contain:
-     - Molecule definitions (`define MoleculeName {{ ... }}`)
-     - Spatial placement (`mol MoleculeName translate x y z`)
-     - LAMMPS-compatible topology and assignments for masses, pair_coeffs, bond_coeffs, and angle_coeffs.
-   - CRITICALLY: After successful generation, print _exactly_ this confirmation line: `SYSTEM_LT_SAVED:system.lt`. No other output should precede or follow this specific line unless it's part of error handling.
+    - The generated Moltemplate file MUST include:
+        - Molecule definitions using valid Moltemplate syntax (`molecule MoleculeName {{ ... }}`).
+        - Spatial placement using explicit translations (`translate x y z`).
+        - Box boundaries and topology definitions (`Data Boundary`, `Data Masses`, `Data Pair Coeffs`).
+    - CRITICALLY: After successful generation, print _exactly_ this confirmation line: `SYSTEM_LT_SAVED:system.lt`. No other output should precede or follow this specific line unless it's part of error handling.
+
+7. **Error Checks**:
+    - Double-check that `Data Atoms`, `Data Bonds`, and `Data Angles` sections conform strictly to Moltemplate syntax.
+    - Ensure syntax errors like "Incorrect 'Data Bonds' syntax" are avoided by adhering to Moltemplate rules.
 
 ## INPUT DATA:
 **System Description (User Request):**
@@ -418,8 +452,8 @@ Your task is to generate a complete Moltemplate input file `system.lt` based on:
 **Molecular Components (PDB Files):**
 {molecule_list}  # Condensed list of molecules successfully built or downloaded
 
-**Original Scientific Objective:**
-{original_request}  # Brief outline of the user's ultimate simulation goal (e.g., density study, equilibration)
+**Original Scientific Objective:** 
+{original_request}  # Brief outline of the user's ultimate simulation goal (e.g., density study, equilibration).
 
 ## Output Requirements:
 Your response MUST be formatted as valid JSON with the following keys:
@@ -430,6 +464,7 @@ Your response MUST be formatted as valid JSON with the following keys:
   "summary": "Brief summary describing the assembled system (e.g., molecular counts, box dimensions, force field used, special instructions)."
 }}
 
-Ensure consistency between the provided system description, molecules, force field, and scientific objective. Final output must be compatible with Moltemplate hierarchy syntax and ready to generate LAMMPS input/data files.
+Ensure consistency between the provided system description, molecules, force field, and scientific objective. 
+Final output must be compatible with Moltemplate hierarchy syntax and ready to generate LAMMPS input/data files.
 Generate the Moltemplate input file:
 """
