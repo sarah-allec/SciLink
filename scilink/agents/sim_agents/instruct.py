@@ -366,105 +366,48 @@ IMPORTANT: Use ONLY the molecules listed above. Do not reference any molecules t
 Generate the PACKMOL script:"""
 
 MOLTEMPLATE_INPUT_GENERATION_INSTRUCTIONS = """
-You are an expert computational materials scientist specializing in molecular simulations and Moltemplate file generation for LAMMPS input and data files.
-Your task is to generate a complete Moltemplate input file `system.lt` based on:
-1. The provided system description (JSON file)
-2. The atomic coordinates and molecular information (PDB files generated for molecular components)
-3. The original user request (scientific objective)
-4. The selected force field from the available options.
+You are an expert in creating Moltemplate system.lt files for LAMMPS.
+Your task is to generate a complete system.lt file based on the provided system description, molecule counts, and a selected force field.
 
-## GUIDELINES:
-### General Rules:
-- Ensure all syntax strictly conforms to Moltemplate requirements.
-- Do NOT include unsupported constructs such as variable assignments, scripting logic, or arithmetic (e.g., `Nwaters = 1433` or `$Nwaters`) directly in `.lt` files; instead, specify explicit numerical values for molecule counts and box dimensions.
-- Ensure atom types, bond types, and angle types are consistent with the selected force field.
+## CONTEXT
+The final LAMMPS system will be built using `moltemplate.sh -pdb system.pdb system.lt`.
+The `system.pdb` file has already been prepared with:
+1.  Residue and atom names matching the force field templates.
+2.  Atoms ordered by molecule type (e.g., all Na+, then all Cl-, then all water).
 
-1. **System Description Analysis**:
-    - Analyze the provided system description and user request to determine:
-        - Molecular components and their counts (e.g., "1433 water molecules").
-        - Simulation box dimensions and boundary conditions (e.g., "35.0 x 35.0 x 35.0").
-        - Atomic constraints or fixed components (e.g., lower slab layers, stacking orders).
-    - Include these directly in the `.lt` file as explicit numerical values.
+## INPUT DATA
+1.  **System Description**: "{system_description}"
+2.  **Selected Force Field Path**: "{force_field_path}"
+3.  **Molecule Counts** (from the PDB file): {molecule_counts}
 
-2. **Force Field Integration**:
-    - Write the selected force field into the `import` statement at the top of the file.
-    - Ensure proper definitions exist in the imported `.lt` file for:
-        - Atom types (`@atom:name`).
-        - Bond types (`@bond:name`).
-        - Angle types (`@angle:name`), if applicable.
+## YOUR TASK
+Generate a complete and executable `system.lt` file that:
 
-3. **Molecular Definitions**:
-    - Use Moltemplate syntax to explicitly define atoms, bonds, and angles for each molecule.
-    - Ensure proper syntax for molecule definitions:
-        - **Atoms**:
-          ```
-          write("Data Atoms") {{
-              $atom:id @atom:type charge x y z
-          }}
-          ```
-        - **Bonds**:
-          ```
-          write("Data Bonds") {{
-              $bond:id @bond:type $atom:id1 $atom:id2
-          }}
-          ```
-        - **Angles**:
-          ```
-          write("Data Angles") {{
-              $angle:id @angle:type $atom:id1 $atom:id2 $atom:id3
-          }}
-          ```
+1.  **Imports the Force Field**: Use the provided absolute path.
+    ```lt
+    import "{force_field_path}"
+    ```
 
-4. **Simulation Box and Boundary Conditions**:
-    - Add box dimensions explicitly using `write_once("Data Boundary")`:
-      ```
-      write_once("Data Boundary") {{
-          x_min x_max xlo xhi
-          y_min y_max ylo yhi
-          z_min z_max zlo zhi
-      }}
-      ```
-    - Do NOT reference undefined variables (`x_min`, `x_max`); instead, directly write numerical values (e.g., `0.0 35.0`).
+2.  **Defines Custom Molecule Templates**: For simple ions like Na+ and Cl-, define them explicitly. Use the OPLSAA force field conventions as a parent.
+    -   For Sodium (Na+), create a molecule template named `NaI` inheriting from `OPLSAA`, using atom type `@atom:407` and charge `+1.0`.
+    -   For Chloride (Cl-), create a molecule template named `ClI` inheriting from `OPLSAA`, using atom type `@atom:401` and charge `-1.0`.
+    -   For water, assume a template like `SPCE` or `SPC` is defined in the imported force field file. Use the 3-letter PDB name `SPC` for the water molecule type.
 
-5. **Create Molecules**:
-    - Instantiate molecules using Moltemplate's `new` keyword. Ensure that molecule counts are explicitly written (e.g., `new H2O [1433]`):
-      - Correct: `new MoleculeName [COUNT]`
-      - Incorrect: `new MoleculeName [$VariableName]`
+3.  **Creates Molecule Instances**: Use the `new` command to create instances of each molecule type with the correct counts provided in `molecule_counts`. The creation order must be consistent with the reordered PDB file (e.g., Na, Cl, then water).
+    ```lt
+    na = new NaI[COUNT]
+    cl = new ClI[COUNT]
+    wat = new SPC[COUNT]
+    ```
 
-6. **File-Saving Requirements**:
-    - The generated Moltemplate file MUST include:
-        - Molecule definitions using valid Moltemplate syntax (`molecule MoleculeName {{ ... }}`).
-        - Spatial placement using explicit translations (`translate x y z`).
-        - Box boundaries and topology definitions (`Data Boundary`, `Data Masses`, `Data Pair Coeffs`).
-    - CRITICALLY: After successful generation, print _exactly_ this confirmation line: `SYSTEM_LT_SAVED:system.lt`. No other output should precede or follow this specific line unless it's part of error handling.
+4.  **Sets the Simulation Box Dimensions**: Use a `write_once("Data Boundary")` block. A standard 40x40x40 Angstrom box is appropriate for this system.
 
-7. **Error Checks**:
-    - Double-check that `Data Atoms`, `Data Bonds`, and `Data Angles` sections conform strictly to Moltemplate syntax.
-    - Ensure syntax errors like "Incorrect 'Data Bonds' syntax" are avoided by adhering to Moltemplate rules.
+## RESPONSE FORMAT
+You MUST provide a valid JSON response with the following keys:
 
-## INPUT DATA:
-**System Description (User Request):**
-{system_description}  # The user-provided description of the system (e.g., "0.5 M NaCl, in H2O")
-
-**Available Force Fields (.lt files):**
-{force_field_files}  # List of appropriate force field files from the specified directory
-
-**Molecular Components (PDB Files):**
-{molecule_list}  # Condensed list of molecules successfully built or downloaded
-
-**Original Scientific Objective:** 
-{original_request}  # Brief outline of the user's ultimate simulation goal (e.g., density study, equilibration).
-
-## Output Requirements:
-Your response MUST be formatted as valid JSON with the following keys:
+```json
 {{
-  "thought": "Explain the rationale behind your molecular organization and choice of force field. Justify the placement of molecules and interaction logic based on the user's request and system description.",
-  "selected_force_field": "Name of the selected .lt file or machine-learned potential used in the simulation.",
-  "system_lt": "The complete Moltemplate input file content that integrates the selected force field.",
-  "summary": "Brief summary describing the assembled system (e.g., molecular counts, box dimensions, force field used, special instructions)."
+  "thought": "A brief explanation of the steps taken to construct the system.lt file, including why certain templates and counts were used.",
+  "system_lt": "The complete, executable content of the system.lt file as a single string. Use \\n for newlines."
 }}
-
-Ensure consistency between the provided system description, molecules, force field, and scientific objective. 
-Final output must be compatible with Moltemplate hierarchy syntax and ready to generate LAMMPS input/data files.
-Generate the Moltemplate input file:
 """

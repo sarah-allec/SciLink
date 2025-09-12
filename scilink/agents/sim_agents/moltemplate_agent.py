@@ -1,204 +1,217 @@
 import os
-import json
 import logging
+import json
 import re
 import shutil
+import subprocess
+from typing import Dict, List, Any, Optional, Tuple
 import google.generativeai as genai
-from ase.build import molecule
-from ase.collections import g2
-from ase.io import write
-from ase.data.pubchem import pubchem_atoms_search
 from google.generativeai.types import GenerationConfig
-from .instruct import (
-    MOLECULE_EXTRACTION_TEMPLATE,
-    SMILES_GENERATION_TEMPLATE,
-    MOLTEMPLATE_INPUT_GENERATION_INSTRUCTIONS
-)
-try:
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
-    HAS_RDKIT = True
-except ImportError:
-    HAS_RDKIT = False
+from .instruct import MOLTEMPLATE_INPUT_GENERATION_INSTRUCTIONS
 
+class MoltemplateAgent:
+    """
+    Agent that processes PDB files to generate LAMMPS input via Moltemplate.
+    Handles PDB reformatting, atom reordering, system.lt generation, and Moltemplate execution.
+    """
+    def __init__(self, working_dir: str, ff_library_path: str, api_key: str = None, 
+                model_name: str = "gemini-2.5-pro-preview-05-06"):
+        self.working_dir = working_dir
+        self.ff_library_path = ff_library_path
+        os.makedirs(working_dir, exist_ok=True)
+        
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
 
-class MoltemplateInputAgent:
-    def __init__(self, api_key=None, model_name="gemini-2.5-pro-preview-05-06", working_dir="moltemplate_run", force_field_dir=None):
-        # Model Configuration
-        if not api_key:
-            api_key = os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("An API key is required. Pass it as an argument or set the 'GOOGLE_API_KEY' environment variable.")
-        genai.configure(api_key=api_key)
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        if not self.api_key:
+            raise ValueError("API key required. Provide explicitly or set GOOGLE_API_KEY.")
+        
+        genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(model_name)
         self.generation_config = GenerationConfig(response_mime_type="application/json")
 
-        # Directory Setup
-        self.working_dir = working_dir
-        os.makedirs(self.working_dir, exist_ok=True)
-        self.force_field_dir = force_field_dir  # Force field directory
-        self.force_field_files = self._load_force_field_files(force_field_dir) if force_field_dir else []
-        self.logger = logging.getLogger(__name__)
-        self.logger.info(f"Available force field files: {self.force_field_files}")
-
-    def _load_force_field_files(self, force_field_dir):
-        """Load force field files from the specified directory."""
-        if not os.path.exists(force_field_dir):
-            raise ValueError(f"Force field directory '{force_field_dir}' does not exist.")
-        return [
-            os.path.join(force_field_dir, f) for f in os.listdir(force_field_dir)
-            if f.endswith(".lt")
-        ]
-
-    def _validate_force_field_compatibility(self, selected_force_field, molecule_data):
+    def _list_force_fields(self) -> List[str]:
+        return sorted([f for f in os.listdir(self.ff_library_path) if f.endswith(".lt")])
+    
+    def generate_lammps_input(self, description: str, system_pdb: str) -> dict:
         """
-        Ensure compatibility between `system.lt` atom types and the selected force field.
-
-        Args:
-            selected_force_field (str): Path to the selected force field file.
-            molecule_data (list): Molecule information extracted from the system description.
-
-        Returns:
-            dict: Mapping of valid atom types, masses, pair coefficients, etc.
+        Orchestrates the full workflow from PDB file to LAMMPS input.
         """
-        if not selected_force_field or not os.path.exists(selected_force_field):
-            raise ValueError(f"Selected force field file '{selected_force_field}' does not exist.")
+        try:
+            if not os.path.exists(system_pdb):
+                raise FileNotFoundError(f"Input PDB file not found: '{system_pdb}'")
+            
+            # Step 1: Update and reorder PDB
+            updated_pdb_path = self._update_and_reorder_pdb(system_pdb)
+            
+            # Step 2: Count molecules in the updated PDB
+            molecule_counts = self._count_molecules(updated_pdb_path)
+            
+            # Step 3: Select force field
+            selected_ff_name = "spce_oplsaa2024.lt"  # Simplified selection
+            selected_ff_path = os.path.join(self.ff_library_path, selected_ff_name)
+            if not os.path.exists(selected_ff_path):
+                raise FileNotFoundError(f"Force field not found: {selected_ff_path}")
+            
+            # Step 4: Generate system.lt
+            system_lt_path = self._generate_system_lt_with_llm(description, molecule_counts, selected_ff_path)
+            
+            # Step 5: Run Moltemplate
+            lammps_files = self._run_moltemplate(updated_pdb_path, system_lt_path)
+            
+            return {
+                "status": "success",
+                "working_dir": self.working_dir,
+                "updated_pdb": updated_pdb_path,
+                "system_lt": system_lt_path,
+                "lammps_data": lammps_files.get("data_file"),
+                "message": "LAMMPS input files generated successfully."
+            }
 
-        # Load the contents of the selected force field file
-        atom_types = {}
-        masses = {}
-        pair_coeffs = {}
-        with open(selected_force_field, 'r') as f:
-            force_field_content = f.read()
-            # Extract atom types and masses
-            mass_pattern = r"@atom:(\w+)\s+([\d\.]+)"
-            for match in re.findall(mass_pattern, force_field_content):
-                atom_types[match[0]] = f"@atom:{match[0]}"
-                masses[match[0]] = float(match[1])
+        except Exception as e:
+            self.logger.error(f"Workflow failed: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
-            # Extract pair coefficients (if available)
-            pair_coeff_pattern = r"pair_coeff\s+@atom:(\w+)\s+@atom:(\w+)\s+([\d\.]+)\s+([\d\.]+)"
-            for match in re.findall(pair_coeff_pattern, force_field_content):
-                atom1 = match[0]
-                atom2 = match[1]
-                epsilon = float(match[2])
-                sigma = float(match[3])
-                pair_coeffs[(atom1, atom2)] = (epsilon, sigma)
+    def _update_and_reorder_pdb(self, input_pdb: str) -> str:
+        """
+        Updates residue/atom names, reorders atoms, and saves to the working directory.
+        """
+        output_pdb = os.path.join(self.working_dir, "system.pdb")
+        
+        with open(input_pdb, 'r') as f:
+            lines = f.readlines()
+            
+        # Separate lines
+        header_lines = [line for line in lines if not line.startswith(("ATOM", "HETATM", "END"))]
+        atom_lines = [line for line in lines if line.startswith(("ATOM", "HETATM"))]
+        footer_lines = [line for line in lines if line.startswith("END")]
+        
+        na_atoms, cl_atoms, water_molecules = [], [], {}
+        
+        # Categorize atoms
+        for line in atom_lines:
+            atom_name = line[12:16].strip()
+            residue_name = line[17:20].strip()
+            chain_id = line[21:22].strip()
+            residue_id = line[22:26].strip()
+            
+            if residue_name == "MOL" and chain_id == "A":
+                if atom_name == "Na":
+                    na_atoms.append(line)
+                elif atom_name == "Cl":
+                    cl_atoms.append(line)
+            elif residue_name == "MOL" and chain_id == "B":
+                mol_id = f"{chain_id}_{residue_id}"
+                if mol_id not in water_molecules:
+                    water_molecules[mol_id] = []
+                water_molecules[mol_id].append(line)
 
-        # Validate molecule atom types against the force field atom types
-        for mol in molecule_data:
-            identifier = mol.get("identifier")
-            atom_type = mol.get("atom_type", None)
-            if atom_type not in atom_types:
-                self.logger.warning(f"Atom type '{atom_type}' for molecule '{identifier}' not found in force field. "
-                                    f"Attempting to auto-map atom type.")
-                # Attempt auto-mapping (example logic)
-                mapped_atom_type = self._auto_map_atom_type(atom_type, atom_types)
-                if mapped_atom_type:
-                    mol["atom_type"] = mapped_atom_type
-                    self.logger.info(f"Auto-mapped atom type '{atom_type}' to '{mapped_atom_type}'.")
+        # Process and reorder
+        processed_lines = []
+        
+        # Sodium ions
+        for line in na_atoms:
+            new_line = line[:12] + f"{'Na':<4}" + line[16:17] + f"{'NaI':<3}" + line[20:]
+            processed_lines.append(new_line)
+        
+        # Chloride ions
+        for line in cl_atoms:
+            new_line = line[:12] + f"{'Cl':<4}" + line[16:17] + f"{'ClI':<3}" + line[20:]
+            processed_lines.append(new_line)
+            
+        # Water molecules
+        for mol_id in sorted(water_molecules.keys()):
+            atoms = water_molecules[mol_id]
+            h_counter = 0
+            for line in atoms:
+                atom_name = line[12:16].strip()
+                if atom_name == 'O':
+                    new_atom_name = 'o'
+                elif atom_name == 'H':
+                    h_counter += 1
+                    new_atom_name = f'h{h_counter}'
                 else:
-                    raise ValueError(f"Atom type '{atom_type}' for molecule '{identifier}' could not be validated against "
-                                     f"the force field '{selected_force_field}'.")
+                    new_atom_name = atom_name
+                
+                new_line = line[:12] + f"{new_atom_name:<4}" + line[16:17] + f"{'SPC':<3}" + line[20:]
+                processed_lines.append(new_line)
 
-        return {
-            "atom_types": atom_types,
-            "masses": masses,
-            "pair_coeffs": pair_coeffs
-        }
+        # Renumber atoms
+        renumbered_lines = []
+        for i, line in enumerate(processed_lines, 1):
+            renumbered_lines.append(line[:6] + f"{i:5d}" + line[11:])
+        
+        # Save updated PDB
+        with open(output_pdb, 'w') as f:
+            f.writelines(header_lines)
+            f.writelines(renumbered_lines)
+            f.writelines(footer_lines)
+            
+        return output_pdb
 
-    def _auto_map_atom_type(self, atom_type, atom_types):
-        """
-        Attempt to auto-map an unsupported atom type to a valid type in the force field.
+    def _count_molecules(self, pdb_path: str) -> Dict[str, int]:
+        unique_residues = {}
+        
+        with open(pdb_path, 'r') as f:
+            for line in f:
+                if line.startswith("ATOM") or line.startswith("HETATM"):
+                    residue_name = line[17:20].strip()
+                    chain_id = line[21:22].strip()
+                    residue_id = line[22:26].strip()
+                    unique_id = f"{chain_id}_{residue_id}"
+                    
+                    if residue_name not in unique_residues:
+                        unique_residues[residue_name] = set()
+                    unique_residues[residue_name].add(unique_id)
+                    
+        return {name: len(ids) for name, ids in unique_residues.items()}
 
-        Args:
-            atom_type (str): Unsupported atom type.
-            atom_types (dict): Valid atom types defined by the force field.
+    def _generate_system_lt_with_llm(self, description: str, counts: Dict[str, int], 
+                                     ff_path: str) -> str:
+        self.logger.info("Generating system.lt file with LLM...")
+        
+        prompt = MOLTEMPLATE_INPUT_GENERATION_INSTRUCTIONS.format(
+            system_description=description,
+            force_field_path=ff_path,
+            molecule_counts=json.dumps(counts)
+        )
+        
+        response = self.model.generate_content(prompt, generation_config=self.generation_config)
+        result = json.loads(response.text)
+        
+        system_lt_path = os.path.join(self.working_dir, "system.lt")
+        with open(system_lt_path, 'w') as f:
+            f.write(result["system_lt"])
+            
+        return system_lt_path
 
-        Returns:
-            str: A mapped atom type if found, else None.
-        """
-        # Example: Check for partial matches between atom type and force field atom types
-        for valid_atom in atom_types:
-            if atom_type.lower() in valid_atom.lower():
-                return atom_types[valid_atom]
-        return None
-
-    def generate_moltemplate_inputs(self, json_path: str, original_request: str) -> dict:
-        """
-        Generate the Moltemplate input file (`system.lt`) based on the system description.
-    
-        Args:
-            json_path (str): Path to the JSON file describing the molecular system.
-            original_request (str): User-provided description of the simulation goal.
-    
-        Returns:
-            dict: Response with the generated Moltemplate file or an error message.
-        """
-        # Step 1: Read the JSON file
+    def _run_moltemplate(self, pdb_file: str, system_lt_file: str) -> Dict[str, Any]:
+        self.logger.info("Running Moltemplate...")
+        
+        orig_dir = os.getcwd()
+        os.chdir(self.working_dir)
+        
         try:
-            with open(json_path, 'r') as f:
-                system_description = json.load(f)
-        except Exception as e:
-            return {"status": "error", "message": f"Failed to read JSON file: {e}"}
-    
-        # Extract "Sample matrix" field
-        try:
-            sample_matrix = system_description["Sample matrix"]
-        except KeyError:
-            return {"status": "error", "message": "Missing 'Sample matrix' key in JSON file."}
-    
-        # Extract molecular components using the LLM
-        extraction_prompt = MOLECULE_EXTRACTION_TEMPLATE.format(description=sample_matrix)
-        try:
-            response = self.model.generate_content(extraction_prompt, generation_config=self.generation_config)
-            molecule_data = json.loads(response.text).get("molecules", [])
-            if not molecule_data:
-                return {"status": "error", "message": "Failed to extract molecular components from 'Sample matrix'."}
-        except Exception as e:
-            return {"status": "error", "message": f"Molecule extraction failed: {e}"}
-    
-        # Select the most appropriate force field
-        if not self.force_field_files:
-            return {"status": "error", "message": "No force field files available for selection."}
-    
-        selection_prompt = f"""
-        Based on the following molecular system description:
-        "{sample_matrix}"
-        Select the most appropriate force field file from the following options:
-        {', '.join(self.force_field_files)}
-        Provide the name of the selected file and explain the choice.
-        """
-        try:
-            selection_response = self.model.generate_content(selection_prompt, generation_config=self.generation_config)
-            # Parse the response as JSON and extract the file path
-            selection_data = json.loads(selection_response.text)
-            force_field_selection = selection_data.get("selected_file")
-            if not force_field_selection or not os.path.exists(force_field_selection):
-                raise ValueError(f"Selected force field file '{selection_data}' does not exist.")
-            self.logger.info(f"Selected force field: {force_field_selection}")
-        except Exception as e:
-            return {"status": "error", "message": f"Force field selection failed: {e}"}
-    
-        # Validate compatibility between system.lt and the selected force field
-        try:
-            force_field_compatibility = self._validate_force_field_compatibility(force_field_selection, molecule_data)
-        except Exception as e:
-            return {"status": "error", "message": f"Force field compatibility validation failed: {e}"}
-    
-        # Generate Moltemplate input file
-        try:
-            moltemplate_prompt = MOLTEMPLATE_INPUT_GENERATION_INSTRUCTIONS.format(
-                system_description=sample_matrix,
-                molecule_list=", ".join([f"{mol['identifier']}" for mol in molecule_data]),
-                original_request=original_request,
-                force_field=force_field_selection,
-                force_field_files=", ".join(self.force_field_files)
+            cmd = f"moltemplate.sh -pdb {os.path.basename(pdb_file)} {os.path.basename(system_lt_file)}"
+            
+            result = subprocess.run(
+                cmd, shell=True, check=True, capture_output=True, text=True, timeout=300
             )
-            response = self.model.generate_content(moltemplate_prompt, generation_config=self.generation_config)
-            result = json.loads(response.text)
-            result["status"] = "success"
-            result["selected_force_field"] = force_field_selection
-            return result
-        except Exception as e:
-            return {"status": "error", "message": f"Moltemplate input generation failed: {e}"}
+            
+            data_file = os.path.join(os.getcwd(), "system.data")
+            if not os.path.exists(data_file):
+                raise FileNotFoundError("Moltemplate ran, but 'system.data' was not created.")
+                
+            return {"data_file": os.path.abspath(data_file)}
+            
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Moltemplate failed. Stderr:\n{e.stderr}")
+            raise RuntimeError(f"Moltemplate execution failed: {e.stderr}")
+        finally:
+            os.chdir(orig_dir)
