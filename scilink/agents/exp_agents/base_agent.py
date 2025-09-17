@@ -16,12 +16,30 @@ class BaseAnalysisAgent:
     
     def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05", local_model: str = None):
         if local_model is not None:
-            logging.info(f"💻 Using local agent as the analysis agent.")
-            from .llama_wrapper import LocalLlamaModel
-            self.model = LocalLlamaModel(local_model)
-            self.generation_config = None
-            self.safety_settings = None
-            self.model_name = local_model
+            if 'gguf' in local_model:
+                logging.info(f"💻 Using local agent as the analysis agent.")
+                from .llama_wrapper import LocalLlamaModel
+                self.model = LocalLlamaModel(local_model)
+                self.generation_config = None
+                self.safety_settings = None
+                self.model_name = local_model
+            elif 'ai-incubator' in local_model:
+                logging.info(f"🏛️ Using network agent as the analysis agent.")
+                from .openai_wrapper import OpenAIAsGenerativeModel
+                # Auto-discover API key
+                if google_api_key is None:
+                    google_api_key = get_api_key('google')
+                    if not google_api_key:
+                        raise APIKeyNotFoundError('google')
+                self.model = OpenAIAsGenerativeModel(model_name, api_key = google_api_key, base_url= local_model) #This not google API key but API key
+                self.generation_config = None
+                self.safety_settings = None
+                self.model_name = model_name
+            else:
+                logging.info(f"Invalid local_model argument.")
+                self.model = None
+                self.generation_config = None
+                self.safety_settings = None
         else:
             logging.info(f"☁️ Using cloud agent as the analysis agent.")
             # Auto-discover API key
@@ -37,7 +55,7 @@ class BaseAnalysisAgent:
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
             }
             self.model_name = model_name
-            
+        self.local_model = local_model    
         self.logger = logging.getLogger(__name__)
         self.google_api_key = google_api_key 
         

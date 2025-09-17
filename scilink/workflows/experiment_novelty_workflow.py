@@ -503,7 +503,7 @@ class ExperimentNoveltyAssessment:
         
         try:
             # Initialize novelty scorer
-            novelty_scorer = NoveltyScorer(google_api_key=self.google_api_key)
+            novelty_scorer = NoveltyScorer(google_api_key=self.google_api_key, local_model=self.local_model)
             
             # Run enhanced assessment (scorer logs will appear here if display_agent_logs=True)
             novelty_assessment = enhanced_novelty_assessment(literature_results, novelty_scorer)
@@ -748,7 +748,8 @@ class ExperimentNoveltyAssessment:
             # Instantiate a text-only analysis agent for this step
             dft_agent = MicroscopyAnalysisAgent(
                 google_api_key=self.google_api_key,
-                model_name=self.analysis_model
+                model_name=self.analysis_model,
+                local_model=self.local_model
             )
             
             # Generate DFT recommendations using text-only path

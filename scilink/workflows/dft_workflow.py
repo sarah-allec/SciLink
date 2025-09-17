@@ -38,6 +38,7 @@ class DFTWorkflow:
                  mp_api_key: str = None,
                  generator_model: str = "gemini-2.5-pro-preview-06-05",
                  validator_model: str = "gemini-2.5-pro-preview-06-05",
+                 local_model: str = None,
                  output_dir: str = "dft_workflow_output",
                  max_refinement_cycles: int = 4,
                  script_timeout: int = 180,
@@ -106,12 +107,14 @@ class DFTWorkflow:
             model_name=generator_model,
             executor_timeout=script_timeout,
             generated_script_dir=output_dir,
+            local_model = local_model,
             mp_api_key=mp_api_key
         )
 
         self.structure_validator = StructureValidatorAgent(
             api_key=google_api_key,
-            model_name=validator_model
+            model_name=validator_model,
+            local_model = local_model,
         )
         
         # Instantiate the correct VASP agent based on the chosen method.
@@ -119,7 +122,8 @@ class DFTWorkflow:
             print("ℹ️  VASP Generator: 'llm' (default). Using AI to generate VASP inputs.")
             self.vasp_agent = VaspInputAgent(
                 api_key=google_api_key,
-                model_name=generator_model
+                model_name=generator_model,
+                local_model = local_model,
             )
         elif self.vasp_generator_method == "atomate2":
             print("ℹ️  VASP Generator: 'atomate2'. Using pymatgen/atomate2 for reliable inputs.")

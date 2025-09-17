@@ -21,9 +21,10 @@ class StructureGenerator:
     def __init__(self, api_key: str, model_name: str,
                 executor_timeout: int = DEFAULT_TIMEOUT,
                 generated_script_dir: str = "generated_scripts",
+                local_model: str = None,
                 mp_api_key: str = None):
         """Initialize StructureGenerator with improved logging."""
-        self.llm_client = LLMClient(api_key=api_key, model_name=model_name)
+        self.llm_client = LLMClient(api_key=api_key, model_name=model_name, local_model=local_model)
         self.ase_executor = ScriptExecutor(timeout=executor_timeout, mp_api_key=mp_api_key)
         self.generated_script_dir = generated_script_dir
         self.logger = logging.getLogger(__name__)
