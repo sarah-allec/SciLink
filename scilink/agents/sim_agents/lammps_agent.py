@@ -2,13 +2,21 @@ import os
 import re
 import shutil
 import logging
-from typing import Dict, Any, Optional
+import json
+from typing import Dict, Any, Optional, List
 import google.generativeai as genai
 from ase import io
 from ase.io.lammpsdata import read_lammps_data
 
 class LAMMPSSimulationAgent:
     def __init__(self, working_dir: str, api_key: Optional[str] = None):
+        """
+        Initialize the LAMMPS simulation agent.
+        
+        Args:
+            working_dir: Directory for output files
+            api_key: API key for Google Gemini API (optional if set in environment)
+        """
         self.working_dir = working_dir
         os.makedirs(working_dir, exist_ok=True)
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
@@ -24,12 +32,83 @@ class LAMMPSSimulationAgent:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
     
-    def analyze_system(self, data_file: str) -> Dict[str, Any]:
+    def generate_simulation(self, 
+                          data_file: str, 
+                          research_goal: str,
+                          system_description: Optional[str] = None,
+                          temperature: float = 300.0,
+                          pressure: float = 1.0,
+                          **kwargs) -> Dict[str, Any]:
         """
-        Analyze a LAMMPS data file using ASE to identify its components.
-        """
-        self.logger.info(f"Analyzing system from {data_file}")
+        Generate LAMMPS simulation(s) based on a research goal.
         
+        Args:
+            data_file: Path to LAMMPS data file
+            research_goal: Research objective in natural language
+            system_description: Description of the molecular system (optional)
+            temperature: Default temperature in K
+            pressure: Default pressure in atm
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary with generated simulation info
+        """
+        # Copy the data file to the working directory
+        local_data_file = self._copy_data_file(data_file)
+        
+        # Analyze the system
+        system_info = self.analyze_system(data_file)
+        
+        # If system description is not provided, generate one based on analysis
+        if not system_description:
+            system_description = self._generate_system_description(system_info)
+        
+        # Determine simulation parameters based on research goal
+        simulation_params = self._determine_simulation_parameters(
+            research_goal=research_goal,
+            system_info=system_info,
+            temperature=temperature,
+            pressure=pressure,
+            **kwargs
+        )
+        
+        # Generate LAMMPS script
+        script_text = self._generate_script(
+            data_filename=os.path.basename(local_data_file),
+            research_goal=research_goal,
+            system_description=system_description,
+            system_info=system_info,
+            **simulation_params
+        )
+        
+        # Ensure script has all necessary force field parameters
+        script_text = self._ensure_force_field_parameters(script_text, system_info)
+        
+        # Save the script
+        script_path = os.path.join(self.working_dir, "run.lammps")
+        with open(script_path, 'w') as f:
+            f.write(script_text)
+        
+        # Create a README with analysis instructions
+        readme_path = self._generate_readme(
+            research_goal=research_goal,
+            system_description=system_description,
+            system_info=system_info,
+            simulation_params=simulation_params,
+            script_path=script_path
+        )
+        
+        return {
+            "script_path": script_path,
+            "readme_path": readme_path,
+            "data_path": local_data_file,
+            "system_info": system_info,
+            "simulation_parameters": simulation_params
+        }
+    
+    def analyze_system(self, data_file: str) -> Dict[str, Any]:
+        """Analyze a LAMMPS data file using ASE to identify its components."""
+        self.logger.info(f"Analyzing system from {data_file}")
         try:
             # Read LAMMPS data file
             atoms = read_lammps_data(data_file, style="full", units="real")
@@ -41,8 +120,9 @@ class LAMMPSSimulationAgent:
                 
             # Identify common components
             has_water = ('O' in element_counts and 'H' in element_counts and 
-                        element_counts['H'] >= 2 * element_counts['O'])
+                        element_counts.get('H', 0) >= 2 * element_counts.get('O', 0))
             has_ions = any(x in element_counts for x in ['Na', 'Cl', 'K', 'Ca', 'Mg'])
+            has_organic = 'C' in element_counts
             
             # Get bond and angle information from the data file
             bond_types, angle_types = self._extract_bond_angle_types(data_file)
@@ -51,9 +131,10 @@ class LAMMPSSimulationAgent:
                 "atom_count": len(atoms),
                 "elements": list(element_counts.keys()),
                 "element_counts": element_counts,
-                "box_dimensions": atoms.get_cell().diagonal(),
+                "box_dimensions": atoms.get_cell().diagonal().tolist(),
                 "has_water": has_water,
                 "has_ions": has_ions,
+                "has_organic": has_organic,
                 "bond_types": bond_types,
                 "angle_types": angle_types
             }
@@ -70,17 +151,13 @@ class LAMMPSSimulationAgent:
                 "element_counts": {},
                 "has_water": False,
                 "has_ions": False,
+                "has_organic": False,
                 "bond_types": 0,
                 "angle_types": 0
             }
     
     def _extract_bond_angle_types(self, data_file: str) -> tuple:
-        """
-        Extract bond and angle type information from a LAMMPS data file.
-        
-        Returns:
-            tuple: (bond_types, angle_types)
-        """
+        """Extract bond and angle type information from a LAMMPS data file."""
         bond_types = 0
         angle_types = 0
         
@@ -103,83 +180,9 @@ class LAMMPSSimulationAgent:
             
         return bond_types, angle_types
     
-    def generate_simulation_protocol(self, 
-                                   data_file: str, 
-                                   system_description: str,
-                                   temperature: float = 300.0, 
-                                   pressure: float = 1.0,
-                                   simulation_time: float = 1.0,  # in nanoseconds
-                                   ensemble: str = "NPT",
-                                   **kwargs):
-        """
-        Generate a LAMMPS simulation protocol for the given system.
-        """
-        # Copy the data file to the working directory
-        local_data_file = self._copy_data_file(data_file)
-        
-        # Analyze system with ASE
-        system_info = self.analyze_system(data_file)
-        
-        # Combine with description-based analysis for robustness
-        if not system_info["elements"]:
-            self.logger.warning("Using description-based system analysis as fallback")
-            system_info["has_water"] = system_info["has_water"] or "water" in system_description.lower()
-            system_info["has_ions"] = system_info["has_ions"] or any(x in system_description.lower() for x in ["nacl", "salt", "ion"])
-        
-        # Identify additional properties from description
-        system_info["has_proteins"] = "protein" in system_description.lower()
-        system_info["has_lipids"] = "lipid" in system_description.lower() or "membrane" in system_description.lower()
-        system_info["has_polymers"] = "polymer" in system_description.lower()
-        
-        # Extract timestep from kwargs or use default
-        timestep = kwargs.pop("timestep", 2.0)  # Remove from kwargs
-        
-        # Calculate runtime in timesteps
-        runtime_steps = int((simulation_time * 1e6) / timestep)  # Convert ns to timesteps
-        
-        # Use LLM to generate custom LAMMPS script
-        simulation_script = self._generate_lammps_script_with_llm(
-            data_filename=os.path.basename(local_data_file),
-            system_description=system_description,
-            system_info=system_info,
-            temperature=temperature,
-            pressure=pressure,
-            simulation_time=simulation_time,
-            ensemble=ensemble,
-            runtime_steps=runtime_steps,
-            timestep=timestep,
-            **kwargs
-        )
-        
-        # Validate and add force field parameters if needed
-        simulation_script = self._ensure_force_field_parameters(simulation_script, system_info)
-        
-        # Save the generated simulation script
-        script_path = os.path.join(self.working_dir, "run.lammps")
-        with open(script_path, 'w') as f:
-            f.write(simulation_script)
-        
-        self.logger.info(f"Generated LAMMPS script saved to {script_path}")
-        return {
-            "script_path": script_path, 
-            "system_info": system_info,
-            "data_file": local_data_file
-        }
-    
     def _copy_data_file(self, source_path: str) -> str:
-        """
-        Copy the data file to the working directory.
-        
-        Args:
-            source_path: Path to the source data file
-            
-        Returns:
-            Path to the copied data file in the working directory
-        """
-        # Get the filename from the source path
-        filename = os.path.basename(source_path)
-        
-        # Default to "system.data" if we want a consistent name
+        """Copy the data file to the working directory."""
+        # Default to "system.data" as the destination filename
         dest_filename = "system.data"
         dest_path = os.path.join(self.working_dir, dest_filename)
         
@@ -189,10 +192,154 @@ class LAMMPSSimulationAgent:
         
         return dest_path
     
-    def _generate_lammps_script_with_llm(self, **kwargs):
-        """Generate a LAMMPS script using LLM and clean the output."""
+    def _generate_system_description(self, system_info: Dict[str, Any]) -> str:
+        """Generate a system description based on analysis."""
+        elements = system_info.get("elements", [])
+        atom_count = system_info.get("atom_count", 0)
+        
+        description_parts = []
+        
+        if system_info.get("has_water", False):
+            description_parts.append("water")
+        
+        if system_info.get("has_ions", False):
+            ions = [e for e in elements if e in ["Na", "K", "Cl", "Ca", "Mg"]]
+            if ions:
+                description_parts.append("+".join(ions) + " ions")
+            else:
+                description_parts.append("ions")
+        
+        if system_info.get("has_organic", False) and "C" in elements:
+            description_parts.append("organic molecules")
+        
+        if not description_parts:
+            # Generic description
+            description_parts.append("molecular system")
+        
+        description = " with ".join(description_parts)
+        return f"{description} ({atom_count} atoms)"
+    
+    def _determine_simulation_parameters(self, 
+                                       research_goal: str, 
+                                       system_info: Dict[str, Any],
+                                       temperature: float = 300.0,
+                                       pressure: float = 1.0,
+                                       **kwargs) -> Dict[str, Any]:
+        """
+        Determine simulation parameters based on the research goal and system info.
+        
+        This function uses the LLM to analyze the research goal and recommend simulation settings.
+        """
+        self.logger.info(f"Determining simulation parameters for research goal: {research_goal}")
+        
+        # Construct element counts string
+        elements_str = ", ".join([f"{e}: {c}" for e, c in system_info.get("element_counts", {}).items()])
+        
+        # Prompt for the LLM to analyze the research goal and determine appropriate simulation parameters
+        prompt = f"""
+        Analyze the following research goal for a molecular dynamics simulation and recommend appropriate parameters.
+        
+        RESEARCH GOAL: "{research_goal}"
+        
+        SYSTEM INFORMATION:
+        - Elements: {elements_str}
+        - Total atoms: {system_info.get('atom_count', 0)}
+        - Contains water: {'Yes' if system_info.get('has_water', False) else 'No'}
+        - Contains ions: {'Yes' if system_info.get('has_ions', False) else 'No'}
+        - Contains organic molecules: {'Yes' if system_info.get('has_organic', False) else 'No'}
+        
+        Based on this research goal and system information, provide the following:
+        1. What properties need to be calculated
+        2. What ensemble is most appropriate (NVE, NVT, NPT)
+        3. What simulation time is needed (in nanoseconds)
+        4. What temperature(s) to use (in K)
+        5. What pressure to use (in atm), if applicable
+        6. What timestep to use (in fs)
+        7. What specific analysis commands are needed in LAMMPS
+        
+        Respond with a JSON object with the following structure:
+        ```json
+        {{
+            "properties_to_calculate": ["list of properties"],
+            "ensemble": "NPT",
+            "simulation_time": 2.0,
+            "temperature": 300.0,
+            "pressure": 1.0,
+            "timestep": 2.0,
+            "equilibration_time": 0.5,
+            "production_time": 1.5,
+            "required_outputs": ["density", "rdf", "msd", etc.],
+            "special_settings": {{
+                "additional parameters as key-value pairs"
+            }}
+        }}
+        ```
+        
+        Include only the JSON response with no additional text.
+        """
+        
+        try:
+            # Generate response from LLM
+            generation_config = {"response_mime_type": "application/json"}
+            response = self.model.generate_content(prompt, generation_config=generation_config)
+            params = json.loads(response.text)
+            
+            # Add default values if missing
+            params.setdefault("ensemble", "NPT")
+            params.setdefault("simulation_time", 2.0)
+            params.setdefault("temperature", temperature)
+            params.setdefault("pressure", pressure)
+            params.setdefault("timestep", 2.0)
+            params.setdefault("equilibration_time", params["simulation_time"] * 0.25)
+            params.setdefault("production_time", params["simulation_time"] * 0.75)
+            
+            # Override with explicit kwargs if provided
+            for key, value in kwargs.items():
+                params[key] = value
+                
+            self.logger.info(f"Determined simulation parameters: {params}")
+            return params
+            
+        except Exception as e:
+            self.logger.error(f"Error determining simulation parameters: {e}")
+            # Fallback to default parameters
+            default_params = {
+                "properties_to_calculate": ["energy", "structure"],
+                "ensemble": "NPT",
+                "simulation_time": 2.0,
+                "temperature": temperature,
+                "pressure": pressure,
+                "timestep": 2.0,
+                "equilibration_time": 0.5,
+                "production_time": 1.5,
+                "required_outputs": ["energy", "trajectory"]
+            }
+            return default_params
+    
+    def _generate_script(self, **kwargs) -> str:
+        """
+        Generate a LAMMPS script based on the research goal and system information.
+        
+        This function uses the LLM to generate a complete LAMMPS input script.
+        """
         system_info = kwargs.get("system_info", {})
         data_filename = kwargs.get("data_filename", "system.data")
+        research_goal = kwargs.get("research_goal", "")
+        system_description = kwargs.get("system_description", "")
+        
+        # Extract simulation parameters
+        ensemble = kwargs.get("ensemble", "NPT")
+        simulation_time = kwargs.get("simulation_time", 2.0)
+        temperature = kwargs.get("temperature", 300.0)
+        pressure = kwargs.get("pressure", 1.0)
+        timestep = kwargs.get("timestep", 2.0)
+        required_outputs = kwargs.get("required_outputs", ["energy", "trajectory"])
+        properties_to_calculate = kwargs.get("properties_to_calculate", [])
+        
+        # Calculate runtime steps
+        runtime_steps = int((simulation_time * 1e6) / timestep)
+        equil_steps = int((kwargs.get("equilibration_time", simulation_time * 0.25) * 1e6) / timestep)
+        prod_steps = int((kwargs.get("production_time", simulation_time * 0.75) * 1e6) / timestep)
         
         # Create element information string
         element_info = []
@@ -204,14 +351,19 @@ class LAMMPSSimulationAgent:
         bond_types = system_info.get("bond_types", 0)
         angle_types = system_info.get("angle_types", 0)
         
-        prompt = f"""
-        Generate a complete LAMMPS simulation script for the following system:
+        # Generate outputs section based on required outputs
+        output_commands = self._generate_output_commands(required_outputs, properties_to_calculate, system_info)
         
-        SYSTEM DESCRIPTION: {kwargs.get('system_description', '')}
+        prompt = f"""
+        Generate a complete LAMMPS script for molecular dynamics simulation to achieve the following research goal:
+        
+        RESEARCH GOAL: "{research_goal}"
+        
+        SYSTEM DESCRIPTION: {system_description}
         
         SYSTEM COMPOSITION:
           - {element_info_str}
-          - Total atoms: {system_info.get('atom_count', 'Unknown')}
+          - Total atoms: {system_info.get('atom_count', 0)}
           - Box dimensions: {system_info.get('box_dimensions', [40, 40, 40])}
           - Bond types: {bond_types}
           - Angle types: {angle_types}
@@ -219,52 +371,34 @@ class LAMMPSSimulationAgent:
         DETECTED COMPONENTS:
           - Water: {'Yes' if system_info.get('has_water', False) else 'No'}
           - Ions: {'Yes' if system_info.get('has_ions', False) else 'No'}
-          - Proteins: {'Yes' if system_info.get('has_proteins', False) else 'No'}
-          - Lipids: {'Yes' if system_info.get('has_lipids', False) else 'No'}
-          - Polymers: {'Yes' if system_info.get('has_polymers', False) else 'No'}
+          - Organic molecules: {'Yes' if system_info.get('has_organic', False) else 'No'}
         
         SIMULATION PARAMETERS:
-          - Temperature: {kwargs.get('temperature', 300.0)} K
-          - Pressure: {kwargs.get('pressure', 1.0)} atm
-          - Simulation time: {kwargs.get('simulation_time', 1.0)} ns
-          - Ensemble: {kwargs.get('ensemble', 'NPT')}
-          - Timestep: {kwargs.get('timestep', 2.0)} fs
-          
-        IMPORTANT REQUIREMENTS:
-        1. Proper initialization (units real, etc.)
-        2. Reading the data file "{data_filename}"
-        3. COMPLETE force field settings including:
-           - Bond style and bond coefficients for ALL bond types
-           - Angle style and angle coefficients for ALL angle types
-           - Pair style and pair coefficients for ALL atom types
+          - Properties to calculate: {', '.join(properties_to_calculate)}
+          - Temperature: {temperature} K
+          - Pressure: {pressure} atm
+          - Ensemble: {ensemble}
+          - Timestep: {timestep} fs
+          - Total simulation time: {simulation_time} ns
+          - Equilibration steps: {equil_steps}
+          - Production steps: {prod_steps}
+          - Required outputs: {', '.join(required_outputs)}
+        
+        REQUIRED SECTIONS:
+        1. Initialization (units, atom_style, etc.)
+        2. System setup (read data file "{data_filename}")
+        3. Force field settings (complete with all coefficients)
         4. Energy minimization
-        5. Equilibration phase(s)
-        6. Production run for {kwargs.get('runtime_steps', 500000)} timesteps
-        7. Output trajectory and analysis data
-        8. If water is present, include proper SHAKE constraints with appropriate bond and angle types
+        5. Equilibration phase(s) 
+        6. Production phase with appropriate outputs
+        7. Analysis commands for the specified properties
         
-        EXAMPLE FORCE FIELD PARAMETERS (for water and ions):
-        ```
-        # Force field definitions
-        pair_style lj/cut/coul/long 10.0
-        bond_style harmonic
-        angle_style harmonic
+        SPECIAL OUTPUT REQUIREMENTS:
+        {output_commands}
         
-        # Bond coefficients (for SPCE water)
-        bond_coeff 1 1000.0 1.0  # O-H bond
+        Include thorough comments explaining each section and its purpose. The script should be directly executable in LAMMPS.
         
-        # Angle coefficients (for SPCE water)
-        angle_coeff 1 100.0 109.47  # H-O-H angle
-        
-        # Pair coefficients
-        pair_coeff 1 1 0.1553 3.166  # O-O
-        pair_coeff 2 2 0.0 0.0       # H-H
-        pair_coeff 3 3 0.0115 2.275  # Na-Na
-        pair_coeff 4 4 0.1 4.417     # Cl-Cl
-        ```
-        
-        IMPORTANT: Do NOT include markdown formatting, code block markers, or any backticks in your response.
-        Return ONLY the raw LAMMPS script content without any additional text.
+        IMPORTANT: Return ONLY the raw LAMMPS script content without any markdown formatting, code block markers, or backticks.
         """
         
         response = self.model.generate_content(prompt)
@@ -275,17 +409,80 @@ class LAMMPSSimulationAgent:
         
         return script_text
     
-    def _ensure_force_field_parameters(self, script: str, system_info: Dict[str, Any]) -> str:
+    def _generate_output_commands(self, 
+                                required_outputs: List[str], 
+                                properties_to_calculate: List[str], 
+                                system_info: Dict[str, Any]) -> str:
         """
-        Ensure the script has all necessary force field parameters.
+        Generate LAMMPS output command instructions based on required outputs and properties.
+        """
+        instructions = []
         
-        Args:
-            script: The LAMMPS script
-            system_info: System information dictionary
+        # Basic outputs that should always be included
+        instructions.append("Include regular thermodynamic output (temperature, pressure, energy, etc.)")
+        
+        # Trajectory output
+        if "trajectory" in required_outputs:
+            instructions.append("Output trajectory in DCD or XYZ format at appropriate intervals")
+        
+        # Density
+        if "density" in required_outputs or "density" in properties_to_calculate:
+            instructions.append("Calculate and output system density")
+        
+        # RDF
+        if "rdf" in required_outputs or any(p in properties_to_calculate for p in ["rdf", "radial distribution", "pair correlation"]):
+            atom_pairs = []
+            if system_info.get("has_water", False):
+                atom_pairs.append("O-O")
+            if system_info.get("has_ions", False):
+                if "Na" in system_info.get("elements", []) and "Cl" in system_info.get("elements", []):
+                    atom_pairs.append("Na-Cl")
+                    atom_pairs.append("Na-O")
+                    atom_pairs.append("Cl-O")
             
-        Returns:
-            Updated LAMMPS script with force field parameters
-        """
+            if atom_pairs:
+                instructions.append(f"Calculate radial distribution functions for atom pairs: {', '.join(atom_pairs)}")
+            else:
+                instructions.append("Calculate radial distribution functions for relevant atom pairs")
+        
+        # MSD/Diffusion
+        if "msd" in required_outputs or "diffusion" in required_outputs or any(p in properties_to_calculate for p in ["diffusion", "mobility", "msd"]):
+            if system_info.get("has_ions", False):
+                instructions.append("Calculate mean squared displacement (MSD) separately for each ion type")
+            else:
+                instructions.append("Calculate mean squared displacement (MSD) for appropriate atom types")
+        
+        # Viscosity
+        if "viscosity" in required_outputs or "viscosity" in properties_to_calculate:
+            instructions.append("Calculate viscosity using Green-Kubo formalism with pressure tensor autocorrelation")
+        
+        # Dielectric
+        if "dielectric" in required_outputs or any(p in properties_to_calculate for p in ["dielectric", "polarization"]):
+            instructions.append("Track system dipole moment for dielectric constant calculation")
+        
+        return "\n".join(instructions)
+    
+    def _clean_script(self, script_text: str) -> str:
+        """Remove markdown formatting and other unwanted elements from the script."""
+        # Remove markdown code block markers
+        script_text = re.sub(r'```(?:lammps|bash)?', '', script_text)
+        
+        # Remove any trailing backticks that might be closing a code block
+        script_text = script_text.replace('```', '')
+        
+        # Remove any leading/trailing whitespace
+        script_text = script_text.strip()
+        
+        # Ensure the script starts with a valid LAMMPS command or comment
+        if not script_text.startswith(('#', 'units', 'echo', 'log', 'atom_style')):
+            # Add a comment at the beginning if needed
+            script_text = f"# LAMMPS script for: {script_text.split(os.linesep)[0]}\n\n" + script_text
+        
+        self.logger.info("Cleaned script output of markdown formatting")
+        return script_text
+    
+    def _ensure_force_field_parameters(self, script: str, system_info: Dict[str, Any]) -> str:
+        """Ensure the script has all necessary force field parameters."""
         lines = script.split('\n')
         
         # Check if script has necessary force field commands
@@ -317,15 +514,7 @@ class LAMMPSSimulationAgent:
         return '\n'.join(lines)
     
     def _generate_force_field_parameters(self, system_info: Dict[str, Any]) -> str:
-        """
-        Generate force field parameters based on system analysis.
-        
-        Args:
-            system_info: System information dictionary
-            
-        Returns:
-            String containing force field parameter commands
-        """
+        """Generate force field parameters based on system analysis."""
         params = []
         
         # Add basic styles
@@ -383,23 +572,113 @@ class LAMMPSSimulationAgent:
             
         return "\n".join(params)
     
-    def _clean_script(self, script_text: str) -> str:
-        """Remove markdown formatting and other unwanted elements from the script."""
-        import re
+    def _generate_readme(self, **kwargs) -> str:
+        """Generate a README file with analysis instructions based on the research goal."""
+        research_goal = kwargs.get("research_goal", "")
+        system_description = kwargs.get("system_description", "")
+        system_info = kwargs.get("system_info", {})
+        simulation_params = kwargs.get("simulation_params", {})
         
-        # Remove markdown code block markers
-        script_text = re.sub(r'```(?:lammps|bash)?', '', script_text)
+        # Create README path
+        readme_path = os.path.join(self.working_dir, "README.md")
         
-        # Remove any trailing backticks that might be closing a code block
-        script_text = script_text.replace('```', '')
+        # Generate content based on research goal and simulation parameters
+        with open(readme_path, 'w') as f:
+            # Header
+            f.write(f"# Molecular Dynamics Simulation: {system_description}\n\n")
+            
+            # Research goal
+            f.write(f"## Research Goal\n{research_goal}\n\n")
+            
+            # System composition
+            f.write("## System Composition\n")
+            for element, count in system_info.get("element_counts", {}).items():
+                f.write(f"- {element}: {count} atoms\n")
+            f.write(f"- Total atoms: {system_info.get('atom_count', 'Unknown')}\n\n")
+            
+            # Simulation parameters
+            f.write("## Simulation Parameters\n")
+            properties = simulation_params.get("properties_to_calculate", [])
+            if properties:
+                f.write(f"- Properties to calculate: {', '.join(properties)}\n")
+            f.write(f"- Temperature: {simulation_params.get('temperature', 300.0)} K\n")
+            f.write(f"- Pressure: {simulation_params.get('pressure', 1.0)} atm\n")
+            f.write(f"- Ensemble: {simulation_params.get('ensemble', 'NPT')}\n")
+            f.write(f"- Timestep: {simulation_params.get('timestep', 2.0)} fs\n")
+            f.write(f"- Total simulation time: {simulation_params.get('simulation_time', 2.0)} ns\n\n")
+            
+            # How to run
+            f.write("## How to Run\n")
+            f.write("```bash\n")
+            f.write(f"cd {self.working_dir}\n")
+            f.write(f"lmp -in {os.path.basename(kwargs.get('script_path', 'run.lammps'))}\n")
+            f.write("```\n\n")
+            
+            # Analysis instructions
+            f.write("## Analysis Instructions\n")
+            
+            # Generate specific analysis instructions based on properties to calculate
+            analysis_steps = self._generate_analysis_instructions(
+                research_goal=research_goal,
+                properties=properties,
+                required_outputs=simulation_params.get("required_outputs", []),
+                system_info=system_info
+            )
+            
+            for i, step in enumerate(analysis_steps, 1):
+                f.write(f"{i}. {step}\n")
+            
+        return readme_path
+    
+    def _generate_analysis_instructions(self, 
+                                      research_goal: str, 
+                                      properties: List[str], 
+                                      required_outputs: List[str],
+                                      system_info: Dict[str, Any]) -> List[str]:
+        """Generate step-by-step analysis instructions based on the research goal."""
+        # Start with standard instructions
+        instructions = [
+            "Verify system equilibration by checking energy, temperature, and pressure over time",
+            "Analyze trajectory files using visualization tools like VMD or OVITO"
+        ]
         
-        # Remove any leading/trailing whitespace
-        script_text = script_text.strip()
+        # Add property-specific instructions
+        if "density" in properties or "density" in required_outputs:
+            instructions.append("Calculate average density from the production phase")
+            instructions.append("Compare density with experimental values")
         
-        # Ensure the script starts with a valid LAMMPS command or comment
-        if not script_text.startswith(('#', 'units', 'echo', 'log', 'atom_style')):
-            # Add a comment at the beginning if needed
-            script_text = "# LAMMPS simulation script generated by LAMMPSSimulationAgent\n\n" + script_text
+        if any(p in properties + required_outputs for p in ["diffusion", "msd", "mobility"]):
+            instructions.append("Plot mean squared displacement (MSD) vs time")
+            instructions.append("Calculate diffusion coefficients using the Einstein relation: D = MSD/(6t)")
+            if system_info.get("has_ions", False):
+                instructions.append("Compare diffusion coefficients of different ion types")
         
-        self.logger.info("Cleaned script output of markdown formatting")
-        return script_text
+        if any(p in properties + required_outputs for p in ["rdf", "structure", "radial"]):
+            instructions.append("Plot radial distribution functions to analyze molecular structure")
+            instructions.append("Identify coordination shells from RDF peaks")
+            if system_info.get("has_water", False) and system_info.get("has_ions", False):
+                instructions.append("Calculate hydration numbers of ions by integrating the first peak of ion-water RDFs")
+        
+        if any(p in properties + required_outputs for p in ["viscosity"]):
+            instructions.append("Calculate viscosity from the Green-Kubo integral of pressure tensor autocorrelation")
+            instructions.append("Compare calculated viscosity with experimental values")
+        
+        if any(p in properties + required_outputs for p in ["dielectric", "polarization"]):
+            instructions.append("Calculate dielectric constant from dipole moment fluctuations")
+        
+        # Add customized instructions based on research goal
+        lower_goal = research_goal.lower()
+        
+        if "compare" in lower_goal or "different" in lower_goal:
+            instructions.append("Compare results across different simulation conditions or systems")
+        
+        if "temperature" in lower_goal and "effect" in lower_goal:
+            instructions.append("Plot the calculated properties as a function of temperature to identify trends")
+        
+        if "pressure" in lower_goal and "effect" in lower_goal:
+            instructions.append("Plot the calculated properties as a function of pressure to identify trends")
+        
+        if "concentration" in lower_goal:
+            instructions.append("Analyze how properties change with concentration")
+        
+        return instructions
