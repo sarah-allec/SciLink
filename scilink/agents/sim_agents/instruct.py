@@ -425,6 +425,8 @@ $atom:Na $mol @atom:407 1.0 0.0 0.0 0.0
 $atom:Cl $mol @atom:401 -1.0 2.0 0.0 0.0
 }}
 }}
+   - Make sure that the atom identifier matches the atom's name in the pdb file
+   - Make sure that you correctly reference the numbered atom in the selected force field (e.g., @atom:407)
 4. **Create Molecule Instances**:
 - Use the `new` command with either your custom molecules or force field templates
 - Use the correct counts from the PDB analysis
