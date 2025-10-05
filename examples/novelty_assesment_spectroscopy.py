@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
 import sys
-sys.path.append("../../scilink")
+sys.path.append("../")
 
 import scilink
 
 # Configure APIs
-scilink.configure('google', '')
+scilink.configure('google', '') #I suggest change 'google' to LLM key
 scilink.configure('futurehouse', '')
 
 
@@ -19,7 +19,7 @@ if __name__ == "__main__":
     workflow = scilink.workflows.ExperimentNoveltyAssessment(
         data_type='spectroscopy',
         enable_human_feedback=True,
-        measurement_recommendations=True
+        measurement_recommendations=True,
     )
 
     result_unified = workflow.run_complete_workflow(

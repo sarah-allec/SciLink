@@ -1,3 +1,5 @@
+import sys
+sys.path.append("../")
 import scilink
 from scilink.workflows.dft_workflow import DFTWorkflow
 
@@ -23,7 +25,7 @@ scilink.configure('materials_project', '')
 #request = "4x4x2 Gallium Nitride supercell, wurtzite phase, with a single Carbon atom substituting a Nitrogen atom"
 request = "4x4x2 Gallium Nitride supercell, wurtzite phase, with a Gallium vacancy and an adjacent Oxygen atom substituting a Nitrogen atom"
 
-workflow = DFTWorkflow(max_refinement_cycles=4, output_dir='GaN_def')
+workflow = DFTWorkflow(max_refinement_cycles=3, generator_model = "gemini-2.5-pro", validator_model= "gemini-2.5-pro", output_dir='GaN_def')
 
 result = workflow.run_complete_workflow(request)
 print(workflow.get_summary(result))

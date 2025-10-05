@@ -14,16 +14,21 @@ from .utils import generate_structure_views
 
 
 class StructureValidatorAgent:
-    def __init__(self, api_key: str, model_name: str):
+    def __init__(self, api_key: str, model_name: str, local_model: str = None):
         if api_key is None:
             api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("API key not provided for StructureValidatorAgent and GOOGLE_API_KEY not set.")
-        
-        genai.configure(api_key=api_key)
+            
+        if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
+            from ..exp_agents.openai_wrapper import OpenAIAsGenerativeModel
+            self.model = OpenAIAsGenerativeModel(model_name, api_key = api_key, base_url= local_model) #This not google API key but API key
+            self.generation_config = None
+        else:
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel(model_name)
+            self.generation_config = GenerationConfig(response_mime_type="application/json")
         self.model_name = model_name
-        self.model = genai.GenerativeModel(self.model_name)
-        self.generation_config = GenerationConfig(response_mime_type="application/json")
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"StructureValidatorAgent initialized with model: {self.model_name}.")
 

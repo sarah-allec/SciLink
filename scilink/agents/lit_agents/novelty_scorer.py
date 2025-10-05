@@ -16,7 +16,7 @@ from .instruct import NOVELTY_SCORING_INSTRUCTIONS
 class NoveltyScorer:
     """Enhanced novelty assessment using structured scoring instead of binary Yes/No."""
     
-    def __init__(self, google_api_key: str = None, model_name: str = "gemini-2.5-flash-preview-05-20"):
+    def __init__(self, google_api_key: str = None, model_name: str = "gemini-2.5-flash-preview-05-20", local_model: str = None):
         """
         Initialize the novelty scorer.
         
@@ -28,12 +28,16 @@ class NoveltyScorer:
             google_api_key = get_api_key('google')
             if not google_api_key:
                 raise APIKeyNotFoundError('google')
-        
-        genai.configure(api_key=google_api_key)
-        self.model = genai.GenerativeModel(model_name)
-        self.generation_config = GenerationConfig(response_mime_type="application/json")
+        if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
+            from ..exp_agents.openai_wrapper import OpenAIAsGenerativeModel
+            model_name = 'gemini-2.5-pro-birthright' # This is hard-coded
+            self.model = OpenAIAsGenerativeModel(model_name, api_key = google_api_key, base_url= local_model) #This not google API key but API key
+            self.generation_config = None
+        else:
+            genai.configure(api_key=google_api_key)
+            self.model = genai.GenerativeModel(model_name)
+            self.generation_config = GenerationConfig(response_mime_type="application/json")
         self.logger = logging.getLogger(__name__)
-        
         self.logger.info(f"NoveltyScorer initialized with model: {model_name}")
     
     def score_novelty(self, question: str, owl_response: str) -> Dict[str, Any]:

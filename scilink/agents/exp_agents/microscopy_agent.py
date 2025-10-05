@@ -367,7 +367,7 @@ class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             
             # Lazy initialization: create the agent only when it's first needed.
             if not self._recommendation_agent:
-                self._recommendation_agent = RecommendationAgent(self.google_api_key, self.model_name)
+                self._recommendation_agent = RecommendationAgent(self.google_api_key, self.model_name, self.local_model)
             
             # Correctly delegate the call with all necessary arguments
             return self._recommendation_agent.generate_dft_recommendations_from_text(
