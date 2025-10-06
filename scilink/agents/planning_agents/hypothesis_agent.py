@@ -1,39 +1,59 @@
 import google.generativeai as genai
 import json
+import logging
 from typing import List, Dict, Any
 from pathlib import Path
 
-# Import the components we've built
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass
 from .instruct import HYPOTHESIS_GENERATION_INSTRUCTIONS
 from ...auth import get_api_key, APIKeyNotFoundError
+from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
 
 
 class HypothesisGeneratorAgent:
     """
     Orchestrates the RAG pipeline to generate experimental hypotheses from documents.
+    Supports both Google and OpenAI-compatible (e.g., incubator) models.
     """
     def __init__(self, google_api_key: str = None, 
                  model_name: str = "gemini-2.5-pro-preview-06-05",
+                 local_model: str = None,
                  embedding_model: str = "gemini-embedding-001"):
+        
         if google_api_key is None:
+            # Note: This key will be used for the incubator model if local_model is set
             google_api_key = get_api_key('google')
             if not google_api_key:
                 raise APIKeyNotFoundError('google')
         
-        genai.configure(api_key=google_api_key)
-        self.model = genai.GenerativeModel(model_name)
+        # --- Logic to Switch Generation LLM Backend ---
+        if local_model and ('ai-incubator' in local_model or 'openai' in local_model):
+            logging.info(f"🏛️  Using OpenAI-compatible model for generation: {model_name}")
+            self.model = OpenAIAsGenerativeModel(
+                model_name,
+                api_key=google_api_key, # The key for the incubator/OpenAI service
+                base_url=local_model   # The URL for the incubator/OpenAI service
+            )
+            self.generation_config = None 
+        else:
+            logging.info(f"☁️  Using Google Gemini model for generation: {model_name}")
+            genai.configure(api_key=google_api_key)
+            self.model = genai.GenerativeModel(model_name)
+            self.generation_config = genai.types.GenerationConfig(response_mime_type="application/json")
+
+        # --- Configure the KnowledgeBase, passing the backend choice to it ---
         self.knowledge_base = KnowledgeBase(
-            google_api_key=google_api_key, 
-            embedding_model=embedding_model
+            google_api_key=google_api_key,
+            embedding_model=embedding_model,
+            local_model=local_model # Pass the incubator URL down to the knowledge base
         )
 
     def propose_experiments(self, objective: str, pdf_paths: List[str]) -> Dict[str, Any]:
         """
         The main method to run the full RAG pipeline and generate experimental proposals.
         """
-        # Step 1: Parse all PDFs into chunks using our robust two-pass parser
+        # Step 1: Parse all PDFs into chunks
         print("\n--- Step 1: Parsing PDF documents ---")
         all_chunks = []
         for pdf_path in pdf_paths:
@@ -59,7 +79,6 @@ class HypothesisGeneratorAgent:
             for chunk in context_chunks
         )
         
-        # The large prompt string is now imported, keeping this code clean
         prompt = f"""
         {HYPOTHESIS_GENERATION_INSTRUCTIONS}
         
@@ -71,8 +90,7 @@ class HypothesisGeneratorAgent:
         """
 
         try:
-            response = self.model.generate_content(prompt)
-            # Extract JSON from the response, stripping markdown fences
+            response = self.model.generate_content(prompt, generation_config=self.generation_config)
             json_text = response.text.strip().lstrip("```json").rstrip("```")
             result = json.loads(json_text)
             print("  - ✅ Successfully generated and parsed experimental plan.")

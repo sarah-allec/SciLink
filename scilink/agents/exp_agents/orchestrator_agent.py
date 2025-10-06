@@ -29,13 +29,13 @@ class OrchestratorAgent:
         if local_model is not None:
             if 'gguf' in local_model:
                 logging.info(f"💻 Using local agent as the orchestrator.")
-                from .llama_wrapper import LocalLlamaModel
+                from ...wrappers.llama_wrapper import LocalLlamaModel
                 self.model = LocalLlamaModel(local_model)
                 self.generation_config = None
                 self.safety_settings = None
             elif 'ai-incubator' in local_model:
                 logging.info(f"🏛️ Using network agent as the orchestrator.")
-                from .openai_wrapper import OpenAIAsGenerativeModel
+                from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
                 # Auto-discover API key
                 if google_api_key is None:
                     google_api_key = get_api_key('google')
