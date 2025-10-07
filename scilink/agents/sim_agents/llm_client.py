@@ -9,7 +9,7 @@ class LLMClient:
         self.model_name = model_name
         try:
             if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
-                from ..wrappers.openai_wrapper_tools import OpenAIAsGenerativeModel
+                from ...wrappers.openai_wrapper_tools import OpenAIAsGenerativeModel
                 model_name = 'gemini-2.5-pro-birthright' # This is hard-coded
                 self.model = OpenAIAsGenerativeModel(model_name, api_key = api_key, base_url= local_model) #This not google API key but API key
             else:
