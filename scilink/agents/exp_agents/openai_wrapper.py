@@ -60,20 +60,21 @@ class OpenAIAsGenerativeModel:
     def _map_gen_config(self, cfg):
         if not cfg:
             return {}
-        # Map Gemini-style keys to OpenAI params where reasonable
+
         out = {}
-        if "temperature" in cfg:
-            out["temperature"] = cfg["temperature"]
-        if "top_p" in cfg:
-            out["top_p"] = cfg["top_p"]
-        if "max_output_tokens" in cfg:
-            out["max_tokens"] = cfg["max_output_tokens"]
-        if "presence_penalty" in cfg:
-            out["presence_penalty"] = cfg["presence_penalty"]
-        if "frequency_penalty" in cfg:
-            out["frequency_penalty"] = cfg["frequency_penalty"]
-        if "stop_sequences" in cfg:
-            out["stop"] = cfg["stop_sequences"]
+        if getattr(cfg, "temperature", None) is not None:
+            out["temperature"] = cfg.temperature
+        if getattr(cfg, "top_p", None) is not None:
+            out["top_p"] = cfg.top_p
+        if getattr(cfg, "max_output_tokens", None) is not None:
+            out["max_tokens"] = cfg.max_output_tokens
+        if getattr(cfg, "presence_penalty", None) is not None:
+            out["presence_penalty"] = cfg.presence_penalty
+        if getattr(cfg, "frequency_penalty", None) is not None:
+            out["frequency_penalty"] = cfg.frequency_penalty
+        if getattr(cfg, "stop_sequences", None):
+            out["stop"] = cfg.stop_sequences
+
         return out
 
     def _to_data_url(self, mime_type: str, data_bytes: bytes) -> str:
