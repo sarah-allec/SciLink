@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List
 import google.generativeai as genai
 from ase import io
 from ase.io.lammpsdata import read_lammps_data
+from .instruct import LAMMPS_INPUT_GENERATION_TEMPLATE
 
 class LAMMPSSimulationAgent:
     def __init__(self, working_dir: str, api_key: Optional[str] = None):
@@ -31,6 +32,64 @@ class LAMMPSSimulationAgent:
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
+
+    def _integrate_force_field_files(self, script_text: str, force_field_files: Dict[str, str]) -> str:
+        """
+        Integrate force field parameter files into the LAMMPS script.
+        
+        Args:
+            script_text: Original LAMMPS script text
+            force_field_files: Dictionary with paths to force field parameter files
+        
+        Returns:
+            Updated LAMMPS script with force field parameters
+        """
+        if not force_field_files:
+            return script_text
+            
+        lines = script_text.split('\n')
+        
+        # Find the position to insert force field parameters
+        # Usually after reading the data file
+        insert_pos = 0
+        for i, line in enumerate(lines):
+            if "read_data" in line:
+                insert_pos = i + 1
+                break
+                
+        # If no insert position found, insert at the beginning
+        if insert_pos == 0:
+            for i, line in enumerate(lines):
+                if not line.startswith("#") and line.strip():
+                    insert_pos = i
+                    break
+                    
+        # Create the insertion text
+        insertion = [
+            "",
+            "# Include force field parameters",
+        ]
+        
+        # Add main parameter file
+        if "main" in force_field_files:
+            # Copy the file to the working directory
+            main_file = os.path.basename(force_field_files["main"])
+            shutil.copy2(force_field_files["main"], os.path.join(self.working_dir, main_file))
+            insertion.append(f"include {main_file}")
+            
+        # Add additional parameter files
+        for name, path in force_field_files.get("additional", {}).items():
+            if os.path.exists(path):
+                # Copy the file to the working directory
+                add_file = f"{name}.lammps"
+                shutil.copy2(path, os.path.join(self.working_dir, add_file))
+                insertion.append(f"include {add_file}")
+                
+        insertion.append("")
+        
+        # Insert into the script
+        updated_lines = lines[:insert_pos] + insertion + lines[insert_pos:]
+        return '\n'.join(updated_lines)
     
     def generate_simulation(self, 
                           data_file: str, 
@@ -38,6 +97,7 @@ class LAMMPSSimulationAgent:
                           system_description: Optional[str] = None,
                           temperature: float = 300.0,
                           pressure: float = 1.0,
+                          force_field_files: Optional[Dict[str, str]] = None,
                           **kwargs) -> Dict[str, Any]:
         """
         Generate LAMMPS simulation(s) based on a research goal.
@@ -48,6 +108,7 @@ class LAMMPSSimulationAgent:
             system_description: Description of the molecular system (optional)
             temperature: Default temperature in K
             pressure: Default pressure in atm
+            force_field_files: Dictionary with paths to force field parameter files
             **kwargs: Additional parameters
             
         Returns:
@@ -81,8 +142,15 @@ class LAMMPSSimulationAgent:
             **simulation_params
         )
         
-        # Ensure script has all necessary force field parameters
-        script_text = self._ensure_force_field_parameters(script_text, system_info)
+        # Add force field parameters - either from files or generated
+        if force_field_files:
+            # Use provided force field files
+            self.logger.info("Integrating provided force field files")
+            script_text = self._integrate_force_field_files(script_text, force_field_files)
+        else:
+            # Generate basic force field parameters
+            self.logger.info("Generating basic force field parameters")
+            script_text = self._ensure_force_field_parameters(script_text, system_info)
         
         # Save the script
         script_path = os.path.join(self.working_dir, "run.lammps")
@@ -104,8 +172,7 @@ class LAMMPSSimulationAgent:
             "data_path": local_data_file,
             "system_info": system_info,
             "simulation_parameters": simulation_params
-        }
-    
+        }    
     def analyze_system(self, data_file: str) -> Dict[str, Any]:
         """Analyze a LAMMPS data file using ASE to identify its components."""
         self.logger.info(f"Analyzing system from {data_file}")
@@ -354,52 +421,7 @@ class LAMMPSSimulationAgent:
         # Generate outputs section based on required outputs
         output_commands = self._generate_output_commands(required_outputs, properties_to_calculate, system_info)
         
-        prompt = f"""
-        Generate a complete LAMMPS script for molecular dynamics simulation to achieve the following research goal:
-        
-        RESEARCH GOAL: "{research_goal}"
-        
-        SYSTEM DESCRIPTION: {system_description}
-        
-        SYSTEM COMPOSITION:
-          - {element_info_str}
-          - Total atoms: {system_info.get('atom_count', 0)}
-          - Box dimensions: {system_info.get('box_dimensions', [40, 40, 40])}
-          - Bond types: {bond_types}
-          - Angle types: {angle_types}
-          
-        DETECTED COMPONENTS:
-          - Water: {'Yes' if system_info.get('has_water', False) else 'No'}
-          - Ions: {'Yes' if system_info.get('has_ions', False) else 'No'}
-          - Organic molecules: {'Yes' if system_info.get('has_organic', False) else 'No'}
-        
-        SIMULATION PARAMETERS:
-          - Properties to calculate: {', '.join(properties_to_calculate)}
-          - Temperature: {temperature} K
-          - Pressure: {pressure} atm
-          - Ensemble: {ensemble}
-          - Timestep: {timestep} fs
-          - Total simulation time: {simulation_time} ns
-          - Equilibration steps: {equil_steps}
-          - Production steps: {prod_steps}
-          - Required outputs: {', '.join(required_outputs)}
-        
-        REQUIRED SECTIONS:
-        1. Initialization (units, atom_style, etc.)
-        2. System setup (read data file "{data_filename}")
-        3. Force field settings (complete with all coefficients)
-        4. Energy minimization
-        5. Equilibration phase(s) 
-        6. Production phase with appropriate outputs
-        7. Analysis commands for the specified properties
-        
-        SPECIAL OUTPUT REQUIREMENTS:
-        {output_commands}
-        
-        Include thorough comments explaining each section and its purpose. The script should be directly executable in LAMMPS.
-        
-        IMPORTANT: Return ONLY the raw LAMMPS script content without any markdown formatting, code block markers, or backticks.
-        """
+        prompt = LAMMPS_INPUT_GENERATION_TEMPLATE
         
         response = self.model.generate_content(prompt)
         script_text = response.text

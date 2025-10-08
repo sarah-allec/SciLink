@@ -365,87 +365,49 @@ IMPORTANT: Use ONLY the molecules listed above. Do not reference any molecules t
 
 Generate the PACKMOL script:"""
 
-MOLTEMPLATE_INPUT_GENERATION_INSTRUCTIONS = """
-You are an expert in creating Moltemplate system.lt files for LAMMPS.
-Your task is to generate a complete system.lt file based on the provided system description, molecule counts, and available force fields.
+LAMMPS_INPUT_GENERATION_TEMPLATE = """
+Generate a complete LAMMPS script for molecular dynamics simulation to achieve the following research goal:
 
-## CONTEXT
-The final LAMMPS system will be built using `moltemplate.sh -pdb system.pdb system.lt`.
-The `system.pdb` file has already been prepared with packmol and contains molecules with shortened names (3 characters max).
+RESEARCH GOAL: "{research_goal}"
 
-## INPUT DATA
-1. **System Description**: {system_description}
-2. **Available Force Fields and Their Templates**:
-{force_field_info}
-3. **Molecule Counts** (from the PDB file):
-{molecule_counts}
+SYSTEM DESCRIPTION: {system_description}
 
-## YOUR TASK
-Generate a complete and executable `system.lt` file that correctly maps to the PDB molecule names:
+SYSTEM COMPOSITION:
+  - {element_info_str}
+  - Total atoms: {system_info.get('atom_count', 0)}
+  - Box dimensions: {system_info.get('box_dimensions', [40, 40, 40])}
+  - Bond types: {bond_types}
+  - Angle types: {angle_types}
+  
+DETECTED COMPONENTS:
+  - Water: {'Yes' if system_info.get('has_water', False) else 'No'}
+  - Ions: {'Yes' if system_info.get('has_ions', False) else 'No'}
+  - Organic molecules: {'Yes' if system_info.get('has_organic', False) else 'No'}
 
-1. **Select and Import the Appropriate Force Field**:
-   - Analyze the system description and molecule types
-   - Select the most suitable force field(s) for this system from the available options
-   - Import the corresponding lt files in system.lt
+SIMULATION PARAMETERS:
+  - Properties to calculate: {', '.join(properties_to_calculate)}
+  - Temperature: {temperature} K
+  - Pressure: {pressure} atm
+  - Ensemble: {ensemble}
+  - Timestep: {timestep} fs
+  - Total simulation time: {simulation_time} ns
+  - Equilibration steps: {equil_steps}
+  - Production steps: {prod_steps}
+  - Required outputs: {', '.join(required_outputs)}
 
-2. **CRITICAL: PDB MOLECULE NAME COMPATIBILITY**:
-   - You have TWO options for handling molecule names that don't match force field templates:
-   
-     OPTION 1 (PREFERRED): Define molecules with the EXACT names from the PDB file:
-     ```
-     # This defines a molecule named H2O that inherits properties from SPCE
-     H2O inherits SPCE {{
-       # Can be empty if no customizations needed
-     }}
-     ```
-     
-     OPTION 2: Use the force field template names directly and specify mappings to update the PDB. Here, you 
-     will need to ensure that the new moledule identifier has a max of 3 characters. For example, for SPCE water,
-     ```
-     # This would require mapping H2O → SPC in the PDB file
-     molecule_mappings = {{"H2O": "SPC"}}
-     ```
-     and
-     ```
-     # This defines a molecule named SPC that inherits properties from SPCE
-     SPC inherits SPCE {{
-       # Can be empty if no customizations needed
-     }}
-     ```
-   
-   - IMPORTANT: Always use proper inheritance with the `inherits` keyword
-   - NEVER use aliases or assignments like `H2O = new SPCE` (this will fail)
+REQUIRED SECTIONS:
+1. Initialization (units, atom_style, etc.)
+2. System setup (read data file "{data_filename}")
+3. Force field settings (complete with all coefficients)
+4. Energy minimization
+5. Equilibration phase(s) 
+6. Production phase with appropriate outputs
+7. Analysis commands for the specified properties
 
-3. **Define Custom Molecule Templates**:
-   - For molecules not in the force field, create complete definitions with proper types
-   - For molecules like NaCl (NAC in PDB), define a complete template:
-NAC inherits OPLSAA {{
-write("Data Atoms") {{
-$atom:Na $mol @atom:407 1.0 0.0 0.0 0.0
-$atom:Cl $mol @atom:401 -1.0 2.0 0.0 0.0
-}}
-}}
-   - Make sure that the atom identifier matches the atom's name in the pdb file
-   - Make sure that you correctly reference the numbered atom in the selected force field (e.g., @atom:407)
-4. **Create Molecule Instances**:
-- Use the `new` command with either your custom molecules or force field templates
-- Use the correct counts from the PDB analysis
-waters = new H2O [2100] # If you defined H2O above
-salt = new NAC [20] # If you defined NAC above
+SPECIAL OUTPUT REQUIREMENTS:
+{output_commands}
 
-5. **Set Simulation Box Dimensions**:
-- Use a `write_once("Data Boundary")` block to define the simulation box
-- A standard 40x40x40 Angstrom box is appropriate unless otherwise specified
+Include thorough comments explaining each section and its purpose. The script should be directly executable in LAMMPS.
 
-## RESPONSE FORMAT
-You MUST provide a valid JSON response with the following keys:
-
-```json
-{{
-  "thought": "A detailed explanation of your analysis and decisions for this system, including force field selection, naming strategy, and any special handling needed.",
-  "system_lt": "The complete, executable content of the system.lt file as a single string. Use \\n for newlines.",
-  "molecule_mappings": {{"PDB_MOLECULE_NAME": "TEMPLATE_NAME", ...}} 
-}}
-IMPORTANT: If using OPTION 1 (defining molecules with PDB names), return an EMPTY molecule_mappings object {{}}.
-Only include mappings if you choose OPTION 2.
+IMPORTANT: Return ONLY the raw LAMMPS script content without any markdown formatting, code block markers, or backticks.
 """
