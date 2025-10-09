@@ -8,7 +8,7 @@ import textwrap
 from pathlib import Path
 
 from .analyzers import MicroscopyAnalyzer, SpectroscopyAnalyzer, BaseExperimentAnalyzer, CurveAnalyzer
-
+from ..workflows.dft_recommendation_workflow import DFTRecommendationsWorkflow
 from ..agents.exp_agents.microscopy_agent import MicroscopyAnalysisAgent
 from ..agents.lit_agents.literature_agent import OwlLiteratureAgent
 from ..agents.lit_agents.novelty_scorer import NoveltyScorer, enhanced_novelty_assessment
@@ -94,7 +94,7 @@ class ExperimentNoveltyAssessment:
                  analysis_model: str = "gemini-2.5-pro-preview-06-05",
                  local_model: str = None,
                  output_dir: str = "experiment_novelty_output",
-                 max_wait_time: int = 600,
+                 max_wait_time: int = 1000,
                  dft_recommendations: bool = False,
                  measurement_recommendations: bool = False,
                  enable_human_feedback: bool = True,
@@ -293,8 +293,8 @@ class ExperimentNoveltyAssessment:
             print(f"{'─'*50}")
             
             dft_result = self._generate_dft_recommendations(
-                workflow_result["claims_generation"]["detailed_analysis"],
-                workflow_result["novelty_assessment"] 
+                workflow_result,
+                system_info 
             )
             workflow_result["dft_recommendations"] = dft_result
             
@@ -708,93 +708,49 @@ class ExperimentNoveltyAssessment:
         
         print("\n" + "="*60)
     
-    def _generate_dft_recommendations(self, initial_analysis_text: str, novelty_assessment: Dict[str, Any]) -> Dict[str, Any]:
+    def _generate_dft_recommendations(self, novelty_result: Dict[str, Any], system_info: Union[str, Path, Dict[str, Any]]) -> Dict[str, Any]:
         """Generate DFT recommendations based on enhanced novelty analysis (microscopy only)"""
         
         print(f"⚛️  Generating DFT structure recommendations...")
         
         try:
-            # Extract high and moderate novelty claims for prioritization
-            high_novel = novelty_assessment.get("novelty_categories", {}).get("highly_novel", [])
-            moderate_novel = novelty_assessment.get("novelty_categories", {}).get("moderately_novel", [])
+            # Extract data from enhanced novelty assessment
+            analysis_text = novelty_result["claims_generation"]["detailed_analysis"]
+            assessment = novelty_result.get("novelty_assessment", {})
             
-            # Generate enhanced novelty context for DFT recommendations
-            if high_novel or moderate_novel:
-                novelty_section_text = "The following claims/observations have been assessed through literature review with their novelty scores:\n\n"
-                
-                if high_novel:
-                    novelty_section_text += "HIGH NOVELTY FINDINGS (Scores 4-5):\n"
-                    for i, claim in enumerate(high_novel, 1):
-                        novelty_section_text += f"{i}. {claim}\n"
-                    novelty_section_text += "\n"
-                
-                if moderate_novel:
-                    novelty_section_text += "MODERATE NOVELTY FINDINGS (Score 3):\n"
-                    for i, claim in enumerate(moderate_novel, 1):
-                        novelty_section_text += f"{i}. {claim}\n"
-                    novelty_section_text += "\n"
-                
-                avg_score = novelty_assessment.get("average_novelty_score", 0)
-                novelty_section_text += f"Average novelty score: {avg_score:.2f}/5.0\n\n"
-                
-                novelty_section_text += ("Your primary goal for the DFT recommendations should be to propose structures and simulations "
-                                    "that can rigorously investigate these novel aspects, with priority given to the highest-scoring claims. "
-                                    "Explain the connection between each recommended structure and the specific novel findings it would help investigate.")
-                
-                novelty_context = novelty_section_text
+            # Prioritize high and moderate novelty claims
+            high_novel = assessment.get("novelty_categories", {}).get("highly_novel", [])
+            moderate_novel = assessment.get("novelty_categories", {}).get("moderately_novel", [])
+            priority_claims = high_novel + moderate_novel
+            
+            # Load system info if it's a file path
+            if isinstance(system_info, (str, Path)):
+                with open(system_info, 'r') as f:
+                    system_info_dict = json.load(f)
             else:
-                novelty_context = "No high-novelty claims were identified through literature review. Please make DFT recommendations based on the most scientifically interesting aspects of the provided analysis."
+                system_info_dict = system_info
             
             # Instantiate a text-only analysis agent for this step
-            dft_agent = MicroscopyAnalysisAgent(
-                google_api_key=self.google_api_key,
-                model_name=self.analysis_model,
-                local_model=self.local_model
+            dft_agent = DFTRecommendationsWorkflow(
+                 google_api_key=self.google_api_key,
+                 analysis_model = self.analysis_model,
+                 local_model = self.local_model,
+                 output_dir = "dft_output")
+
+            dft_recommendations_result = dft_agent.run_from_data(
+                analysis_text=analysis_text,
+                novel_claims=priority_claims,  # Use prioritized claims
+                system_info=system_info_dict
             )
             
-            # Generate DFT recommendations using text-only path
-            dft_recommendations_result = dft_agent.analyze_microscopy_image_for_structure_recommendations(
-                image_path=None,  # Text-only path
-                system_info=None,
-                additional_prompt_context=novelty_context,
-                cached_detailed_analysis=initial_analysis_text
-            )
-            
-            if "error" in dft_recommendations_result:
-                return {
-                    "status": "error",
-                    "message": f"DFT recommendation generation failed: {dft_recommendations_result.get('details', dft_recommendations_result.get('error'))}"
-                }
-            
-            reasoning_text = dft_recommendations_result.get("analysis_summary_or_reasoning", "No reasoning provided")
+            reasoning_text = dft_recommendations_result.get("reasoning", "No reasoning provided")
             recommendations = dft_recommendations_result.get("recommendations", [])
             
             print(f"   ✅ Generated {len(recommendations)} DFT structure recommendations")
             
             self._display_dft_recommendations(reasoning_text, recommendations, high_novel + moderate_novel)
 
-            # Save DFT recommendations
-            dft_file = self.output_dir / "dft_recommendations.json"
-            dft_output = {
-                "reasoning_for_recommendations": reasoning_text,
-                "recommendations": recommendations,
-                "novelty_context": novelty_context,
-                "novelty_scores_used": {
-                    "high_novel_count": len(high_novel),
-                    "moderate_novel_count": len(moderate_novel),
-                    "average_score": novelty_assessment.get("average_novelty_score", 0)
-                }
-            }
-            with open(dft_file, 'w') as f:
-                json.dump(dft_output, f, indent=2)
-            
-            return {
-                "status": "success",
-                "recommendations": recommendations,
-                "reasoning": reasoning_text,
-                "dft_file": str(dft_file),
-                "total_recommendations": len(recommendations)
-            }
+            return {"dft_file": dft_recommendations_result["output_file"],"total_recommendations": len(recommendations), **dft_recommendations_result} 
             
         except Exception as e:
             return {
