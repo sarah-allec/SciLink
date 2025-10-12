@@ -247,6 +247,14 @@ Directory Structure (for novelty/experiment2dft commands):
         default='gemini-2.5-pro-preview-06-05',
         help='Analysis model (default: %(default)s)'
     )
+
+    parser.add_argument(
+        '--local-model',
+        type=str,
+        default=None,
+        help='URL for a local OpenAI-compatible API endpoint (e.g., "http://host.docker.internal:8000/v1").'
+    )
+    
     parser.add_argument(
         '--no-spectral-unmixing',
         action='store_true',
@@ -446,6 +454,7 @@ def run_experiment2dft_workflow(args, data_file: str, metadata_file: str, struct
         'analysis_model': args.model,
         'generator_model': args.model,
         'validator_model': args.model,
+        'local_model': args.local_model,
         'output_dir': args.output_dir,
         'max_wait_time': args.wait_time,
         'max_refinement_cycles': args.max_refinement_cycles,
@@ -519,6 +528,7 @@ def run_dft_workflow(args, user_request: str):
     workflow = DFTWorkflow(
         generator_model=args.model,
         validator_model=args.model,
+        local_model=args.local_model,
         output_dir=args.output_dir,
         max_refinement_cycles=getattr(args, 'max_refinement_cycles', 2),
         script_timeout=getattr(args, 'script_timeout', 300)
