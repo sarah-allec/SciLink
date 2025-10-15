@@ -59,7 +59,7 @@ class KnowledgeBase:
         for i in range(0, len(texts_to_embed), batch_size):
             batch_texts = texts_to_embed[i:i + batch_size]
             
-            # This call is now polymorphic and works with either backend
+            # This call is polymorphic and works with either backend
             response = self.embedding_client.embed_content(
                 model=self.embedding_model_name,
                 content=batch_texts,
@@ -94,6 +94,9 @@ class KnowledgeBase:
             task_type="RETRIEVAL_QUERY" # Ignored by OpenAI wrapper, used by Google
         )
         query_embedding = np.array([response['embedding']], dtype=np.float32)
+
+        if query_embedding.ndim == 3:
+            query_embedding = np.squeeze(query_embedding, axis=0)
 
         distances, indices = self.index.search(query_embedding, top_k)
         retrieved_chunks = [self.chunks[i] for i in indices[0]]
