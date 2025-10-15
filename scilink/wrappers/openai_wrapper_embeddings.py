@@ -1,5 +1,8 @@
 import openai
 from typing import List
+from openai._utils import maybe_transform
+from openai.types import embedding_create_params
+from openai.types.create_embedding_response import CreateEmbeddingResponse
 
 class OpenAIAsEmbeddingModel:
     """
@@ -11,27 +14,23 @@ class OpenAIAsEmbeddingModel:
 
     def embed_content(self, model: str, content: List[str], task_type: str = None, title: str = None, **kwargs) -> dict:
         """
-        Generates embeddings for a list of text content.
-        
-        Args:
-            model (str): The model name (ignored, uses model from __init__).
-            content (List[str]): A list of strings to embed.
-            task_type (str, optional): Ignored for compatibility.
-            title (str, optional): Ignored for compatibility.
-
-        Returns:
-            dict: A dictionary in the format {'embedding': [vector1, vector2, ...]}
-                  to match the google-generativeai API response.
+        Generates embeddings by calling the internal `_post` method
         """
-        # OpenAI-compatible API uses the 'input' parameter
-        response = self.client.embeddings.create(
-            model=self.model,
-            input=content
+
+        params = {
+            "model": self.model,
+            "input": content,
+        }
+
+        response = self.client.embeddings._post(
+            "/embeddings",
+            body=maybe_transform(params, embedding_create_params.EmbeddingCreateParams),
+            cast_to=CreateEmbeddingResponse,
         )
-        
-        # Transform the OpenAI-style response to the Google-style response
-        # OpenAI: response.data = [Embedding(embedding=[...]), Embedding(embedding=[...])]
-        # Google: response = {'embedding': [[...], [...]]}
+
+        if not response.data:
+            raise ValueError(f"Invalid response from embedding API: 'data' key is empty or missing. Response: {response}")
+
         all_embedding_vectors = [item.embedding for item in response.data]
-        
+
         return {'embedding': all_embedding_vectors}
