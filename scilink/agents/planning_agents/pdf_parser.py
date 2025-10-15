@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 
-# --- Timeout Functionality ---
+
 class TimeoutError(Exception):
     pass
 
@@ -22,7 +22,6 @@ class timeout:
     def __exit__(self, type, value, traceback):
         signal.alarm(0)
 
-# --- Dataclass and Helper Functions ---
 @dataclass
 class ContentBlock:
     text: str; page: int; content_type: str
@@ -60,7 +59,6 @@ def chunk_text(text: str, page_num: int, chunk_size: int, overlap: int) -> List[
         start = end - overlap if end < text_length else end
     return chunks
 
-# --- The Correct and Final Extraction Function ---
 def extract_pdf_two_pass(pdf_path: str, chunk_size: int = 1000, overlap: int = 150, table_timeout: int = 15) -> List[Dict[str, any]]:
     """
     A robust two-pass hybrid extraction pipeline for RAG. This is the stable version.
