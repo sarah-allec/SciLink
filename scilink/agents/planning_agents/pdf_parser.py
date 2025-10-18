@@ -59,7 +59,7 @@ def chunk_text(text: str, page_num: int, chunk_size: int, overlap: int) -> List[
         start = end - overlap if end < text_length else end
     return chunks
 
-def extract_pdf_two_pass(pdf_path: str, chunk_size: int = 1000, overlap: int = 150, table_timeout: int = 15) -> List[Dict[str, any]]:
+def extract_pdf_two_pass(pdf_path: str, chunk_size: int = 500, overlap: int = 50, table_timeout: int = 15) -> List[Dict[str, any]]:
     """
     A robust two-pass hybrid extraction pipeline for RAG. This is the stable version.
     Pass 1 (PyMuPDF): Fast extraction of all text and identification of pages containing tables.
@@ -109,7 +109,7 @@ def extract_pdf_two_pass(pdf_path: str, chunk_size: int = 1000, overlap: int = 1
                             page = pdf.pages[page_num_zero_indexed]
                             tables = page.extract_tables()
                             if tables:
-                                print(f"    - Extracted {len(tables)} table(s) from page {page_num_one_indexed}.")
+                                #print(f"    - Extracted {len(tables)} table(s) from page {page_num_one_indexed}.")
                                 for table in tables:
                                     if table and len(table) > 1:
                                         markdown_table = table_to_markdown(table)
