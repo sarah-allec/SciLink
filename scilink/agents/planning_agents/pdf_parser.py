@@ -1,6 +1,6 @@
 import fitz  # PyMuPDF
 import pdfplumber
-import signal
+import threading
 from typing import List, Dict, Tuple
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,18 +9,25 @@ from pathlib import Path
 class TimeoutError(Exception):
     pass
 
-def _timeout_handler(signum, frame):
-    raise TimeoutError("Function call timed out")
-
 class timeout:
     def __init__(self, seconds=15, error_message="Timeout"):
         self.seconds = seconds
         self.error_message = error_message
+        self.timer = None
+        
+    def _timeout_handler(self):
+        raise TimeoutError(self.error_message)
+    
     def __enter__(self):
-        signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(self.seconds)
-    def __exit__(self, type, value, traceback):
-        signal.alarm(0)
+        self.timer = threading.Timer(self.seconds, self._timeout_handler)
+        self.timer.daemon = True
+        self.timer.start()
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.timer:
+            self.timer.cancel()
+        return False
 
 @dataclass
 class ContentBlock:
