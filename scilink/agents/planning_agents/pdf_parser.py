@@ -5,6 +5,8 @@ from typing import List, Dict, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 
+from .parser_utils import table_to_markdown
+
 
 class TimeoutError(Exception):
     pass
@@ -33,16 +35,6 @@ class timeout:
 class ContentBlock:
     text: str; page: int; content_type: str
 
-def table_to_markdown(table: List[List[str]]) -> str:
-    if not table or not table[0]: return ""
-    # Ensure all cells are strings before joining
-    cleaned_table = [[str(cell).strip() if cell is not None else "" for cell in row] for row in table]
-    header, *rows = cleaned_table
-    md = f"| {' | '.join(header)} |\n| {' | '.join(['---'] * len(header))} |\n"
-    for row in rows:
-        while len(row) < len(header): row.append("")
-        md += f"| {' | '.join(row[:len(header)])} |\n"
-    return md
 
 def chunk_text(text: str, page_num: int, chunk_size: int, overlap: int) -> List[Dict[str, any]]:
     """Chunks a single block of text with overlap."""
