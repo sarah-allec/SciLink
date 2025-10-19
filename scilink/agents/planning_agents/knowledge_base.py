@@ -2,6 +2,8 @@ import numpy as np
 import faiss
 import google.generativeai as genai
 import time
+import json
+from pathlib import Path
 import logging
 from typing import List, Dict, Any
 
@@ -76,6 +78,38 @@ class KnowledgeBase:
         self.index = faiss.IndexFlatL2(dimension)
         self.index.add(embeddings_np)
         print("  - ✅ Knowledge base built successfully.")
+
+    def save(self, index_path: str, chunks_path: str):
+        """Saves the FAISS index and the text chunks to disk."""
+        if self.index:
+            faiss.write_index(self.index, index_path)
+            print(f"  - FAISS index saved to {index_path}")
+        
+        with open(chunks_path, 'w', encoding='utf-8') as f:
+            json.dump(self.chunks, f, indent=2)
+            print(f"  - Chunks saved to {chunks_path}")
+
+    def load(self, index_path: str, chunks_path: str) -> bool:
+        """Loads a pre-built FAISS index and chunks from disk."""
+        index_file = Path(index_path)
+        chunks_file = Path(chunks_path)
+
+        if not index_file.exists() or not chunks_file.exists():
+            print("  - ⚠️  Cannot load: Index or chunks file missing.")
+            return False
+            
+        try:
+            self.index = faiss.read_index(index_path)
+            with open(chunks_file, 'r', encoding='utf-8') as f:
+                self.chunks = json.load(f)
+            
+            print(f"  - ✅ Successfully loaded {len(self.chunks)} chunks and index with {self.index.ntotal} vectors.")
+            return True
+        except Exception as e:
+            print(f"  - ❌ Error loading knowledge base: {e}")
+            self.index = None
+            self.chunks = []
+            return False
 
     def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """

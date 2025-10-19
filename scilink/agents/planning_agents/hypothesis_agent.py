@@ -14,12 +14,16 @@ from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
 class HypothesisGeneratorAgent:
     """
     Orchestrates the RAG pipeline to generate experimental hypotheses from documents.
-    Supports both Google and OpenAI-compatible (e.g., incubator) models.
     """
     def __init__(self, google_api_key: str = None, 
                  model_name: str = "gemini-2.5-pro-preview-06-05",
                  local_model: str = None,
-                 embedding_model: str = "gemini-embedding-001"):
+                 embedding_model: str = "gemini-embedding-001",
+                 kb_base_path: str = "./kb_storage/default_kb"):
+        """
+        Initializes the agent, LLM backends, and attempts to load the
+        knowledge base from the specified disk location.
+        """
         
         if google_api_key is None:
             # Note: This key will be used for the incubator model if local_model is set
@@ -32,8 +36,8 @@ class HypothesisGeneratorAgent:
             logging.info(f"🏛️  Using OpenAI-compatible model for generation: {model_name}")
             self.model = OpenAIAsGenerativeModel(
                 model_name,
-                api_key=google_api_key, # The key for the incubator/OpenAI service
-                base_url=local_model   # The URL for the incubator/OpenAI service
+                api_key=google_api_key,
+                base_url=local_model
             )
             self.generation_config = None 
         else:
@@ -42,38 +46,90 @@ class HypothesisGeneratorAgent:
             self.model = genai.GenerativeModel(model_name)
             self.generation_config = genai.types.GenerationConfig(response_mime_type="application/json")
 
-        # --- Configure the KnowledgeBase, passing the backend choice to it ---
+        # Configure the KnowledgeBase, passing the backend choice to it
         self.knowledge_base = KnowledgeBase(
             google_api_key=google_api_key,
             embedding_model=embedding_model,
-            local_model=local_model # Pass the incubator URL down to the knowledge base
+            local_model=local_model # Pass the incubator URL down
         )
 
-    def propose_experiments(self, objective: str, pdf_paths: List[str]) -> Dict[str, Any]:
+        # Ensure the directory for the KB exists
+        self.kb_path_prefix = Path(kb_base_path)
+        self.kb_path_prefix.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Define the two file paths from the single base path
+        self.index_file = str(self.kb_path_prefix.with_suffix(".faiss"))
+        self.chunks_file = str(self.kb_path_prefix.with_suffix(".json"))
+        
+        # Attempt to load KB on initialization
+        print(f"--- Initializing Agent ---")
+        print(f"Attempting to load Knowledge Base from: {self.kb_path_prefix}.(faiss/json)")
+        self._kb_is_built = self.knowledge_base.load(
+            self.index_file, 
+            self.chunks_file
+        )
+        if self._kb_is_built:
+            print("✅ Knowledge base loaded successfully.")
+        else:
+            print(f"⚠️  No pre-built KB found.")
+            print("   Call .build_knowledge_base(pdf_paths) to create one.")
+
+
+    def build_knowledge_base(self, pdf_paths: List[str]):
         """
-        The main method to run the full RAG pipeline and generate experimental proposals.
+        Parses PDFs, builds the vector index, and saves it to the
+        disk location specified during initialization.
         """
-        # Step 1: Parse all PDFs into chunks
-        print("\n--- Step 1: Parsing PDF documents ---")
+        # Parse all PDFs into chunks
+        print("\n--- Parsing PDF documents ---")
         all_chunks = []
         for pdf_path in pdf_paths:
             all_chunks.extend(extract_pdf_two_pass(pdf_path))
         
         if not all_chunks:
-            return {"error": "Failed to extract any content from the provided PDFs."}
+            print("❌ Error: Failed to extract any content from the provided PDFs.")
+            self._kb_is_built = False
+            return False
             
-        # Step 2: Build the knowledge base from the chunks
-        print("\n--- Step 2: Building Knowledge Base ---")
+        # Build the knowledge base from the chunks
+        print("\n--- Building Knowledge Base (Embedding & Indexing) ---")
         self.knowledge_base.build(all_chunks)
         
-        # Step 3: Retrieve relevant context based on the user's objective
-        print("\n--- Step 3: Retrieving Relevant Context ---")
+        # Save the built KB to disk
+        print(f"\n--- Saving Knowledge Base to Disk ---")
+        self.knowledge_base.save(self.index_file, self.chunks_file)
+
+        self._kb_is_built = True
+        print(f"✅ Knowledge base is built, saved to {self.kb_path_prefix}, and ready.")
+        return True
+
+    def propose_experiments(self, objective: str, pdf_paths: List[str] = None) -> Dict[str, Any]:
+        """
+        Generates experimental proposals based on the loaded knowledge base.
+        
+        Assumes build_knowledge_base() has been called if the KB was not
+        already pre-built and loaded during initialization.
+        """
+        # Load-or-Build check
+        if not self._kb_is_built:
+            if pdf_paths:
+                print(f"⚠️  Knowledge base not built. Building from provided PDFs...")
+                build_success = self.build_knowledge_base(pdf_paths)
+                if not build_success:
+                    return {"error": "Failed to build knowledge base from provided PDFs."}
+            else:
+                return {
+                    "error": "Knowledge base is not built. Please provide 'pdf_paths' on the first call, or call .build_knowledge_base() first."
+                }
+
+        # Retrieve relevant context based on the user's objective
+        print("\n--- Retrieving Relevant Context ---")
         context_chunks = self.knowledge_base.retrieve(objective, top_k=7)
         if not context_chunks:
             return {"error": "Could not retrieve any relevant context from the documents for the given objective."}
 
-        # Step 4: Construct the prompt and generate the hypothesis
-        print("\n--- Step 4: Generating Hypotheses with LLM ---")
+        # Construct the prompt and generate the hypothesis
+        print("\n--- Generating Hypotheses with LLM ---")
         context_str = "\n\n---\n\n".join(
             f"Source: {Path(chunk['metadata']['source']).name}, Page: {chunk['metadata']['page']}\n\n{chunk['text']}" 
             for chunk in context_chunks
