@@ -16,7 +16,7 @@ class VaspInputAgent:
         if not api_key:
             raise ValueError("API key required")
         if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
-            from ..exp_agents.openai_wrapper import OpenAIAsGenerativeModel
+            from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
             self.model = OpenAIAsGenerativeModel(model_name, api_key = api_key, base_url= local_model) #This not google API key but API key
             self.generation_config = None
         else:

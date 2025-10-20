@@ -29,7 +29,7 @@ class NoveltyScorer:
             if not google_api_key:
                 raise APIKeyNotFoundError('google')
         if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
-            from ..exp_agents.openai_wrapper import OpenAIAsGenerativeModel
+            from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
             model_name = 'gemini-2.5-pro-birthright' # This is hard-coded
             self.model = OpenAIAsGenerativeModel(model_name, api_key = google_api_key, base_url= local_model) #This not google API key but API key
             self.generation_config = None

@@ -171,7 +171,14 @@ def create_agent_parser() -> argparse.ArgumentParser:
     parser.add_argument('--system-info', help='Path to the system information JSON file.')
     parser.add_argument('--output-dir', default='agent_output', help='Directory to save agent outputs (default: %(default)s).')
     parser.add_argument('--model', default='gemini-2.5-pro-preview-06-05', help='Generative model to use (default: %(default)s).')
-    
+
+    parser.add_argument(
+        '--local-model',
+        type=str,
+        default=None,
+        help='URL for a local OpenAI-compatible API endpoint (e.g., "http://host.docker.internal:8000/v1").'
+    )
+        
     parser.add_argument(
         '--fft-nmf',
         action='store_true',
@@ -252,6 +259,7 @@ def main():
         # Build arguments dynamically based on the agent's constructor signature
         agent_kwargs = {
             'model_name': args.model,
+            'local_model': args.local_model,
             'enable_human_feedback': False
         }
         

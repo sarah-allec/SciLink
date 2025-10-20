@@ -35,7 +35,7 @@ class RecommendationAgent:
                 raise APIKeyNotFoundError('google')
 
         if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
-            from ..exp_agents.openai_wrapper import OpenAIAsGenerativeModel
+            from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
             model_name = 'gemini-2.5-pro-birthright' # This is hard-coded, which will be a problem in the future: the calling of **some** agents uses hard-coded model names. A dict being passed from the outmost API or a config file would work better.
             self.model_name = model_name 
             self.model = OpenAIAsGenerativeModel(model_name, api_key = google_api_key, base_url= local_model) #This not google API key but API key
