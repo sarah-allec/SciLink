@@ -140,6 +140,8 @@ class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                 components=n_components
             )
             
+            loaded_image = load_image(image_path)
+            
             # AtomAI's analyze_image method handles both file paths and arrays
             components, abundances = analyzer.analyze_image(image_path, output_path=fft_output_base)
             
