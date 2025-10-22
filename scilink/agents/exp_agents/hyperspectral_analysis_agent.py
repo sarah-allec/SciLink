@@ -1,8 +1,8 @@
 import json
 import os
-import logging
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple
+import matplotlib.pyplot as plt
+from typing import Dict, Any, List, Tuple
 from io import BytesIO
 from datetime import datetime
 
@@ -12,6 +12,7 @@ from .instruct import (
     SPECTROSCOPY_ANALYSIS_INSTRUCTIONS, 
     COMPONENT_INITIAL_ESTIMATION_INSTRUCTIONS,
     COMPONENT_VISUAL_COMPARISON_INSTRUCTIONS,
+    COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS,
     SPECTROSCOPY_CLAIMS_INSTRUCTIONS,
     SPECTROSCOPY_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
 )
@@ -40,7 +41,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             'normalize': True,
             'enabled': True,
             'auto_components': True,
-            'max_iter': 500
+            #'max_iter': 500
         }
         self.spectral_settings = spectral_unmixing_settings if spectral_unmixing_settings else default_settings
         self.run_spectral_unmixing = self.spectral_settings.get('enabled', True)
@@ -217,214 +218,232 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             self.logger.error(f"Failed to create summary plot for {n_comp} components: {e}")
             return None
 
-    def _llm_compare_visual_results(self, test_images: List[Dict], initial_estimate: int,
-                                   system_info: Dict[str, Any] = None) -> int:
+    def _llm_select_final_components(self, component_range: list[int], errors: list[float],
+                                    elbow_plot_bytes: bytes, visual_examples: List[Dict],
+                                    initial_estimate: int,
+                                    system_info: Dict[str, Any] = None) -> int:
         """
-        LLM compares visual results to make final decision.
+        LLM selects final component number using elbow plot, visual examples, and context.
         """
         try:
-            self.logger.info("\n\n🤖 ------------------ ANALYSIS AGENT STEP: DECIDING ON THE FINAL NUMBER OF COMPONENTS ------------------ 🤖\n")
-            self.logger.info("Step 3: LLM comparing visual results for final decision")
-            
-            # Build prompt for visual comparison
-            prompt_parts = [COMPONENT_VISUAL_COMPARISON_INSTRUCTIONS]
-            
+            self.logger.info("\n\n🤖 --------- ANALYSIS AGENT STEP: LLM FINAL COMPONENT SELECTION --------- 🤖\n")
+            self.logger.info("Step 4: LLM comparing elbow plot and visual results for final decision")
+
+            instruction_prompt = COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS
+
+            prompt_parts = [instruction_prompt]
+
             # Add context
             prompt_parts.append(f"\n\n--- Context ---")
-            prompt_parts.append(f"Initial LLM estimate: {initial_estimate} components")
-            
+            prompt_parts.append(f"Initial LLM estimate (based on system info): {initial_estimate} components")
+            prompt_parts.append(f"Tested component range: {min(component_range)} to {max(component_range)}")
             if system_info:
                 prompt_parts.append("\nSystem Information:")
-                if isinstance(system_info, dict):
-                    prompt_parts.append(json.dumps(system_info, indent=2))
-                else:
-                    prompt_parts.append(str(system_info))
-            
-            # Add visual comparison
-            prompt_parts.append(f"\n\n--- Visual Comparison ---")
-            prompt_parts.append("Compare these NMF results:")
-            
-            for result in test_images:
-                n_comp = result['n_components']
-                label = "Under-sampling" if n_comp < initial_estimate else "Over-sampling"
-                prompt_parts.append(f"\n\n**{n_comp} Components ({label}):**")
-                prompt_parts.append({
-                    "mime_type": "image/jpeg", 
-                    "data": result['image']
-                })
-            
-            prompt_parts.append(f"\n\nBased on visual analysis, decide between {test_images[0]['n_components']} or {test_images[1]['n_components']} components, or recommend your initial estimate of {initial_estimate}.")
-            
+                prompt_parts.append(json.dumps(system_info, indent=2))
+
+            # Add Elbow Plot
+            prompt_parts.append(f"\n\n--- Quantitative Analysis: Reconstruction Error ---")
+            prompt_parts.append("Elbow Plot (Error vs. Number of Components):")
+            prompt_parts.append({"mime_type": "image/jpeg", "data": elbow_plot_bytes})
+            prompt_parts.append("\nError Values:")
+            for n, err in zip(component_range, errors):
+                prompt_parts.append(f"- {n} components: {err:.4f}")
+
+            # Add Visual Examples
+            prompt_parts.append(f"\n\n--- Qualitative Analysis: Visual Examples ---")
+            prompt_parts.append("Visual summaries for key component numbers (spectra + abundance maps):")
+            for viz in visual_examples:
+                prompt_parts.append(f"\n\n**{viz['label']}:**")
+                prompt_parts.append({"mime_type": "image/jpeg", "data": viz['image']})
+
+            prompt_parts.append(f"\n\nBased on the elbow plot AND the visual examples, decide the optimal number of components.")
+
             # Query LLM
             response = self.model.generate_content(
                 contents=prompt_parts,
                 generation_config=self.generation_config,
                 safety_settings=self.safety_settings,
             )
-            
-            result_json, error_dict = self._parse_llm_response(response)  # Using base class method
-            
+
+            result_json, error_dict = self._parse_llm_response(response)
+
             if error_dict:
-                self.logger.warning(f"LLM visual comparison failed: {error_dict}")
-                return initial_estimate
-            
+                self.logger.warning(f"LLM final component selection failed: {error_dict}")
+                return initial_estimate # Fallback to initial estimate
+
             final_components = result_json.get('final_components', None)
             reasoning = result_json.get('reasoning', 'No reasoning provided')
-            
+
+            # Log the reasoning (could be added to the main reasoning_log later)
             self.logger.info(f"LLM final decision: {final_components} components")
             self.logger.info(f"LLM reasoning: {reasoning}")
-            
-            # Validate final decision
-            tested_values = [r['n_components'] for r in test_images] + [initial_estimate]
-            if final_components in tested_values:
+            # Store reasoning if needed: self.final_selection_reasoning = reasoning
+
+            # Validate final decision (should be within the tested range)
+            if isinstance(final_components, int) and final_components in component_range:
                 return final_components
             else:
-                self.logger.warning(f"LLM chose untested value {final_components}, using closest")
-                return min(tested_values, key=lambda x: abs(x - final_components))
-                
+                self.logger.warning(f"LLM chose invalid/untested value {final_components}, using initial estimate")
+                return initial_estimate
+
         except Exception as e:
-            self.logger.error(f"LLM visual comparison failed: {e}")
-            return initial_estimate
+            self.logger.error(f"LLM final component selection failed: {e}", exc_info=True)
+            return initial_estimate # Fallback
 
     def _llm_guided_component_workflow(self, hspy_data: np.ndarray, system_info: dict = None) -> tuple[int, np.ndarray, np.ndarray]:
         """
-        Four-step LLM-guided component optimization workflow with human-viewable outputs:
-        1. LLM estimates optimal components based on system description
-        2. Test under/over-sampling around that estimate
-        3. LLM compares visual results to finalize decision
-        4. Run final analysis with chosen number
-        
-        Returns:
-            Tuple of (final_n_components, final_components, final_abundance_maps)
+        LLM-guided component optimization using reconstruction error elbow plot and visual inspection.
+        1. LLM estimates initial optimal components.
+        2. Test NMF for a range of components around the estimate, calculating reconstruction error.
+        3. Generate elbow plot and visual summaries for key component numbers.
+        4. LLM compares elbow plot and visuals to finalize decision.
+        5. Run final analysis with chosen number.
         """
         from datetime import datetime
-        
-        # Initialize reasoning log
+
         reasoning_log = {
             "workflow_start": datetime.now().isoformat(),
             "data_shape": hspy_data.shape,
             "system_info": system_info
         }
-        
-        # Step 1: LLM initial estimate based on system description
+
+        # --- Step 1: LLM initial estimate ---
         initial_estimate = self._llm_estimate_components_from_system(hspy_data, system_info)
-        
-        # Log and save reasoning
         reasoning_log["initial_estimate"] = initial_estimate
-        print(f"  💡 LLM suggests: {initial_estimate} components")
-        
-        # Save Step 1 reasoning
+        print(f"  💡 LLM suggests initial estimate: {initial_estimate} components")
         step1_data = {
-            "step": "initial_estimation",
-            "estimated_components": initial_estimate,
-            "system_info": system_info,
-            "data_characteristics": {
-                "shape": hspy_data.shape,
-                "mean_intensity": float(np.mean(hspy_data)),
+            "step": "initial_estimation", "estimated_components": initial_estimate,
+            "system_info": system_info, "data_characteristics": {
+                "shape": hspy_data.shape, "mean_intensity": float(np.mean(hspy_data)),
                 "std_intensity": float(np.std(hspy_data))
             }
         }
         self._save_component_reasoning("step1_initial_estimate", step1_data)
-        
-        # Step 2: Test under-sampling and over-sampling around estimate
-        test_components = [
-            max(2, initial_estimate - 2),  # Under-sampling
-            initial_estimate + 3           # Over-sampling  
-        ]
-        
-        reasoning_log["test_range"] = test_components
-        self.logger.info("\n\n🤖 -------------------- ANALYSIS AGENT STEP: COMPONENT TESTING -------------------- 🤖\n")
-        print(f"Step 2: Testing component numbers: {test_components}")
-        
-        # Run test analyses
-        test_images = []
-        for n_comp in test_components:
+
+        # --- Step 2: Test NMF across a range and collect errors ---
+        # Define the range around the initial estimate
+        min_components = self.spectral_settings.get('min_auto_components', 2)
+        max_components = self.spectral_settings.get('max_auto_components', min(initial_estimate + 4, 12)) # e.g., explore up to estimate + 4, max 12
+        component_range = list(range(min_components, max_components + 1))
+
+        reasoning_log["test_component_range"] = component_range
+        self.logger.info("\n\n🤖 -------------------- ANALYSIS AGENT STEP: COMPONENT RANGE TESTING -------------------- 🤖\n")
+        print(f"Step 2: Testing component numbers: {component_range}")
+
+        reconstruction_errors = []
+        visual_examples = [] # Store visuals for key component numbers (e.g., min, estimate, max)
+
+        for n_comp in component_range:
             print(f"  🧪 Testing {n_comp} components...")
-            
             try:
                 temp_unmixer = SpectralUnmixer(
                     method=self.spectral_settings.get('method', 'nmf'),
                     n_components=n_comp,
                     normalize=self.spectral_settings.get('normalize', True),
-                    max_iter=self.spectral_settings.get('max_iter', 500),
+                    #max_iter=self.spectral_settings.get('max_iter', 500),
                     random_state=42
                 )
-                
                 components, abundance_maps = temp_unmixer.fit(hspy_data)
-                # Pass system_info here!
-                summary_image = self._create_nmf_summary_plot(components, abundance_maps, n_comp, system_info)
-                
-                if summary_image:
-                    test_images.append({
-                        'n_components': n_comp,
-                        'image': summary_image
-                    })
-                    print(f"    ✅ Generated test result for {n_comp} components")
-                
+                error = temp_unmixer.model.reconstruction_err_
+                reconstruction_errors.append(error)
+                print(f"     Reconstruction Error: {error:.4f}")
+
+                # Generate visual examples only for min, max, and initial estimate (if in range)
+                if n_comp == min_components or n_comp == max_components or n_comp == initial_estimate:
+                    summary_image = self._create_nmf_summary_plot(components, abundance_maps, n_comp, system_info)
+                    if summary_image:
+                        visual_examples.append({
+                            'n_components': n_comp,
+                            'image': summary_image,
+                            'label': f"{n_comp} Components ({'Min' if n_comp==min_components else 'Max' if n_comp==max_components else 'Initial Estimate'})"
+                        })
+                        print(f"     ✅ Generated visual example for {n_comp} components")
+
             except Exception as e:
-                print(f"    ❌ Failed test with {n_comp} components: {e}")
+                print(f"     ❌ Failed test with {n_comp} components: {e}")
                 self.logger.warning(f"Failed test analysis with {n_comp} components: {e}")
-        
-        # Save test images for human review
-        self._save_component_comparison_plot(test_images, initial_estimate)
-        
-        # Step 3: LLM visual comparison to finalize decision
-        print("Step 3: LLM comparing test results...")
-        if len(test_images) >= 2:
-            final_n_components = self._llm_compare_visual_results(
-                test_images, initial_estimate, system_info
+                reconstruction_errors.append(np.inf) # Add Inf error for failed runs
+
+        # Save test images for human review (only the selected ones)
+        if visual_examples:
+            self._save_component_comparison_plot(visual_examples, initial_estimate) # Re-use existing save function
+
+        # --- Step 3: Generate Elbow Plot ---
+        print("Step 3: Generating Elbow Plot...")
+        elbow_plot_bytes = self._create_elbow_plot(component_range, reconstruction_errors)
+        if elbow_plot_bytes and self.output_dir: # Save elbow plot if generated
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            elbow_filename = f"elbow_plot_{timestamp}.jpeg"
+            elbow_filepath = os.path.join(self.output_dir, elbow_filename)
+            with open(elbow_filepath, 'wb') as f:
+                f.write(elbow_plot_bytes)
+            print(f"📊 Saved elbow plot: {elbow_filename}")
+
+        # --- Step 4: LLM Final Decision using Elbow Plot and Visuals ---
+        print("Step 4: LLM selecting final components using elbow plot and visual examples...")
+        if elbow_plot_bytes and visual_examples:
+            final_n_components = self._llm_select_final_components(
+                component_range=component_range,
+                errors=reconstruction_errors,
+                elbow_plot_bytes=elbow_plot_bytes,
+                visual_examples=visual_examples,
+                initial_estimate=initial_estimate,
+                system_info=system_info
             )
-            print(f"  🎯 Final decision: {final_n_components} components")
+            print(f"  🎯 LLM Final decision: {final_n_components} components")
         else:
-            print("  ⚠️  Insufficient test results, using initial estimate")
+            print("  ⚠️ Insufficient results for LLM decision (missing elbow plot or visual examples), using initial estimate")
             final_n_components = initial_estimate
-            self.logger.warning("Insufficient test results for comparison, using initial estimate")
-        
-        # Log final decision
+            self.logger.warning("Insufficient results for LLM component selection, using initial estimate")
+
         reasoning_log["final_decision"] = final_n_components
-        
-        # Save Step 3 reasoning
-        step3_data = {
-            "step": "final_comparison",
-            "test_components": test_components,
+        step4_data = {
+            "step": "final_selection",
+            "component_range": component_range,
+            "reconstruction_errors": reconstruction_errors,
             "initial_estimate": initial_estimate,
             "final_decision": final_n_components,
-            "test_results_available": len(test_images)
+            "num_visual_examples_provided": len(visual_examples),
+            "elbow_plot_provided": elbow_plot_bytes is not None
         }
-        self._save_component_reasoning("step3_final_decision", step3_data)
-        
-        # Step 4: Run final analysis with chosen number
+        self._save_component_reasoning("step4_final_decision", step4_data)
+
+        # --- Step 5: Run final analysis ---
         self.logger.info("\n\n🤖 -------------------- ANALYSIS AGENT STEP: FINAL SPECTRAL UNMIXING -------------------- 🤖\n")
-        print("Step 4: Running final analysis...")
+        print(f"Step 5: Running final analysis with {final_n_components} components...")
         final_unmixer = SpectralUnmixer(
             method=self.spectral_settings.get('method', 'nmf'),
             n_components=final_n_components,
             normalize=self.spectral_settings.get('normalize', True),
-            **{k: v for k, v in self.spectral_settings.items() 
-            if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components']}
+            #max_iter=self.spectral_settings.get('max_iter', 500), # Use full iterations for final run
+            **{k: v for k, v in self.spectral_settings.items()
+            if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components', 'min_auto_components', 'max_auto_components']}
         )
-        
         final_components, final_abundance_maps = final_unmixer.fit(hspy_data)
-        
-        # Complete reasoning log
+        final_reconstruction_error = final_unmixer.model.reconstruction_err_
+        reasoning_log["final_reconstruction_error"] = final_reconstruction_error
+
         reasoning_log["workflow_end"] = datetime.now().isoformat()
-        reasoning_log["final_reasoning"] = f"Selected {final_n_components} components based on LLM comparison of test results"
-        
-        # Create final summary files
+        # Ensure reasoning_log["final_reasoning"] is set based on LLM output from _llm_select_final_components if available
+
+        # Create final summary files (pass error info?)
         summary_path, reasoning_path = self._create_final_results_summary(
             final_n_components, final_components, final_abundance_maps, reasoning_log
         )
-        
-        # Final console summary
+
         print("\n📋 Component Selection Summary:")
         print(f"   Initial estimate: {initial_estimate}")
-        print(f"   Test range: {test_components}")
+        print(f"   Tested range: {component_range}")
         print(f"   Final decision: {final_n_components}")
+        print(f"   Final Recon. Error: {final_reconstruction_error:.4f}")
         print(f"   Results saved to: {self.output_dir}/")
         print("=" * 50)
-        
-        self.logger.info(f"LLM-guided component workflow completed: {final_n_components} components selected")
-        
+
+        self.logger.info(f"LLM-guided component workflow completed: {final_n_components} components selected with error {final_reconstruction_error:.4f}")
+
+        # Store the final error to potentially pass to the interpretation LLM later
+        self.final_reconstruction_error = final_reconstruction_error # Store on instance
+
         return final_n_components, final_components, final_abundance_maps
 
     def _perform_spectral_unmixing(self, hspy_data: np.ndarray, system_info: Dict[str, Any] = None) -> Tuple[np.ndarray, np.ndarray]:
@@ -710,6 +729,10 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         if components is not None:
             prompt_parts.append(f"- Spectral unmixing method: {self.spectral_settings.get('method', 'nmf').upper()}")
             prompt_parts.append(f"- Number of spectral components identified: {components.shape[0]}")
+            
+            if hasattr(self, 'final_reconstruction_error') and self.final_reconstruction_error is not None:
+                 prompt_parts.append(f"- Final Reconstruction Error (Frobenius Norm): {self.final_reconstruction_error:.4f}")
+
             prompt_parts.append(f"- Component spectra shape: {components.shape}")
             prompt_parts.append(f"- Spatial abundance maps shape: {abundance_maps.shape}")
         else:
@@ -827,6 +850,8 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                     "max_intensity": float(np.max(hspy_data)),
                 }
             }
+            if hasattr(self, 'final_reconstruction_error') and self.final_reconstruction_error is not None:
+                 result_json["quantitative_analysis"]["reconstruction_error"] = self.final_reconstruction_error
         
         return result_json
 
@@ -1095,6 +1120,33 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         
         self.logger.info("Using channel indices (no energy range provided)")
         return energy_axis, xlabel, has_energy_info
+    
+    def _create_elbow_plot(self, component_range: list[int], errors: list[float]) -> bytes | None:
+        """Create an elbow plot of reconstruction error vs. number of components."""
+        if not component_range or not errors or len(component_range) != len(errors):
+            self.logger.warning("Invalid input for creating elbow plot.")
+            return None
+        try:
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax.plot(component_range, errors, 'bo-', markersize=6)
+            ax.set_xlabel('Number of Components')
+            ax.set_ylabel('NMF Reconstruction Error (Frobenius Norm)')
+            ax.set_title('NMF Reconstruction Error vs. Number of Components (Elbow Plot)')
+            ax.grid(True, linestyle='--', alpha=0.6)
+            ax.set_xticks(component_range)
+
+            plt.tight_layout()
+
+            buf = BytesIO()
+            plt.savefig(buf, format='jpeg', dpi=150, bbox_inches='tight')
+            buf.seek(0)
+            image_bytes = buf.getvalue()
+            plt.close(fig)
+            self.logger.info("Successfully created NMF elbow plot.")
+            return image_bytes
+        except Exception as e:
+            self.logger.error(f"Failed to create elbow plot: {e}", exc_info=True)
+            return None
     
     def _get_measurement_recommendations_prompt(self) -> str:
         return SPECTROSCOPY_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS

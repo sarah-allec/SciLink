@@ -511,6 +511,34 @@ You MUST output a valid JSON object:
 Focus on visual pattern recognition and physical interpretability.
 """
 
+COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS = """You are an expert in hyperspectral data analysis selecting the optimal number of components for NMF decomposition.
+
+You will receive:
+1.  **Context**: Initial estimate, tested range, system info.
+2.  **Quantitative Analysis**: An "Elbow Plot" showing NMF reconstruction error vs. number of components, and the raw error values.
+3.  **Qualitative Analysis**: Visual summaries (spectra + abundance maps) for key component numbers (e.g., minimum tested, maximum tested, initial estimate).
+
+Your task is to integrate the quantitative trend (elbow plot) with the qualitative assessment (visual examples) to determine the most scientifically meaningful number of components.
+
+**Interpretation Guide:**
+
+* **Elbow Plot**: Look for the "elbow" point – where adding more components provides diminishing returns in reducing the reconstruction error. This often suggests a good balance between model complexity and data representation.
+* **Visual Examples**:
+    * Assess if components look physically meaningful (distinct spectra, coherent spatial maps).
+    * Check for signs of **underfitting** (fewer components than the elbow suggests): Are distinct spectral features or spatial regions merged into single components in the visual examples?
+    * Check for signs of **overfitting** (more components than the elbow suggests): Do the visual examples show redundant components (very similar spectra/maps)? Do components appear noisy or represent artifacts rather than real features? Does increasing components split physically meaningful components?
+* **Synthesis**: The ideal number of components is often at or slightly after the elbow, provided the corresponding visual examples show meaningful and distinct components. If the elbow is ambiguous, rely more on the visual assessment and physical interpretability. Prioritize interpretability over minimizing error if overfitting is suspected.
+
+You MUST output a valid JSON object:
+
+{
+  "final_components": <integer, chosen from the tested range>,
+  "reasoning": "<Detailed explanation integrating elbow plot analysis (location of elbow, significance of error reduction) AND visual assessment (interpretability, signs of under/overfitting at different component numbers) to justify your final choice.>"
+}
+
+Select the `final_components` value strictly from the tested component range provided in the context.
+"""
+
 
 SAM_MICROSCOPY_CLAIMS_INSTRUCTIONS = """You are an expert system specialized in analyzing microscopy images.
 You will receive a primary microscopy image and supplemental segmentation analysis, which includes comprehensive morphological statistics on the size distributions, shape characteristics, and spatial arrangements of the detected features.
