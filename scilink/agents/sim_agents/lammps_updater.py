@@ -29,9 +29,9 @@ class LammpsUpdater:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 
-    def _extract_errors_and_warnings(self, log_content: str) -> List[str]:
-        """Extract all errors and warnings from LAMMPS log."""
-        patterns = [r"WARNING:.*", r"ERROR:.*"]
+    def _extract_errors(self, log_content: str) -> List[str]:
+        """Extract all errors from LAMMPS output."""
+        patterns = [r"ERROR.*"]
         issues = []
         for pattern in patterns:
             issues.extend([m.strip() for m in re.findall(pattern, log_content, flags=re.IGNORECASE)])
@@ -135,7 +135,9 @@ class LammpsUpdater:
         
         Please provide a complete, corrected LAMMPS input script that addresses all the issues. 
         The script should be ready to run without any errors.
-        
+       
+        IMPORTANT: Only make corrections that address the issues above to ensure a consistent and systematic refinement.
+ 
         IMPORTANT: Return ONLY the raw LAMMPS script content without any markdown formatting, 
         code block markers, or backticks. Do not include any explanation, just the corrected script.
         """
@@ -194,7 +196,7 @@ class LammpsUpdater:
             with open(lammps_log, 'r') as f:
                 log_txt = f.read()
         
-        error_list = self._extract_errors_and_warnings(log_txt)
+        error_list = self._extract_errors(log_txt)
         if not error_list:
             self.logger.warning("No errors or warnings found in log file")
             return input_txt, {"issues": [], "overall_assessment": "No errors found"}
