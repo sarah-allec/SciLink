@@ -407,6 +407,12 @@ REQUIRED SECTIONS:
 SPECIAL OUTPUT REQUIREMENTS:
 {output_commands}
 
+IMPORTANT: Include regular restart file writing capabilities in the script using these guidelines:
+1. Write restart files periodically (every 10,000-50,000 steps) during both equilibration and production
+2. Use timestep-based naming like "restart.*.equil" for equilibration and "restart.*.prod" for production
+3. Include a commented-out 'read_restart' command that can be uncommented if needed to restart the simulation
+4. Ensure all necessary variables and settings are properly initialized even when reading from a restart file
+
 Include thorough comments explaining each section and its purpose. The script should be directly executable in LAMMPS.
 
 IMPORTANT: Return ONLY the raw LAMMPS script content without any markdown formatting, code block markers, or backticks.
