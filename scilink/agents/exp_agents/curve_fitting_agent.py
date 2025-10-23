@@ -15,7 +15,8 @@ from .instruct import (
     FITTING_RESULTS_INTERPRETATION_INSTRUCTIONS,
     FITTING_SCRIPT_CORRECTION_INSTRUCTIONS,
     FITTING_QUALITY_ASSESSMENT_INSTRUCTIONS,
-    FITTING_MODEL_CORRECTION_INSTRUCTIONS
+    FITTING_MODEL_CORRECTION_INSTRUCTIONS,
+    CURVE_FITTING_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
 )
 
 class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
@@ -372,3 +373,10 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
     def _get_claims_instruction_prompt(self) -> str:
         return FITTING_RESULTS_INTERPRETATION_INSTRUCTIONS
+    
+    def _get_measurement_recommendations_prompt(self) -> str:
+        """
+        Returns the instruction prompt for generating measurement recommendations
+        based on curve fitting results.
+        """
+        return CURVE_FITTING_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS

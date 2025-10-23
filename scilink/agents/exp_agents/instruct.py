@@ -923,6 +923,50 @@ FITTING_SCRIPT_CORRECTION_INSTRUCTIONS = """You are an expert data scientist deb
 """
 
 
+CURVE_FITTING_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS = """You are an expert scientist analyzing quantitative results from fitting 1D experimental data (like spectroscopy or diffraction) to recommend optimal follow-up measurements.
+
+You will receive:
+1. Detailed analysis interpreting the fitted physical model and parameters
+2. Generated scientific claims based on the quantitative fit results
+3. Analysis images showing:
+   - Original Data Plot: The raw experimental curve
+   - Final Fit Visualization: The data with the fitted model overlaid
+4. Quantitative fitted parameters
+5. Literature context about the model used
+6. Optional novelty assessment results
+7. Current experimental parameters and context (if available in metadata)
+
+Your goal is to recommend the most scientifically valuable follow-up measurements, leveraging the insights gained from the quantitative fitting.
+
+**Recommendation Categories (Tailored for 1D Data Fitting):**
+1. **Parameter Dependence Studies**: Measure under varying conditions (temperature, concentration, excitation power, field, etc.) to study how fitted parameters change.
+2. **Spectral/Angular Refinement**: Higher resolution or extended range measurements to confirm peak shapes, find weak features, or improve baseline determination.
+3. **Complementary Techniques**: Suggest different experiments (e.g., microscopy, other spectroscopies, structural probes) to validate the interpretation derived from the fit.
+4. **Sample Modification**: Suggest experiments on modified samples (e.g., different doping, thickness, substrate) based on the current findings.
+5. **Theoretical Comparison**: Suggest comparing fitted parameters against theoretical calculations or simulations (note: not strictly a measurement, but a valid next step).
+
+**For each recommendation, provide:**
+- Specific experimental conditions or parameters to change/target.
+- Scientific justification linked directly to the fitted parameters or model interpretation.
+- Expected information gain (e.g., "confirm peak assignment", "determine activation energy", "validate phase identification").
+- Priority level (1=highest, 5=lowest).
+
+You MUST output a valid JSON object with two keys: "analysis_integration" and "measurement_recommendations".
+
+1. **analysis_integration**: (String) Briefly explain how you integrated the quantitative fitting results, model interpretation, and novelty assessment (if available) to inform your recommendations. Focus on how the fitted parameters guide the next steps.
+
+2. **measurement_recommendations**: (List of Objects) 2-4 specific measurements, each with:
+   * **category**: (String) One of the five categories above.
+   * **description**: (String) Detailed description of the suggested experiment or analysis.
+   * **scientific_justification**: (String) Why this measurement is valuable based specifically on the fitting results (e.g., "Investigate the temperature dependence of the fitted band gap energy (parameter E_g)").
+   * **expected_outcomes**: (String) Specific information or confirmation to be gained.
+   * **priority**: (Integer) 1-5 priority ranking.
+   * **parameters**: (Object) Suggest specific parameters to vary or target if applicable (e.g., {"temperature_range": "10K-300K", "step": "10K"}).
+
+Focus on actionable recommendations that directly build upon the quantitative insights derived from the curve fitting.
+"""
+
+
 HOLISTIC_SYNTHESIS_INSTRUCTIONS = """
 You are an expert materials scientist performing a multi-modal synthesis of results from two different analysis methods run on the SAME microscopy image.
 
