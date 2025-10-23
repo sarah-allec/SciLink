@@ -39,7 +39,7 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
     def _load_curve_data(self, data_path: str) -> np.ndarray:
         if data_path.endswith(('.csv', '.txt')):
-            data = np.loadtxt(data_path, delimiter=',')
+            data = np.loadtxt(data_path, delimiter=',', skiprows=1)
         elif data_path.endswith('.npy'):
             data = np.load(data_path)
         else:
@@ -88,19 +88,40 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             f"## Data File Path\nThe script should load data from this absolute path: '{os.path.abspath(data_path)}'"
         )
         response = self.model.generate_content(prompt)
-        script_content = response.text
-        match = re.search(r"```python\n(.*?)\n```", script_content, re.DOTALL)
+        script_content = response.text.strip() # Start by stripping whitespace
+
+        extracted_code = None
+
+        # 1. Try extracting from markdown block (making 'python' optional and case-insensitive)
+        match = re.search(r"```(?:python)?\n(.*?)\n```", script_content, re.DOTALL | re.IGNORECASE)
         if match:
-            script_content = match.group(1).strip()
+            extracted_code = match.group(1).strip()
+            self.logger.info("Extracted Python script from markdown block.")
         else:
-            if script_content.strip().startswith("import"):
-                 script_content = script_content.strip()
-            else:
-                self.logger.error(f"LLM response did not contain a valid python code block. Response: {script_content[:500]}")
-                raise ValueError("LLM failed to generate a valid Python script in a markdown block.")
-        if not script_content:
-            raise ValueError("LLM generated an empty fitting script.")
-        return script_content
+            # 2. If no markdown, check if it starts with 'python' and strip it
+            if script_content.lower().startswith("python"):
+                potential_code = script_content[len("python"):].strip() # Remove 'python' prefix
+                # Check if what remains looks like Python code
+                if potential_code.startswith(("import ", "def ", "#", "'''", '"""')):
+                    extracted_code = potential_code
+                    self.logger.info("Extracted Python script by stripping 'python' prefix.")
+            # 3. If not prefixed with 'python', check if it starts directly with code
+            elif script_content.startswith(("import ", "def ", "#", "'''", '"""')):
+                extracted_code = script_content
+                self.logger.info("Extracted Python script directly (no markdown/prefix).")
+
+        # 4. Check if extraction was successful
+        if extracted_code:
+             fitting_script = extracted_code
+        else:
+            # Log the failure and raise
+            self.logger.error(f"LLM response did not contain a recognizable Python code block. Response: {script_content[:500]}...")
+            raise ValueError("LLM failed to generate Python script in a recognizable format (markdown block, 'python' prefix, or direct code).")
+
+        if not fitting_script: # Should be caught above, but belt-and-suspenders
+            raise ValueError("LLM generated an empty or unextractable fitting script.")
+
+        return fitting_script
 
     def _save_literature_step_results(self, query: str, report: str) -> dict:
         """Saves the literature search query and the resulting report to files."""

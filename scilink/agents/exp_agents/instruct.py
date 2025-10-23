@@ -857,7 +857,7 @@ First, think step-by-step:
 
 Then, generate a *complete* and *executable* Python script that follows these rules:
 1.  The script MUST include all necessary imports (`numpy`, `json`, `matplotlib.pyplot`, `scipy.optimize.curve_fit`).
-2.  The script MUST load the data from the specified file path.
+2.  The script MUST load the data from the specified file path. Crucially, when loading CSV or TXT data with `numpy.loadtxt`, assume there might be a header row and use `skiprows=1` to ignore it.
 3.  The script MUST define the chosen fitting function(s). For multiple features, this should be a composite function (e.g., `def double_gaussian(x, a1, c1, s1, a2, c2, s2): return gaussian(x, a1, c1, s1) + gaussian(x, a2, c2, s2)`).
 4.  The script MUST perform the fit using `scipy.optimize.curve_fit`.
 5.  The script MUST save a plot of the data and the complete fit (including all components) to a file named `fit_visualization.png`.
@@ -898,6 +898,8 @@ FITTING_SCRIPT_CORRECTION_INSTRUCTIONS = """You are an expert data scientist deb
 **Context:**
 - The script is intended to fit 1D experimental data using a physical model derived from the literature.
 - The script MUST load data, define a fitting function, use `scipy.optimize.curve_fit`, save a plot to `fit_visualization.png`, and print the final parameters as a JSON string prefixed with `FIT_RESULTS_JSON:`.
+- Crucially, when loading CSV or TXT data with `numpy.loadtxt`, assume there might be a header row and use `skiprows=1` to ignore it.
+- Ensure your entire response is ONLY the corrected Python code inside a markdown block. Do NOT include the word 'python' or any other text outside the code itself.
 
 **Provided Information:**
 1.  **Literature Context**: The scientific background for the model selection.
