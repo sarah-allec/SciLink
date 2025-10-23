@@ -7,6 +7,9 @@ from .analyzers import (
     MicroscopyAnalyzer,
     SpectroscopyAnalyzer
 )
+from .hyperspectral_analysis_workflow import HyperspectralAnalysisWorkflow
+from .microscopy_analysis_workflow import MicroscopyAnalysisWorkflow
+from .spectroscopy1d_analysis_workflow import Spectroscopy1DAnalysisWorkflow
 
 __all__ = [
     "DFTRecommendationsWorkflow",
@@ -16,4 +19,7 @@ __all__ = [
     "BaseExperimentAnalyzer",
     "MicroscopyAnalyzer", 
     "SpectroscopyAnalyzer",
+    "HyperspectralAnalysisWorkflow",
+    "MicroscopyAnalysisWorkflow",
+    "Spectroscopy1DAnalysisWorkflow"
 ]
