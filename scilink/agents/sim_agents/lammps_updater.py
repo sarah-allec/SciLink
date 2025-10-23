@@ -37,15 +37,17 @@ class LammpsUpdater:
             issues.extend([m.strip() for m in re.findall(pattern, log_content, flags=re.IGNORECASE)])
         return issues
 
-    def _analyze_issues(self, errors: List[str], input_script: str, data_content: str = "", ff_content: str = "") -> Dict[str, Any]:
+    def _analyze_issues(self, errors: List[str], input_script: str, data_content: str = "", 
+                       ff_content: str = "", log_content: str = "") -> Dict[str, Any]:
         """Have the LLM analyze the issues and suggest a correction strategy."""
         self.logger.info("Analyzing LAMMPS errors and suggesting correction strategy")
         
         analysis_prompt = f"""
-        You are a LAMMPS simulation expert. Analyze these LAMMPS errors/warnings and the input script to:
+        You are a LAMMPS simulation expert. Analyze these LAMMPS errors/warnings, the input script, and log file to:
         1. Identify the root cause of each issue
         2. Suggest specific corrections
         3. Determine what parts of the script need modification
+        4. Analyze how far the simulation progressed before the error
 
         ERRORS/WARNINGS:
         {'\n'.join(errors)}
@@ -56,6 +58,8 @@ class LammpsUpdater:
         {'DATA FILE (excerpt):' + data_content if data_content else ''}
         
         {'FORCE FIELD FILE:' + ff_content if ff_content else ''}
+
+        {'LOG FILE EXCERPT:' + log_content[:2000] if log_content else ''}
 
         Respond with a JSON object with the following structure:
         {{
@@ -70,6 +74,12 @@ class LammpsUpdater:
             "overall_assessment": "Overall assessment of the problems",
             "is_data_file_problem": true/false,
             "is_force_field_problem": true/false,
+            "simulation_progress": {{
+                "stage": "minimization/equilibration/production",
+                "completed_steps": 0,
+                "total_steps": 0,
+                "percent_complete": 0
+            }},
             "correction_approach": "Detailed approach to correct the script",
             "critical_commands_to_add": ["command1", "command2"],
             "critical_commands_to_remove": ["command1", "command2"]
@@ -92,6 +102,12 @@ class LammpsUpdater:
                 "overall_assessment": "Failed to analyze errors properly",
                 "is_data_file_problem": False,
                 "is_force_field_problem": False,
+                "simulation_progress": {
+                    "stage": "unknown",
+                    "completed_steps": 0,
+                    "total_steps": 0,
+                    "percent_complete": 0
+                },
                 "correction_approach": "Manual review needed",
                 "critical_commands_to_add": [],
                 "critical_commands_to_remove": []
@@ -111,6 +127,16 @@ class LammpsUpdater:
         fix_strategies = "\n".join([f"- {issue['fix_strategy']}" 
                                   for issue in analysis.get("issues", [])])
         
+        # Extract simulation progress if available
+        sim_progress = analysis.get("simulation_progress", {})
+        progress_info = ""
+        if sim_progress:
+            stage = sim_progress.get("stage", "unknown")
+            completed = sim_progress.get("completed_steps", 0)
+            total = sim_progress.get("total_steps", 0)
+            percent = sim_progress.get("percent_complete", 0)
+            progress_info = f"\nSimulation progress: {stage} phase, {completed}/{total} steps ({percent}% complete)"
+        
         # Build the correction prompt
         correction_prompt = f"""
         As a LAMMPS expert, correct this input script for the research goal: "{research_goal}"
@@ -121,7 +147,7 @@ class LammpsUpdater:
         Suggested fix strategies:
         {fix_strategies}
         
-        Overall assessment: {analysis.get("overall_assessment", "Unknown")}
+        Overall assessment: {analysis.get("overall_assessment", "Unknown")}{progress_info}
         
         Critical commands to add: {', '.join(analysis.get("critical_commands_to_add", []))}
         Critical commands to remove: {', '.join(analysis.get("critical_commands_to_remove", []))}
@@ -135,6 +161,10 @@ class LammpsUpdater:
         
         Please provide a complete, corrected LAMMPS input script that addresses all the issues. 
         The script should be ready to run without any errors.
+        
+        IMPORTANT: Make sure to include restart file writing in your script:
+        - Write restart files periodically (every 10,000-50,000 steps) during both equilibration and production
+        - Use timestep-based naming like "restart.*.equil" for equilibration and "restart.*.prod" for production
        
         IMPORTANT: Only make corrections that address the issues above to ensure a consistent and systematic refinement.
  
@@ -201,13 +231,44 @@ class LammpsUpdater:
             self.logger.warning("No errors or warnings found in log file")
             return input_txt, {"issues": [], "overall_assessment": "No errors found"}
         
+        # Check for restart files in the directory
+        working_dir = os.path.dirname(input_path) if os.path.dirname(input_path) else "."
+        restart_files = list(Path(working_dir).glob('restart.*'))
+        
+        # Sort restart files by modification time to find the latest one
+        has_restart = False
+        latest_restart = None
+        if restart_files:
+            restart_files.sort(key=os.path.getmtime)
+            latest_restart = restart_files[-1]
+            has_restart = True
+            self.logger.info(f"Found latest restart file: {latest_restart}")
+        
         # Step 1: Analyze the issues
-        analysis = self._analyze_issues(error_list, input_txt, data_txt, ff_txt)
+        analysis = self._analyze_issues(error_list, input_txt, data_txt, ff_txt, log_txt)
+        
+        # Add restart info to the analysis
+        if has_restart:
+            analysis["restart_file"] = str(latest_restart)
+            analysis["should_restart"] = True
+        else:
+            analysis["should_restart"] = False
         
         # Step 2: Generate targeted correction prompt
         correction_prompt = self._generate_correction_prompt(
             analysis, input_txt, research_goal, data_txt, ff_txt
         )
+        
+        # Add restart-specific instructions if needed
+        if has_restart:
+            correction_prompt += f"""
+            IMPORTANT: A restart file was found at {latest_restart}. 
+            Please modify the script to:
+            1. Use this restart file instead of the data file for initial configuration
+            2. Comment out the 'read_data' command and uncomment/add the 'read_restart {os.path.basename(str(latest_restart))}' command
+            3. Skip minimization if it was already completed
+            4. Resume the simulation from where it left off
+            """
         
         # Step 3: Generate corrected script
         self.logger.info("Generating corrected LAMMPS script")
@@ -217,6 +278,45 @@ class LammpsUpdater:
         # Step 4: Clean and format the script
         corrected_script = self._clean_script(corrected_script)
         
+        # Step 5: Ensure restart functionality is properly implemented
+        if has_restart:
+            corrected_script = self._ensure_restart_handling(
+                corrected_script, 
+                os.path.basename(str(latest_restart))
+            )
+        
         # Log completion
         self.logger.info(f"Script correction completed - {len(corrected_script)} characters")
         return corrected_script, analysis
+    
+    def _ensure_restart_handling(self, script_text: str, restart_file: str) -> str:
+        """Ensure the script properly uses the restart file."""
+        lines = script_text.split('\n')
+        has_read_restart = False
+        
+        for i, line in enumerate(lines):
+            # Comment out read_data if found
+            if "read_data" in line and not line.strip().startswith('#'):
+                lines[i] = f"# {line}  # Commented out for restart"
+                
+            # Check if read_restart already exists
+            if "read_restart" in line and not line.strip().startswith('#'):
+                has_read_restart = True
+                # If it's there but pointing to a different file, update it
+                if restart_file not in line:
+                    lines[i] = f"read_restart {restart_file}  # Updated restart file"
+        
+        # If no read_restart command found, add one
+        if not has_read_restart:
+            # Find a good place to insert it - after units, atom_style but before region/create_box
+            insert_pos = 0
+            for i, line in enumerate(lines):
+                if any(cmd in line.lower() for cmd in ["units", "atom_style"]):
+                    insert_pos = max(insert_pos, i + 1)
+                elif "read_data" in line and line.strip().startswith('#'):
+                    insert_pos = i
+                    break
+            
+            lines.insert(insert_pos, f"read_restart {restart_file}  # Added for restart")
+        
+        return '\n'.join(lines)
