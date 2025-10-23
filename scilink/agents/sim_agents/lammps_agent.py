@@ -421,8 +421,27 @@ class LAMMPSSimulationAgent:
         # Generate outputs section based on required outputs
         output_commands = self._generate_output_commands(required_outputs, properties_to_calculate, system_info)
         
-        prompt = LAMMPS_INPUT_GENERATION_TEMPLATE
-        
+       # Format the template with actual values
+        prompt = LAMMPS_INPUT_GENERATION_TEMPLATE.format(
+            research_goal=research_goal,
+            system_description=system_description,
+            element_info_str=element_info_str,
+            system_info=system_info,
+            bond_types=bond_types,
+            angle_types=angle_types,
+            properties_to_calculate=properties_to_calculate,
+            temperature=temperature,
+            pressure=pressure,
+            ensemble=ensemble,
+            timestep=timestep,
+            simulation_time=simulation_time,
+            equil_steps=equil_steps,
+            prod_steps=prod_steps,
+            required_outputs=required_outputs,
+            data_filename=data_filename,
+            output_commands=output_commands
+        )
+ 
         response = self.model.generate_content(prompt)
         script_text = response.text
         
