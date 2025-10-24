@@ -52,9 +52,18 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     def _plot_curve(self, curve_data: np.ndarray, system_info: dict, title_suffix="") -> bytes:
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(curve_data[:, 0], curve_data[:, 1], 'b.', markersize=4)
-        ax.set_title(system_info.get("title", "1D Data") + title_suffix)
-        ax.set_xlabel(system_info.get("xlabel", "X-axis"))
-        ax.set_ylabel(system_info.get("ylabel", "Y-axis"))
+        plot_title = system_info.get("title")
+        if plot_title is None:
+            plot_title = "Data"
+        ax.set_title(plot_title + title_suffix)
+        xlabel_text = system_info.get("xlabel")
+        if xlabel_text is None:
+            xlabel_text = "X-axis"
+        ax.set_xlabel(xlabel_text)
+        ylabel_text = system_info.get("ylabel")
+        if ylabel_text is None:
+            ylabel_text = "Y-axis"
+        ax.set_ylabel(ylabel_text)
         ax.grid(True, linestyle='--')
         plt.tight_layout()
         buf = BytesIO()
