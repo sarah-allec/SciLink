@@ -4,6 +4,7 @@ from io import BytesIO
 import json
 import os
 import re
+import logging
 
 from .base_agent import BaseAnalysisAgent
 from .human_feedback import SimpleFeedbackMixin
@@ -19,6 +20,8 @@ from .instruct import (
     CURVE_FITTING_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
 )
 
+logger = logging.getLogger(__name__)
+
 class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
     Agent for analyzing 1D curves via automated, literature-informed fitting.
@@ -33,10 +36,24 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                  output_dir: str = "curve_analysis_output", max_wait_time: int = 600, **kwargs):
         super().__init__(google_api_key, model_name, local_model, enable_human_feedback=enable_human_feedback)
         self.executor = ScriptExecutor(timeout=executor_timeout, enforce_sandbox=False)
-        self.literature_agent = FittingModelLiteratureAgent(api_key=futurehouse_api_key, max_wait_time=max_wait_time)
         self.output_dir = output_dir
-        if kwargs:
-            self.logger.warning(f"Unused arguments passed to CurveFittingAgent: {kwargs}")
+        self.literature_agent = None
+        effective_api_key = futurehouse_api_key or os.getenv("FUTUREHOUSE_API_KEY")
+
+        if effective_api_key:
+            try:
+                self.literature_agent = FittingModelLiteratureAgent(api_key=effective_api_key, max_wait_time=max_wait_time)
+                logger.info("FittingModelLiteratureAgent initialized successfully.")
+            except ValueError as e:
+                # Catch the specific error if initialization fails despite finding a key/var
+                logger.warning(f"Could not initialize FittingModelLiteratureAgent: {e}. Proceeding without literature search capabilities.")
+                self.literature_agent = None
+            except Exception as e: # Catch other potential errors during init
+                logger.error(f"Unexpected error initializing FittingModelLiteratureAgent: {e}", exc_info=True)
+                self.literature_agent = None
+        else:
+            logger.warning("FutureHouse API key not provided and FUTUREHOUSE_API_KEY env variable not set. Literature search disabled.")
+        
 
     def _load_curve_data(self, data_path: str) -> np.ndarray:
         if data_path.endswith(('.csv', '.txt')):
@@ -265,22 +282,50 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             system_info = self._handle_system_info(system_info)
             original_plot_bytes = self._plot_curve(curve_data, system_info, " (Original Data)")
 
-            # Step 1: Search Literature for Fitting Models
+            # Initialize fallback values in case literature agent is missing or fails
+            lit_query = "N/A (Literature agent not available)"
+            literature_context = "Literature agent not available. Using LLM's internal knowledge for model selection."
+            saved_lit_files = {}
+
+            # Step 1: Search Literature (Conditional)
             print(f"\n🤖 -------------------- ANALYSIS AGENT STEP: LITERATURE SEARCH -------------------- 🤖")
-            lit_query = self._generate_lit_search_query(original_plot_bytes, system_info)
-            
-            lit_result = self.literature_agent.query_for_models(lit_query)
-            
-            if lit_result["status"] == "success":
-                literature_context = lit_result["formatted_answer"]
-                print("✅ Literature search successful.")
+            if self.literature_agent: # Check if the literature agent was successfully initialized
+                try:
+                    # Attempt to generate the search query using the LLM
+                    lit_query = self._generate_lit_search_query(original_plot_bytes, system_info)
+
+                    # Perform the literature search using the generated query
+                    lit_result = self.literature_agent.query_for_models(lit_query)
+
+                    # Check if the literature search was successful
+                    if lit_result["status"] == "success":
+                        literature_context = lit_result["formatted_answer"] # Use the successful search result
+                        print("✅ Literature search successful.")
+                        # Save the query and the successful report
+                        saved_lit_files = self._save_literature_step_results(lit_query, literature_context)
+                    else:
+                        # Handle cases where the literature agent reported a failure
+                        warning_message = f"Literature search failed ({lit_result['message']}). Falling back to LLM's internal knowledge."
+                        self.logger.warning(warning_message)
+                        print(f"⚠️  {warning_message}")
+                        # Use the fallback context message
+                        literature_context = "The external literature search failed. Fall back to your internal knowledge to propose a suitable physical fitting model."
+                        # Save the query and the failure context/message
+                        saved_lit_files = self._save_literature_step_results(lit_query, f"Search Failed: {lit_result['message']}\n\nFallback context:\n{literature_context}")
+
+                except Exception as lit_e:
+                    # Catch any other exceptions during query generation or the API call
+                    logger.error(f"Error during literature search step: {lit_e}", exc_info=True)
+                    print(f"⚠️ Error during literature search: {lit_e}. Falling back to LLM's internal knowledge.")
+                    # Use a fallback context indicating an error occurred
+                    literature_context = "An error occurred during the literature search. Fall back to your internal knowledge to propose a suitable physical fitting model."
+                    # Save the query (if generated) and the error context
+                    saved_lit_files = self._save_literature_step_results(lit_query, f"Error during search:\n{lit_e}\n\nFallback context:\n{literature_context}")
             else:
-                warning_message = f"Literature search failed ({lit_result['message']}). Falling back to LLM's internal knowledge."
-                self.logger.warning(warning_message)
-                print(f"⚠️  {warning_message}")
-                literature_context = "The external literature search failed. Fall back to your internal knowledge to propose a suitable physical fitting model."
-            
-            saved_lit_files = self._save_literature_step_results(lit_query, literature_context)
+                # This block executes if self.literature_agent is None (key wasn't provided/valid)
+                print("⚠️ Literature agent not available. Using LLM's internal knowledge.")
+                # Save the initial 'not available' context and the placeholder query
+                saved_lit_files = self._save_literature_step_results(lit_query, literature_context)
 
             fitting_script = None
             exec_result = None
