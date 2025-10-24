@@ -36,8 +36,9 @@ class MicroscopyAnalyzer(BaseExperimentAnalyzer):
         self.output_dir = output_dir
         self.enable_human_feedback = enable_human_feedback
         self.analysis_agent = None
-        if kwargs:
-            logging.warning(f"Unused arguments passed to MicroscopyAnalyzer: {kwargs}")
+        self.analyzer_kwargs = kwargs
+        # if kwargs:
+        #     logging.warning(f"Unused arguments passed to MicroscopyAnalyzer: {kwargs}")
     
     def analyze_for_claims(self, data_path: str, system_info: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Analyze microscopy image and generate scientific claims."""
@@ -75,6 +76,9 @@ class MicroscopyAnalyzer(BaseExperimentAnalyzer):
                 'components': 3,
                 'output_dir': self.output_dir
             }
+        
+        if selected_agent_id == 1 and 'sam_settings' in self.analyzer_kwargs: # SAM agent
+            agent_kwargs['sam_settings'] = self.analyzer_kwargs['sam_settings']
         
         self.analysis_agent = AnalysisAgentClass(**agent_kwargs)
         
@@ -116,8 +120,8 @@ class SpectroscopyAnalyzer(BaseExperimentAnalyzer):
             enable_human_feedback=enable_human_feedback
         )
 
-        if kwargs:
-            logging.warning(f"Unused arguments passed to SpectroscopyAnalyzer: {kwargs}")
+        # if kwargs:
+        #     logging.warning(f"Unused arguments passed to SpectroscopyAnalyzer: {kwargs}")
     
     def analyze_for_claims(self, data_path: str, system_info: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Analyze spectroscopy data and generate scientific claims."""
