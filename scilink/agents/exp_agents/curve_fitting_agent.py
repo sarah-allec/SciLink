@@ -25,7 +25,7 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
 
     MAX_SCRIPT_ATTEMPTS = 3
-    MAX_MODEL_ATTEMPTS = 2
+    MAX_MODEL_ATTEMPTS = 3
 
     def __init__(self, google_api_key: str = None, futurehouse_api_key: str = None, 
                  model_name: str = "gemini-2.5-pro-preview-06-05", local_model: str = None, 
