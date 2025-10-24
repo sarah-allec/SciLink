@@ -3,6 +3,7 @@ import os
 from PIL import Image
 import logging
 import numpy as np
+from datetime import datetime
 
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
@@ -174,6 +175,26 @@ class SAMMicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             particles_df = ParticleAnalyzer.particles_to_dataframe(sam_result)
             
             if not particles_df.empty:
+                try:
+                    # Define data output directory (parallel to visualizations)
+                    data_output_dir = "sam_analysis_data"
+                    os.makedirs(data_output_dir, exist_ok=True)
+
+                    # Create a unique filename
+                    base_name = os.path.splitext(os.path.basename(image_path))[0]
+                    safe_base_name = "".join(c if c.isalnum() else "_" for c in base_name)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    data_filename = f"{safe_base_name}_particles_{timestamp}.csv"
+                    data_filepath = os.path.join(data_output_dir, data_filename)
+
+                    # Save the DataFrame to CSV
+                    particles_df.to_csv(data_filepath, index=False)
+                    self.logger.info(f"💾 Saved per-particle data ({len(particles_df)} particles) to: {data_filepath}")
+                    print(f"💾 Saved per-particle data to: {data_filepath}")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to save per-particle data: {e}", exc_info=True)
+
                 # Determine the effective scaling factors based on original image pixels and nm/pixel
                 if nm_per_pixel is not None and nm_per_pixel > 0:
                     linear_scale_factor = pixel_rescaling_factor_to_original * nm_per_pixel
