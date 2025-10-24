@@ -288,7 +288,7 @@ class ExperimentNoveltyAssessment:
         print(f"📄 Assessment saved: {os.path.basename(novelty_result['novelty_file'])}")
         
         # === Step 4: DFT Recommendations (Optional) ===
-        if self.dft_recommendations and self.data_type == 'microscopy':
+        if self.dft_recommendations:# and self.data_type == 'microscopy':
             print(f"\n⚛️  WORKFLOW STEP 4: DFT Recommendations")
             print(f"{'─'*50}")
             
