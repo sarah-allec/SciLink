@@ -245,47 +245,49 @@ class ExperimentNoveltyAssessment:
         print(f"📄 Claims saved: {os.path.basename(analysis_result['claims_file'])}")
         
         # === Step 2: Literature Search ===
+        literature_results = []  # Define a default empty list
+
         if self.lit_agent is None:
-            print(f"⚠️  Literature search skipped (no FutureHouse API key)")
+            print(f"⚠️  Literature search skipped (no FutureHouse API key). Proceeding...")
             workflow_result["final_status"] = "no_literature_search"
-            self._print_final_summary(workflow_result, data_type_name)
-            return workflow_result
-        
-        print(f"\n📚 WORKFLOW STEP 2: Literature Search")
-        print(f"{'─'*50}")
-        
-        literature_result = self._conduct_literature_search(claims)
-        workflow_result["literature_search"] = literature_result
-        
-        if literature_result["status"] != "success":
-            print(f"❌ Literature search failed: {literature_result.get('message', 'Unknown error')}")
-            workflow_result["final_status"] = "failed_literature"
-            return workflow_result
-        
-        workflow_result["steps_completed"].append("literature_search")
-        literature_results = literature_result["results"]
-        
-        print(f"✅ Literature search complete: {len(literature_results)} claims processed")
-        print(f"📄 Results saved: {os.path.basename(literature_result['results_file'])}")
+        else:
+            # Only run this block if the agent exists
+            print(f"\n📚 WORKFLOW STEP 2: Literature Search")
+            print(f"{'─'*50}")
+            
+            literature_result = self._conduct_literature_search(claims)
+            workflow_result["literature_search"] = literature_result
+            
+            if literature_result["status"] != "success":
+                print(f"⚠️  Literature search failed. Proceeding without novelty scoring.")
+                workflow_result["final_status"] = "continued_past_failed_literature" 
+            else:
+                workflow_result["steps_completed"].append("literature_search")
+                literature_results = literature_result.get("results", [])
+                print(f"✅ Literature search complete: {len(literature_results)} claims processed")
+                if "results_file" in literature_result:
+                     print(f"📄 Results saved: {os.path.basename(literature_result['results_file'])}")
         
         # === Step 3: Novelty Assessment ===
         print(f"\n🎯 WORKFLOW STEP 3: Novelty Assessment")
         print(f"{'─'*50}")
         
         novelty_result = self._assess_novelty(literature_results, data_type_name)
-        workflow_result["novelty_assessment"] = novelty_result["assessment"]
         
         if novelty_result["status"] != "success":
-            print(f"❌ Novelty assessment failed: {novelty_result.get('message', 'Unknown error')}")
-            workflow_result["final_status"] = "failed_novelty"
-            return workflow_result
+            print(f"⚠️  Novelty assessment failed (likely due to failed lit search). Proceeding anyway.")
+            workflow_result["novelty_assessment"] = {} 
+        else:
+            workflow_result["novelty_assessment"] = novelty_result.get("assessment", {})
+            workflow_result["steps_completed"].append("novelty_assessment")
         
-        workflow_result["steps_completed"].append("novelty_assessment")
-        assessment = novelty_result["assessment"]
+        assessment = workflow_result["novelty_assessment"]
         
         print(f"✅ Novelty assessment complete")
-        print(f"📊 Average novelty score: {assessment.get('average_novelty_score', 0):.2f}/5.0")
-        print(f"📄 Assessment saved: {os.path.basename(novelty_result['novelty_file'])}")
+        if "average_novelty_score" in assessment:
+            print(f"📊 Average novelty score: {assessment.get('average_novelty_score', 0):.2f}/5.0")
+        if "novelty_file" in novelty_result:
+            print(f"📄 Assessment saved: {os.path.basename(novelty_result['novelty_file'])}")
         
         # === Step 4: DFT Recommendations (Optional) ===
         if self.dft_recommendations:# and self.data_type == 'microscopy':
