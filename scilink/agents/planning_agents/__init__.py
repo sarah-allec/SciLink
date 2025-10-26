@@ -1,1 +1,1 @@
-from .hypothesis_agent import HypothesisGeneratorAgent
+from .planning_agent import PlanningAgent
