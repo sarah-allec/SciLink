@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from pathlib import Path
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass
-from .csv_parser import parse_csv_with_context
+from .excel_parser import parse_adaptive_excel
 from .instruct import HYPOTHESIS_GENERATION_INSTRUCTIONS
 from ...auth import get_api_key, APIKeyNotFoundError
 from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
@@ -68,20 +68,39 @@ class HypothesisGeneratorAgent:
         Internal method to parse documents, build the KB, and save it.
         Returns True on success, False on failure.
         """
+        # ... (code for pdf_paths is unchanged) ...
         pdf_paths = pdf_paths or []
         experimental_data = experimental_data or []
 
         print("\n--- Parsing all provided documents ---")
         all_chunks = []
+        
+        # --- 1. Process PDFs ---
         for pdf_path in pdf_paths:
             all_chunks.extend(extract_pdf_two_pass(pdf_path))
         
+        # --- 2. Process Tabular Data (CSV or Excel) ---
         for data_pair in experimental_data:
-            csv_chunk = parse_csv_with_context(data_pair.get('csv_path'), data_pair.get('context_path'))
-            if csv_chunk:
-                all_chunks.append(csv_chunk)
+            data_path = data_pair.get('data_path')
+            context_path = data_pair.get('context_path')
+
+            if not data_path or not context_path:
+                print(f"  - ⚠️  Skipping data pair: Missing 'data_path' or 'context_path'.")
+                continue
+
+            file_ext = Path(data_path).suffix.lower()
+
+            if file_ext in ['.xlsx', '.xls']:
+                # Use the new *adaptive* Excel parser
+                excel_chunks = parse_adaptive_excel(data_path, context_path)
+                if excel_chunks:
+                    all_chunks.extend(excel_chunks)
+            
+            else:
+                print(f"  - ⚠️  Skipping unsupported file type: {data_path}")
 
         if not all_chunks:
+            # ... (rest of the function is unchanged) ...
             print("❌ Build failed: No content extracted from the provided documents.")
             self._kb_is_built = False
             return False
@@ -92,7 +111,7 @@ class HypothesisGeneratorAgent:
         print("\n--- Saving Knowledge Base to Disk ---")
         self.knowledge_base.save(self.index_file, self.chunks_file)
         self._kb_is_built = True
-        print(f"✅ Knowledge base built, saved to {self.kb_path_prefix}, and ready for queries.")
+        print(f"✅ Knowledge base built with {len(all_chunks)} total chunks, saved to {self.kb_path_prefix}, and ready for queries.")
         return True
 
     def propose_experiments(self, objective: str, pdf_paths: List[str] = None, experimental_data: List[Dict[str, str]] = None) -> Dict[str, Any]:
