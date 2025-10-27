@@ -10,6 +10,9 @@ from typing import List, Dict, Any
 from ...auth import get_api_key, APIKeyNotFoundError
 from ...wrappers.openai_wrapper_embeddings import OpenAIAsEmbeddingModel
 
+from openai import RateLimitError
+
+
 class KnowledgeBase:
     """
     Handles embedding and retrieval. Supports both Google and 
@@ -61,15 +64,30 @@ class KnowledgeBase:
         for i in range(0, len(texts_to_embed), batch_size):
             batch_texts = texts_to_embed[i:i + batch_size]
             
-            # This call is polymorphic and works with either backend
-            response = self.embedding_client.embed_content(
-                model=self.embedding_model_name,
-                content=batch_texts,
-                task_type="RETRIEVAL_DOCUMENT" # Ignored by OpenAI wrapper, used by Google
-            )
-            all_embeddings.extend(response['embedding'])
-            print(f"    - Embedded batch {i//batch_size + 1}/{(len(texts_to_embed) + batch_size - 1)//batch_size}")
-            time.sleep(1) # Small delay to respect API rate limits
+            max_retries = 3
+            delay = 5 # seconds
+            for attempt in range(max_retries):
+                try:
+                    response = self.embedding_client.embed_content(
+                        model=self.embedding_model_name,
+                        content=batch_texts,
+                        task_type="RETRIEVAL_DOCUMENT" # Ignored by OpenAI wrapper, used by Google
+                    )
+                    all_embeddings.extend(response['embedding'])
+                    print(f"    - Embedded batch {i//batch_size + 1}/{(len(texts_to_embed) + batch_size - 1)//batch_size}")
+                    time.sleep(1) # Small delay to respect API rate limits
+                    break # Success
+                except RateLimitError as e:
+                    if attempt < max_retries - 1:
+                        print(f"    - ⚠️  Rate limit hit during build. Retrying in {delay}s...")
+                        time.sleep(delay)
+                        delay *= 2 # Exponential backoff
+                    else:
+                        print(f"    - ❌ Rate limit hit on final attempt. Build failed.")
+                        raise e # Re-raise the exception if all retries fail
+                except Exception as e:
+                    print(f"    - ❌ Error embedding batch {i//batch_size + 1}: {e}")
+                    raise e
 
         embeddings_np = np.array(all_embeddings, dtype=np.float32)
         
@@ -121,12 +139,34 @@ class KnowledgeBase:
             
         print(f"  - Retrieving top {top_k} most relevant chunks for query: '{query[:80]}...'")
 
-        # This call is also polymorphic
-        response = self.embedding_client.embed_content(
-            model=self.embedding_model_name,
-            content=query,
-            task_type="RETRIEVAL_QUERY" # Ignored by OpenAI wrapper, used by Google
-        )
+        max_retries = 3
+        delay = 5 # seconds
+        response = None
+        for attempt in range(max_retries):
+            try:
+                # This call is also polymorphic
+                response = self.embedding_client.embed_content(
+                    model=self.embedding_model_name,
+                    content=query,
+                    task_type="RETRIEVAL_QUERY" # Ignored by OpenAI wrapper, used by Google
+                )
+                break # Success
+            except RateLimitError as e:
+                if attempt < max_retries - 1:
+                    print(f"    - ⚠️  Rate limit hit embedding query. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    delay *= 2 # Exponential backoff
+                else:
+                    print(f"    - ❌ Rate limit hit on final attempt. Retrieval failed.")
+                    raise e # Re-raise the exception if all retries fail
+            except Exception as e:
+                print(f"    - ❌ Error embedding query: {e}")
+                raise e
+        
+        if response is None:
+            print("    - ❌ Retrieval failed after retries.")
+            return []
+
         query_embedding = np.array([response['embedding']], dtype=np.float32)
 
         if query_embedding.ndim == 3:
