@@ -11,6 +11,7 @@ SMALL_FILE_THRESHOLD = 150
 def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int = 100) -> List[Dict[str, Any]]:
     """
     Reads an Excel file and a JSON context file with an adaptive strategy.
+    If 'column_definitions' are not in the JSON, it uses the Excel headers.
     
     - If rows <= SMALL_FILE_THRESHOLD:
       Creates ONE chunk containing the summary, definitions, AND the full data table.
@@ -27,8 +28,9 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
         with open(context_path, 'r', encoding='utf-8') as f:
             context = json.load(f)
         
-        if not all(k in context for k in ["objective", "column_definitions"]):
-            print(f"    - ⚠️  Skipping: JSON '{context_path}' is missing 'objective' or 'column_definitions'.")
+        # Validate that the essential 'objective' key exists
+        if "objective" not in context:
+            print(f"    - ⚠️  Skipping: JSON '{context_path}' is missing 'objective'.")
             return []
 
         # --- 2. Load the Excel file ---
@@ -43,7 +45,15 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
 
         # --- 3. Base Content (common to all strategies) ---
         experiment_title = context.get('experiment_title', Path(excel_path).stem)
-        col_defs = "\n".join([f"- `{col}`: {desc}" for col, desc in context['column_definitions'].items()])
+
+        # Get or create column definitions
+        column_defs_dict = context.get('column_definitions')
+        if not column_defs_dict:
+            print(f"     - ℹ️  'column_definitions' not found in JSON. Using headers from '{Path(excel_path).name}'.")
+            # Create definitions from DataFrame column headers
+            column_defs_dict = {str(header): "No definition provided." for header in df.columns}
+
+        col_defs = "\n".join([f"- `{col}`: {desc}" for col, desc in column_defs_dict.items()])
         statistical_summary = df.describe().to_markdown() if not df.empty else "No statistical summary available."
 
         # --- 4. Adaptive Chunking Logic ---

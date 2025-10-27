@@ -5,7 +5,6 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass
-from .csv_parser import parse_csv_with_context
 from .excel_parser import parse_adaptive_excel
 from .instruct import HYPOTHESIS_GENERATION_INSTRUCTIONS, TEA_INSTRUCTIONS
 from ...auth import get_api_key, APIKeyNotFoundError
@@ -86,7 +85,7 @@ class PlanningAgent:
             else:
                 print(f"  - ⚠️  Skipping unsupported file type in document_paths: {doc_path}")
 
-        # --- 2. Process Structured Data Sets (e.g., Excel/CSV + JSON) ---
+        # --- 2. Process Structured Data Sets (e.g., Excel + JSON) ---
         for data_set in struct_data:
             file_path = data_set.get('file_path')
             metadata_path = data_set.get('metadata_path')
@@ -201,8 +200,8 @@ class PlanningAgent:
                  print(f"  - ✅ Successfully generated and parsed {task_name} from response part.")
                  return result
             else:
-                 logging.error(f"LLM response format unexpected: {response}")
-                 return {"error": "LLM response format unexpected.", "raw_response": str(response)}
+                logging.error(f"LLM response format unexpected: {response}")
+                return {"error": "LLM response format unexpected.", "raw_response": str(response)}
 
         except json.JSONDecodeError as json_e:
             raw_response_text = "N/A"
@@ -257,5 +256,5 @@ class PlanningAgent:
             objective=objective,
             instructions=TEA_INSTRUCTIONS,
             task_name="Technoeconomic Analysis",
-            additional_context=None # TEA doesn't take prior context
+            additional_context=None # TEA
         )
