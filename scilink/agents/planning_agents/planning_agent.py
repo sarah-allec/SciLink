@@ -62,48 +62,84 @@ class PlanningAgent:
         else:
             print("⚠️  No pre-built KB found. Provide documents on your first call to create one.")
 
-    def _build_and_save_kb(self, pdf_paths: List[str] = None, experimental_data: List[Dict[str, str]] = None) -> bool:
-        """Internal method to parse documents, build the KB, and save it."""
-        pdf_paths = pdf_paths or []
-        experimental_data = experimental_data or []
+    def _build_and_save_kb(self,
+                           document_paths: Optional[List[str]] = None, # Renamed parameter
+                           structured_data_sets: Optional[List[Dict[str, str]]] = None # Renamed parameter
+                           ) -> bool:
+        """
+        Internal method to parse documents, build the KB, and save it.
+        Uses document_paths for general documents (like PDFs) and
+        structured_data_sets for tabular data with context files.
+        Returns True on success, False on failure.
+        """
+        # Use renamed parameters, default to empty lists if None
+        doc_paths = document_paths or []
+        struct_data = structured_data_sets or []
+
         print("\n--- Parsing all provided documents ---")
         all_chunks = []
-        for pdf_path in pdf_paths:
-             all_chunks.extend(extract_pdf_two_pass(pdf_path))
-        for data_pair in experimental_data:
-            data_path = data_pair.get('data_path')
-            context_path = data_pair.get('context_path')
-            if not data_path or not context_path:
-                print(f"  - ⚠️  Skipping data pair: Missing 'data_path' or 'context_path'.")
-                continue
-            file_ext = Path(data_path).suffix.lower()
-            if file_ext == '.csv':
-                csv_chunk = parse_csv_with_context(data_path, context_path)
-                if csv_chunk: all_chunks.append(csv_chunk)
-            elif file_ext in ['.xlsx', '.xls']:
-                excel_chunks = parse_adaptive_excel(data_path, context_path)
-                if excel_chunks: all_chunks.extend(excel_chunks)
+
+        # --- 1. Process General Documents (PDFs) ---
+        for doc_path in doc_paths:
+            if Path(doc_path).suffix.lower() == '.pdf':
+                all_chunks.extend(extract_pdf_two_pass(doc_path))
             else:
-                print(f"  - ⚠️  Skipping unsupported file type: {data_path}")
+                print(f"  - ⚠️  Skipping unsupported file type in document_paths: {doc_path}")
+
+        # --- 2. Process Structured Data Sets (e.g., Excel/CSV + JSON) ---
+        for data_set in struct_data:
+            file_path = data_set.get('file_path')
+            metadata_path = data_set.get('metadata_path')
+
+            if not file_path or not metadata_path:
+                print(f"  - ⚠️  Skipping data set: Missing 'file_path' or 'metadata_path' in dictionary: {data_set}")
+                continue
+
+            file_ext = Path(file_path).suffix.lower()
+
+            try:
+                if file_ext in ['.xlsx', '.xls']:
+                    excel_chunks = parse_adaptive_excel(file_path, metadata_path)
+                    if excel_chunks:
+                        all_chunks.extend(excel_chunks)
+                else:
+                    print(f"  - ⚠️  Skipping unsupported file type in structured_data_sets: {file_path}")
+            except Exception as e:
+                print(f"  - ❌ Error processing data pair: file='{file_path}', metadata='{metadata_path}'. Error: {e}")
+                continue # Continue with the next file pair
+
+        # --- 3. Build and Save KB ---
         if not all_chunks:
-            print("❌ Build failed: No content extracted.")
+            print("❌ Build failed: No content successfully extracted from any provided documents.")
             self._kb_is_built = False
             return False
-        print("\n--- Building Knowledge Base (Embedding & Indexing) ---")
-        self.knowledge_base.build(all_chunks)
-        print("\n--- Saving Knowledge Base to Disk ---")
-        self.knowledge_base.save(self.index_file, self.chunks_file)
-        self._kb_is_built = True
-        print(f"✅ KB built with {len(all_chunks)} chunks, saved to {self.kb_path_prefix}, ready.")
-        return True
 
-    def _ensure_kb_is_ready(self, pdf_paths: Optional[List[str]] = None, experimental_data: Optional[List[Dict[str, str]]] = None) -> bool:
+        print(f"\n--- Building Knowledge Base (Embedding & Indexing) from {len(all_chunks)} chunks ---")
+        try:
+            self.knowledge_base.build(all_chunks)
+        except Exception as e:
+            print(f"❌ Build failed: Error during embedding or indexing: {e}")
+            self._kb_is_built = False
+            return False
+
+        print("\n--- Saving Knowledge Base to Disk ---")
+        try:
+            self.knowledge_base.save(self.index_file, self.chunks_file)
+            self._kb_is_built = True
+            print(f"✅ KB built with {len(all_chunks)} chunks, saved to {self.kb_path_prefix}, ready.")
+            return True
+        except Exception as e:
+             print(f"❌ Build successful, but failed to save KB: {e}")
+             self._kb_is_built = True
+             return True
+
+    def _ensure_kb_is_ready(self, document_paths: Optional[List[str]] = None, structured_data_sets: Optional[List[Dict[str, str]]] = None) -> bool:
         """Checks if KB is built or builds it if new documents are provided."""
-        new_documents_provided = (pdf_paths is not None and pdf_paths) or \
-                                 (experimental_data is not None and experimental_data)
+        new_documents_provided = (document_paths is not None and document_paths) or \
+                                 (structured_data_sets is not None and structured_data_sets)
         if new_documents_provided:
             print("--- New documents provided. Building/rebuilding knowledge base... ---")
-            build_success = self._build_and_save_kb(pdf_paths, experimental_data)
+            build_success = self._build_and_save_kb(document_paths, structured_data_sets)
             if not build_success:
                 logging.error("Failed to build knowledge base from provided documents.")
                 return False
@@ -183,14 +219,14 @@ class PlanningAgent:
 
     def propose_experiments(self,
                             objective: str,
-                            pdf_paths: Optional[List[str]] = None,
-                            experimental_data: Optional[List[Dict[str, str]]] = None,
+                            document_paths: Optional[List[str]] = None,
+                            structured_data_sets: Optional[List[Dict[str, str]]] = None,
                             tea_summary: Optional[str] = None) -> Dict[str, Any]:
         """
         Generates experimental proposals. Builds/rebuilds KB if new documents provided.
         Optionally incorporates findings from a previous TEA via tea_summary.
         """
-        if not self._ensure_kb_is_ready(pdf_paths, experimental_data):
+        if not self._ensure_kb_is_ready(document_paths, structured_data_sets):
             return {"error": "Knowledge base preparation failed."}
 
         # Format the TEA summary for the prompt helper
@@ -208,12 +244,12 @@ class PlanningAgent:
 
     def perform_technoeconomic_analysis(self,
                                         objective: str,
-                                        pdf_paths: Optional[List[str]] = None,
-                                        experimental_data: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+                                        document_paths: Optional[List[str]] = None,
+                                        structured_data_sets: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """
         Performs preliminary TEA. Builds/rebuilds KB if new documents provided.
         """
-        if not self._ensure_kb_is_ready(pdf_paths, experimental_data):
+        if not self._ensure_kb_is_ready(document_paths, structured_data_sets):
             return {"error": "Knowledge base preparation failed."}
 
         # Call the helper with specific instructions, no additional context needed here
