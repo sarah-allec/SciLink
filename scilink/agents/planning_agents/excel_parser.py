@@ -5,13 +5,12 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 # If a file has this many rows or fewer, we embed it all in one chunk.
-# This is more efficient for small, preliminary results.
 SMALL_FILE_THRESHOLD = 150
 
 def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int = 100) -> List[Dict[str, Any]]:
     """
     Reads an Excel file and a JSON context file with an adaptive strategy.
-    If 'column_definitions' are not in the JSON, it uses the Excel headers.
+    Fails only if BOTH 'objective' AND 'title' are missing.
     
     - If rows <= SMALL_FILE_THRESHOLD:
       Creates ONE chunk containing the summary, definitions, AND the full data table.
@@ -28,9 +27,9 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
         with open(context_path, 'r', encoding='utf-8') as f:
             context = json.load(f)
         
-        # Validate that the essential 'objective' key exists
-        if "objective" not in context:
-            print(f"    - ⚠️  Skipping: JSON '{context_path}' is missing 'objective'.")
+        # Validate that at least one of 'objective' or 'title' exists
+        if "objective" not in context and "title" not in context:
+            print(f"    - ⚠️  Skipping: JSON '{context_path}' must contain at least one of 'objective' or 'title'.")
             return []
 
         # --- 2. Load the Excel file ---
@@ -44,7 +43,16 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
         print(f"    - Loaded {total_rows} rows from Excel.")
 
         # --- 3. Base Content (common to all strategies) ---
-        experiment_title = context.get('experiment_title', Path(excel_path).stem)
+        
+        description_parts = []
+        
+        # Get title: Use 'title' if present, else fallback to filename
+        title = context.get('title', Path(excel_path).stem)
+        description_parts.append(f"### Experiment: {title}")
+        
+        # Get objective: Only add if present
+        if context.get("objective"):
+            description_parts.append(f"#### Objective\n{context['objective']}")
 
         # Get or create column definitions
         column_defs_dict = context.get('column_definitions')
@@ -54,6 +62,8 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
             column_defs_dict = {str(header): "No definition provided." for header in df.columns}
 
         col_defs = "\n".join([f"- `{col}`: {desc}" for col, desc in column_defs_dict.items()])
+        description_parts.append(f"#### Data Column Definitions\n{col_defs}")
+        
         statistical_summary = df.describe().to_markdown() if not df.empty else "No statistical summary available."
 
         # --- 4. Adaptive Chunking Logic ---
@@ -64,13 +74,11 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
             
             full_data_table = df.to_markdown(index=False)
             
+            # Create the base description from our parts
+            base_description = "\n\n".join(description_parts)
+            
             combined_text = f"""
-### Experiment: {experiment_title}
-#### Objective
-{context['objective']}
-
-#### Data Column Definitions
-{col_defs}
+{base_description}
 
 #### Statistical Summary
 {statistical_summary}
@@ -84,7 +92,7 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
                 'metadata': {
                     'source': excel_path,
                     'context_source': context_path,
-                    'content_type': 'dataset_package', # New type for small, whole datasets
+                    'content_type': 'dataset_package', 
                     'page': 1 
                 }
             }
@@ -96,13 +104,12 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
             print(f"    - File is large ({total_rows} rows). Creating summary + batched data chunks.")
             
             # 4.1 Create the "Summary Chunk"
+            
+            # Create the base description from our parts
+            base_description = "\n\n".join(description_parts)
+            
             summary_text = f"""
-### Experiment: {experiment_title}
-#### Objective
-{context['objective']}
-
-#### Data Column Definitions
-{col_defs}
+{base_description}
 
 #### Statistical Summary of {total_rows} Rows
 {statistical_summary}
@@ -126,8 +133,9 @@ def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int
                 df_batch = df.iloc[i : i + row_chunk_size]
                 markdown_table = df_batch.to_markdown(index=False)
                 
+                # We use the title (which has a fallback) for the header
                 chunk_text = f"""
-### {experiment_title}
+### {title}
 #### Data Rows {i + 1} to {i + len(df_batch)}
 
 {markdown_table}
