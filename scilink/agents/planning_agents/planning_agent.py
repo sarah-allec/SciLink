@@ -172,7 +172,8 @@ class PlanningAgent:
                            task_name: str,
                            additional_context: Optional[str] = None,
                            primary_data_set: Optional[Dict[str, str]] = None,
-                           image_paths: Optional[List[str]] = None
+                           image_paths: Optional[List[str]] = None,
+                           image_descriptions: Optional[List[str | Dict[str, Any]]] = None
                            ) -> Dict[str, Any]:
         """Internal helper for retrieval, prompt construction, and LLM generation."""
         
@@ -226,8 +227,11 @@ class PlanningAgent:
             
             retrieved_context_str = "\n\n".join(full_context_parts)
 
-        # --- 4. Load Images (if provided) ---
+        # --- 4. Load Images and Process Descriptions ---
         loaded_images = []
+        image_descriptions_str_parts = []
+        
+        # 4.1 Load Images from paths
         if image_paths and PIL_Image:
             print(f"  - ℹ️  Loading {len(image_paths)} image(s)...")
             for img_path in image_paths:
@@ -240,6 +244,25 @@ class PlanningAgent:
         elif image_paths:
             print("  - ⚠️  Image paths provided, but PIL (Pillow) library is not installed. Images will be ignored.")
 
+        # 4.2 Process Image Descriptions
+        if image_descriptions:
+            print(f"  - ℹ️  Processing {len(image_descriptions)} image description(s)...")
+            for i, desc in enumerate(image_descriptions):
+                if isinstance(desc, dict):
+                    # Assume it's a JSON/dict object, pretty-print it
+                    try:
+                        desc_str = json.dumps(desc, indent=2)
+                        image_descriptions_str_parts.append(f"Description for Image {i+1} (JSON):\n{desc_str}")
+                    except Exception as e:
+                        print(f"    - ❌ Failed to serialize description dict: {e}")
+                        image_descriptions_str_parts.append(f"Description for Image {i+1} (unserializable dict):\n{str(desc)}")
+                elif isinstance(desc, str):
+                    # It's a plain text string
+                    image_descriptions_str_parts.append(f"Description for Image {i+1} (Text):\n{desc}")
+                else:
+                    print(f"    - ⚠️  Skipping unknown description format: {type(desc)}")
+        
+        image_descriptions_context_str = "\n\n".join(image_descriptions_str_parts)
 
         # --- 5. Construct Prompt (as a list for multimodal input) ---
         prompt_parts = []
@@ -250,7 +273,10 @@ class PlanningAgent:
         if loaded_images:
             prompt_parts.append("\n## Provided Images:\n(See attached images for visual context)\n")
             prompt_parts.extend(loaded_images)
-
+            
+            if image_descriptions_context_str:
+                prompt_parts.append(f"\n## Provided Image Descriptions:\n(See attached descriptions for additional context)\n{image_descriptions_context_str}\n")
+        
         if additional_context:
             prompt_parts.append(f"\n## Additional Context/Findings:\n{additional_context}")
             prompt_parts.append("\n**IMPORTANT:** Consider this additional context when generating your response.**")
@@ -296,6 +322,9 @@ class PlanningAgent:
                     fallback_prompt_parts.append("\n## Provided Images:\n(See attached images for visual context)\n")
                     fallback_prompt_parts.extend(loaded_images)
 
+                    if image_descriptions_context_str:
+                        fallback_prompt_parts.append(f"\n## Provided Image Descriptions:\n(See attached descriptions for additional context)\n{image_descriptions_context_str}\n")
+                
                 if additional_context:
                     fallback_prompt_parts.append(f"\n## Additional Context/Findings:\n{additional_context}")
                     fallback_prompt_parts.append("\n**IMPORTANT:** Consider this additional context when generating your response.**")
@@ -303,7 +332,6 @@ class PlanningAgent:
                 fallback_prompt_parts.append(f"\n## Retrieved Context from Documents:\n{retrieved_context_str}")
                 
                 fallback_response = self.model.generate_content(fallback_prompt_parts, generation_config=self.generation_config)
-                # --- END MODIFICATION ---
                 
                 result, error_msg = parse_json_from_response(fallback_response)
                 if error_msg:
@@ -336,6 +364,7 @@ class PlanningAgent:
                             tea_summary: Optional[str] = None,
                             primary_data_set: Optional[Dict[str, str]] = None,
                             image_paths: Optional[List[str]] = None,
+                            image_descriptions: Optional[List[str | Dict[str, Any]]] = None,
                             output_json_path: Optional[str] = None
                             ) -> Dict[str, Any]:
         """
@@ -350,6 +379,8 @@ class PlanningAgent:
             primary_data_set: (Recommended) A single Excel/JSON pair to be
                 force-fed into the prompt as the primary context.
             image_paths: (Optional) A list of file paths to images for visual context.
+            image_descriptions: (Optional) A list of text strings or JSON/dicts
+                describing images.
             output_json_path: (Optional) A file path to save the JSON results.
         """
         if not self._ensure_kb_is_ready(document_paths, structured_data_sets):
@@ -367,7 +398,8 @@ class PlanningAgent:
             task_name="Experimental Plan",
             additional_context=additional_context_for_prompt,
             primary_data_set=primary_data_set,
-            image_paths=image_paths
+            image_paths=image_paths,
+            image_descriptions=image_descriptions
         )
 
         if output_json_path:
@@ -382,6 +414,7 @@ class PlanningAgent:
                                         structured_data_sets: Optional[List[Dict[str, str]]] = None,
                                         primary_data_set: Optional[Dict[str, str]] = None,
                                         image_paths: Optional[List[str]] = None,
+                                        image_descriptions: Optional[List[str | Dict[str, Any]]] = None,
                                         output_json_path: Optional[str] = None
                                         ) -> Dict[str, Any]:
         """
@@ -394,6 +427,8 @@ class PlanningAgent:
             primary_data_set: (Recommended) A single Excel/JSON pair to be
                 force-fed into the prompt as the primary context.
             image_paths: (Optional) A list of file paths to images for visual context.
+            image_descriptions: (Optional) A list of text strings or JSON/dicts
+                describing images.
             output_json_path: (Optional) A file path to save the JSON results.
         """
         if not self._ensure_kb_is_ready(document_paths, structured_data_sets):
@@ -406,7 +441,8 @@ class PlanningAgent:
             task_name="Technoeconomic Analysis",
             additional_context=None,
             primary_data_set=primary_data_set,
-            image_paths=image_paths
+            image_paths=image_paths,
+            image_descriptions=image_descriptions
         )
 
         if output_json_path:
