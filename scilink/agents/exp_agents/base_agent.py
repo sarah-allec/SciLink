@@ -1,5 +1,7 @@
 import json
 import logging
+from abc import ABC, abstractmethod
+from typing import Dict, Any, List
 
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
@@ -14,12 +16,30 @@ class BaseAnalysisAgent:
     
     def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05", local_model: str = None):
         if local_model is not None:
-            logging.info(f"💻 Using local agent as the analysis agent.")
-            from .llama_wrapper import LocalLlamaModel
-            self.model = LocalLlamaModel(local_model)
-            self.generation_config = None
-            self.safety_settings = None
-            self.model_name = local_model
+            if 'gguf' in local_model:
+                logging.info(f"💻 Using local agent as the analysis agent.")
+                from ...wrappers.llama_wrapper import LocalLlamaModel
+                self.model = LocalLlamaModel(local_model)
+                self.generation_config = None
+                self.safety_settings = None
+                self.model_name = local_model
+            elif 'ai-incubator' in local_model:
+                logging.info(f"🏛️ Using network agent as the analysis agent.")
+                from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
+                # Auto-discover API key
+                if google_api_key is None:
+                    google_api_key = get_api_key('google')
+                    if not google_api_key:
+                        raise APIKeyNotFoundError('google')
+                self.model = OpenAIAsGenerativeModel(model_name, api_key = google_api_key, base_url= local_model) #This not google API key but API key
+                self.generation_config = None
+                self.safety_settings = None
+                self.model_name = model_name
+            else:
+                logging.info(f"Invalid local_model argument.")
+                self.model = None
+                self.generation_config = None
+                self.safety_settings = None
         else:
             logging.info(f"☁️ Using cloud agent as the analysis agent.")
             # Auto-discover API key
@@ -35,12 +55,32 @@ class BaseAnalysisAgent:
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
             }
             self.model_name = model_name
-            
+        self.local_model = local_model    
         self.logger = logging.getLogger(__name__)
         self.google_api_key = google_api_key 
         
         self._stored_analysis_images = []
         self._stored_analysis_metadata = {}
+
+    @abstractmethod
+    def analyze_for_claims(self, data_path: str, system_info: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+        """
+        Analyze experimental data to generate a detailed summary and scientific claims.
+        This is the primary entry point for any analysis agent.
+        """
+        raise NotImplementedError
+    
+    def _get_stored_analysis_images(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves visual evidence (processed images) generated during the analysis.
+        """
+        return self._stored_analysis_images.copy()
+
+    def _store_analysis_images(self, images: list, metadata: dict = None):
+        """Helper to store analysis images for retrieval by workflows."""
+        self._stored_analysis_images = images.copy() if images else []
+        self._stored_analysis_metadata = metadata or {}
+        self.logger.debug(f"Stored {len(self._stored_analysis_images)} analysis images.")
 
     def _parse_llm_response(self, response) -> tuple[dict | None, dict | None]:
         """

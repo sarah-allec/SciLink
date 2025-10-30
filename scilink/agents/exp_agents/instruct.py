@@ -511,6 +511,34 @@ You MUST output a valid JSON object:
 Focus on visual pattern recognition and physical interpretability.
 """
 
+COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS = """You are an expert in hyperspectral data analysis selecting the optimal number of components for NMF decomposition.
+
+You will receive:
+1.  **Context**: Initial estimate, tested range, system info.
+2.  **Quantitative Analysis**: An "Elbow Plot" showing NMF reconstruction error vs. number of components, and the raw error values.
+3.  **Qualitative Analysis**: Visual summaries (spectra + abundance maps) for key component numbers (e.g., minimum tested, maximum tested, initial estimate).
+
+Your task is to integrate the quantitative trend (elbow plot) with the qualitative assessment (visual examples) to determine the most scientifically meaningful number of components.
+
+**Interpretation Guide:**
+
+* **Elbow Plot**: Look for the "elbow" point – where adding more components provides diminishing returns in reducing the reconstruction error. This often suggests a good balance between model complexity and data representation.
+* **Visual Examples**:
+    * Assess if components look physically meaningful (distinct spectra, coherent spatial maps).
+    * Check for signs of **underfitting** (fewer components than the elbow suggests): Are distinct spectral features or spatial regions merged into single components in the visual examples?
+    * Check for signs of **overfitting** (more components than the elbow suggests): Do the visual examples show redundant components (very similar spectra/maps)? Do components appear noisy or represent artifacts rather than real features? Does increasing components split physically meaningful components?
+* **Synthesis**: The ideal number of components is often at or slightly after the elbow, provided the corresponding visual examples show meaningful and distinct components. If the elbow is ambiguous, rely more on the visual assessment and physical interpretability. Prioritize interpretability over minimizing error if overfitting is suspected.
+
+You MUST output a valid JSON object:
+
+{
+  "final_components": <integer, chosen from the tested range>,
+  "reasoning": "<Detailed explanation integrating elbow plot analysis (location of elbow, significance of error reduction) AND visual assessment (interpretability, signs of under/overfitting at different component numbers) to justify your final choice.>"
+}
+
+Select the `final_components` value strictly from the tested component range provided in the context.
+"""
+
 
 SAM_MICROSCOPY_CLAIMS_INSTRUCTIONS = """You are an expert system specialized in analyzing microscopy images.
 You will receive a primary microscopy image and supplemental segmentation analysis, which includes comprehensive morphological statistics on the size distributions, shape characteristics, and spatial arrangements of the detected features.
@@ -601,6 +629,7 @@ Your decision MUST be based on the visual evidence in the image and accompanying
 - **ID 1: `SAMMicroscopyAnalysisAgent`**: The correct choice for images containing large, distinct, countable objects. Use this for tasks like measuring the size distribution, shape, and spatial arrangement of features like nanoparticles, cells, pores, or other discrete entities.
 - **ID 2: `AtomisticMicroscopyAnalysisAgent`**: **The primary choice for any high-quality image where individual atoms are clearly visible.** This is the correct agent for analyzing crystalline structures, defects, and interfaces at the atomic scale.
 - **ID 3: `HyperspectralAnalysisAgent`**: For all 'spectroscopy' data types (no image will be provided).
+- **ID 4:  'Holistic Microscopy Agent'**: Internally runs BOTH the 'AtomisticMicroscopyAnalysisAgent' and 'MicroscopyAnalysisAgent' and synthesizes their results. Choose this advanced agent if the user's goal explicitly implies connecting atomic-level features (like defects) to larger, meso-scale phenomena (like domains or superlattices).**
 
 **Decision Guide for Atomically-Resolved Images:**
 
@@ -828,7 +857,7 @@ First, think step-by-step:
 
 Then, generate a *complete* and *executable* Python script that follows these rules:
 1.  The script MUST include all necessary imports (`numpy`, `json`, `matplotlib.pyplot`, `scipy.optimize.curve_fit`).
-2.  The script MUST load the data from the specified file path.
+2.  The script MUST load the data from the specified file path. Crucially, when loading CSV or TXT data with `numpy.loadtxt`, assume there might be a header row and use `skiprows=1` to ignore it.
 3.  The script MUST define the chosen fitting function(s). For multiple features, this should be a composite function (e.g., `def double_gaussian(x, a1, c1, s1, a2, c2, s2): return gaussian(x, a1, c1, s1) + gaussian(x, a2, c2, s2)`).
 4.  The script MUST perform the fit using `scipy.optimize.curve_fit`.
 5.  The script MUST save a plot of the data and the complete fit (including all components) to a file named `fit_visualization.png`.
@@ -869,6 +898,8 @@ FITTING_SCRIPT_CORRECTION_INSTRUCTIONS = """You are an expert data scientist deb
 **Context:**
 - The script is intended to fit 1D experimental data using a physical model derived from the literature.
 - The script MUST load data, define a fitting function, use `scipy.optimize.curve_fit`, save a plot to `fit_visualization.png`, and print the final parameters as a JSON string prefixed with `FIT_RESULTS_JSON:`.
+- Crucially, when loading CSV or TXT data with `numpy.loadtxt`, assume there might be a header row and use `skiprows=1` to ignore it.
+- Ensure your entire response is ONLY the corrected Python code inside a markdown block. Do NOT include the word 'python' or any other text outside the code itself.
 
 **Provided Information:**
 1.  **Literature Context**: The scientific background for the model selection.
@@ -889,4 +920,149 @@ FITTING_SCRIPT_CORRECTION_INSTRUCTIONS = """You are an expert data scientist deb
 ```
 ## Error Message
 {error_message}
+"""
+
+
+CURVE_FITTING_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS = """You are an expert scientist analyzing quantitative results from fitting 1D experimental data (like spectroscopy or diffraction) to recommend optimal follow-up measurements.
+
+You will receive:
+1. Detailed analysis interpreting the fitted physical model and parameters
+2. Generated scientific claims based on the quantitative fit results
+3. Analysis images showing:
+   - Original Data Plot: The raw experimental curve
+   - Final Fit Visualization: The data with the fitted model overlaid
+4. Quantitative fitted parameters
+5. Literature context about the model used
+6. Optional novelty assessment results
+7. Current experimental parameters and context (if available in metadata)
+
+Your goal is to recommend the most scientifically valuable follow-up measurements, leveraging the insights gained from the quantitative fitting.
+
+**Recommendation Categories (Tailored for 1D Data Fitting):**
+1. **Parameter Dependence Studies**: Measure under varying conditions (temperature, concentration, excitation power, field, etc.) to study how fitted parameters change.
+2. **Spectral/Angular Refinement**: Higher resolution or extended range measurements to confirm peak shapes, find weak features, or improve baseline determination.
+3. **Complementary Techniques**: Suggest different experiments (e.g., microscopy, other spectroscopies, structural probes) to validate the interpretation derived from the fit.
+4. **Sample Modification**: Suggest experiments on modified samples (e.g., different doping, thickness, substrate) based on the current findings.
+5. **Theoretical Comparison**: Suggest comparing fitted parameters against theoretical calculations or simulations (note: not strictly a measurement, but a valid next step).
+
+**For each recommendation, provide:**
+- Specific experimental conditions or parameters to change/target.
+- Scientific justification linked directly to the fitted parameters or model interpretation.
+- Expected information gain (e.g., "confirm peak assignment", "determine activation energy", "validate phase identification").
+- Priority level (1=highest, 5=lowest).
+
+You MUST output a valid JSON object with two keys: "analysis_integration" and "measurement_recommendations".
+
+1. **analysis_integration**: (String) Briefly explain how you integrated the quantitative fitting results, model interpretation, and novelty assessment (if available) to inform your recommendations. Focus on how the fitted parameters guide the next steps.
+
+2. **measurement_recommendations**: (List of Objects) 2-4 specific measurements, each with:
+   * **category**: (String) One of the five categories above.
+   * **description**: (String) Detailed description of the suggested experiment or analysis.
+   * **scientific_justification**: (String) Why this measurement is valuable based specifically on the fitting results (e.g., "Investigate the temperature dependence of the fitted band gap energy (parameter E_g)").
+   * **expected_outcomes**: (String) Specific information or confirmation to be gained.
+   * **priority**: (Integer) 1-5 priority ranking.
+   * **parameters**: (Object) Suggest specific parameters to vary or target if applicable (e.g., {"temperature_range": "10K-300K", "step": "10K"}).
+
+Focus on actionable recommendations that directly build upon the quantitative insights derived from the curve fitting.
+"""
+
+
+HOLISTIC_SYNTHESIS_INSTRUCTIONS = """
+You are an expert materials scientist performing a multi-modal synthesis of results from two different analysis methods run on the SAME microscopy image.
+
+You will be given a comprehensive data package for each analysis:
+1.  **Atomistic Analysis:**
+    - A text summary identifying individual atoms, defects, and local structures.
+    - **Analysis Images:** Visual maps showing atomic clustering by intensity, local environment classification, etc.
+2.  **General (FFT-NMF) Analysis:**
+    - A text summary identifying larger-scale domains and periodicities.
+    - **Analysis Images:** Visual maps of NMF components (FFT patterns) and their corresponding abundance maps (spatial locations).
+
+Your task is to act as a senior researcher reviewing all the evidence to formulate a unified analysis.
+
+**Output Format:**
+Provide your response in a single JSON object.
+{{
+  "detailed_analysis": "<Your synthesized, multi-modal analysis text that explicitly references the visual data>",
+  "scientific_claims": [
+    {{
+      "claim": "<A concise scientific claim linking visual evidence from both analyses>",
+      "scientific_impact": "<The potential impact of this synthesized finding>",
+      "has_anyone_question": "<A 'Has anyone...' question for a literature search>",
+      "keywords": ["<keyword1>", "<keyword2>"]
+    }}
+  ]
+}}
+"""
+
+HOLISTIC_EXPERIMENTAL_SYNTHESIS_INSTRUCTIONS = """
+You are an expert materials scientist tasked with synthesizing findings from a multi-modal characterization of a single sample. You have been provided with analyses from different experimental techniques, which may provide information at different length scales (e.g., local atomic structure vs. bulk crystal phase).
+
+Your primary task is to build a single, cohesive scientific narrative that is consistent with ALL the provided experimental evidence.
+
+To do this, follow these steps:
+
+1.  **First, consider the nature of each analysis provided:**
+    * For **spatially-resolved techniques** (e.g., Microscopy, SEM, TEM, EELS/EDX mapping): Look for direct **spatial correlations**. Does a structural feature seen in an image correspond to a unique signature in a spectral map?
+    * For **bulk-average techniques** (e.g., XRD, DSC, XPS): **Reconcile** these average properties with the local observations. For example, do the phases identified by XRD match the crystal structure seen in TEM? Can local defects or strain observed in microscopy explain peak broadening in the XRD pattern? Is the bulk elemental composition from XPS consistent with the local composition from EDX?
+
+2.  **Formulate a Unified Narrative**: Based on this correlated and reconciled understanding, write a comprehensive 'detailed_analysis'. This narrative should explain how the local, atomic-scale features give rise to the observed bulk properties, or vice-versa.
+
+3.  **Generate Synthesized Claims**: From your unified narrative, generate a list of high-level 'scientific_claims' that are supported by the combined evidence from all techniques.
+
+You MUST respond in a valid JSON format with the following keys:
+{
+    "detailed_analysis": "<Your comprehensive, synthesized scientific narrative that reconciles local and bulk findings>",
+    "scientific_claims": [
+        {
+            "claim": "<A high-level scientific claim based on the combined data>",
+            "scientific_impact": "<The potential impact of this claim>",
+            "has_anyone_question": "<A question for a literature search, formatted as 'Has anyone observed...'>",
+            "keywords": ["<keyword1>", "<keyword2>"]
+        }
+    ]
+}
+"""
+
+
+
+FITTING_QUALITY_ASSESSMENT_INSTRUCTIONS = """You are an expert data scientist evaluating the quality of a curve fit.
+
+You will be provided with:
+1.  **Original Data Plot**: The experimental data.
+2.  **Fit Visualization**: The data with the model's fit overlaid.
+3.  **Literature Context**: The rationale for the initial model choice.
+
+Your task is to critically assess how well the model fits the data.
+
+**Evaluation Criteria:**
+- **Residuals**: Does the fitted line systematically deviate from the data points in any region?
+- **Feature Capture**: Does the fit capture all the key features of the data (e.g., all peaks, shoulders, baseline trends)?
+- **Physical Plausibility**: Is the model consistent with the literature context and the visual appearance of the data?
+
+**CRITICAL RULE:** If your critique identifies *any* significant problems—such as being physically implausible, overfitting, or failing to capture key features—you **MUST** set `is_good_fit` to `false`, even if the total fit line appears to match the data visually. The physical and scientific validity of the model is more important than the visual match.
+
+You MUST respond in a valid JSON format with the following keys:
+{
+  "is_good_fit": "[true/false]",
+  "critique": "[Provide a detailed critique of the fit quality, explaining your reasoning. If the fit is bad, specify *why* (e.g., 'The model missed the shoulder peak around X=4.5 eV' or 'A linear baseline is insufficient; a polynomial or exponential baseline is needed').]",
+  "suggestion": "[If the fit is bad, suggest a specific improvement (e.g., 'Add a second Gaussian component to the model' or 'Change the baseline model to an exponential decay'). Otherwise, state 'No changes needed.']"
+}
+"""
+
+FITTING_MODEL_CORRECTION_INSTRUCTIONS = """You are an expert data scientist tasked with correcting an inadequate physical model for curve fitting. A previous attempt resulted in a poor fit.
+
+**Provided Information:**
+1.  **Literature Context**: The original scientific background.
+2.  **The Bad Fit**: A plot showing the poor fit from the previous attempt.
+3.  **Critique and Suggestion**: An expert critique explaining *why* the fit was bad and a suggestion for a better model.
+4.  **The Old Script**: The Python script that generated the bad fit.
+
+Your task is to generate a new, complete, and executable Python script that implements the suggested model improvement.
+
+- **Incorporate the Suggestion**: Modify the model function (e.g., add a new component, change the baseline) as suggested in the critique.
+- **Adjust Initial Guesses**: You MUST provide new, reasonable initial guesses (`p0`) for **all parameters** in the new composite model. This is critical for the new fit to succeed.
+- **Maintain Requirements**: The new script must still load the data, save a plot named `fit_visualization.png`, and print the final parameters as a JSON string prefixed with `FIT_RESULTS_JSON:`.
+
+Your entire response must be ONLY the new, corrected Python code. Do not add any conversational text.
 """

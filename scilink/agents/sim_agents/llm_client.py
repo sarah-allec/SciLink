@@ -3,15 +3,21 @@ import logging
 
 
 class LLMClient:
-    def __init__(self, api_key: str, model_name: str):
+    def __init__(self, api_key: str, model_name: str, local_model: str = None):
         if not api_key:
             raise ValueError("API key not provided to LLMClient.")
         self.model_name = model_name
         try:
-            # Configuration should ideally happen once externally,
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel(self.model_name)
+            if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
+                from ...wrappers.openai_wrapper_tools import OpenAIAsGenerativeModel
+                model_name = 'gemini-2.5-pro-birthright' # This is hard-coded
+                self.model = OpenAIAsGenerativeModel(model_name, api_key = api_key, base_url= local_model) #This not google API key but API key
+            else:
+                # Configuration should ideally happen once externally,
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel(self.model_name)
             logging.info(f"LLMClient initialized with model: {self.model_name}")
+        
         except Exception as e:
             logging.exception(f"Error configuring GenerativeAI client for {model_name}: {e}")
             raise

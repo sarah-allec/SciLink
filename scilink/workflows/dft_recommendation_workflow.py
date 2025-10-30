@@ -17,6 +17,7 @@ class DFTRecommendationsWorkflow:
     def __init__(self,
                  google_api_key: str = None,
                  analysis_model: str = "gemini-2.5-pro-preview-06-05",
+                 local_model: str = None,
                  output_dir: str = "dft_output"):
 
         # Auto-discover API key
@@ -31,7 +32,8 @@ class DFTRecommendationsWorkflow:
 
         self.agent = RecommendationAgent(
             google_api_key=google_api_key,
-            model_name=analysis_model
+            model_name=analysis_model,
+            local_model = local_model,
         )
 
     def run_from_files(self, analysis_file: str, novelty_file: str) -> Dict[str, Any]:

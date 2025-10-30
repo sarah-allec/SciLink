@@ -10,15 +10,19 @@ from .instruct import VASP_INPUT_GENERATION_INSTRUCTIONS
 class VaspInputAgent:
     """Agent for generating VASP INCAR and KPOINTS files."""
 
-    def __init__(self, api_key: str, model_name: str = "gemini-2.5-pro-preview-05-06"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-pro-preview-05-06", local_model: str = None):
         if not api_key:
             api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("API key required")
-        
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model_name)
-        self.generation_config = GenerationConfig(response_mime_type="application/json")
+        if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
+            from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
+            self.model = OpenAIAsGenerativeModel(model_name, api_key = api_key, base_url= local_model) #This not google API key but API key
+            self.generation_config = None
+        else:
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel(model_name)
+            self.generation_config = GenerationConfig(response_mime_type="application/json")
         self.logger = logging.getLogger(__name__)
 
     def generate_vasp_inputs(self, poscar_path: str, original_request: str) -> dict:

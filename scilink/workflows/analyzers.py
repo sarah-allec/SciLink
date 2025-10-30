@@ -36,8 +36,9 @@ class MicroscopyAnalyzer(BaseExperimentAnalyzer):
         self.output_dir = output_dir
         self.enable_human_feedback = enable_human_feedback
         self.analysis_agent = None
-        if kwargs:
-            logging.warning(f"Unused arguments passed to MicroscopyAnalyzer: {kwargs}")
+        self.analyzer_kwargs = kwargs
+        # if kwargs:
+        #     logging.warning(f"Unused arguments passed to MicroscopyAnalyzer: {kwargs}")
     
     def analyze_for_claims(self, data_path: str, system_info: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Analyze microscopy image and generate scientific claims."""
@@ -76,10 +77,13 @@ class MicroscopyAnalyzer(BaseExperimentAnalyzer):
                 'output_dir': self.output_dir
             }
         
+        if selected_agent_id == 1 and 'sam_settings' in self.analyzer_kwargs: # SAM agent
+            agent_kwargs['sam_settings'] = self.analyzer_kwargs['sam_settings']
+        
         self.analysis_agent = AnalysisAgentClass(**agent_kwargs)
         
-        return self.analysis_agent.analyze_microscopy_image_for_claims(data_path, system_info=system_info)
-    
+        return self.analysis_agent.analyze_for_claims(data_path, system_info=system_info, **kwargs)
+        
     def get_data_type_name(self) -> str:
         return "microscopy"
 
@@ -108,7 +112,7 @@ class SpectroscopyAnalyzer(BaseExperimentAnalyzer):
         }
         
         self.analysis_agent = HyperspectralAnalysisAgent(
-            api_key=google_api_key,
+            google_api_key=google_api_key,
             model_name=analysis_model,
             local_model=local_model,
             spectral_unmixing_settings=spectral_settings,
@@ -116,15 +120,15 @@ class SpectroscopyAnalyzer(BaseExperimentAnalyzer):
             enable_human_feedback=enable_human_feedback
         )
 
-        if kwargs:
-            logging.warning(f"Unused arguments passed to SpectroscopyAnalyzer: {kwargs}")
+        # if kwargs:
+        #     logging.warning(f"Unused arguments passed to SpectroscopyAnalyzer: {kwargs}")
     
     def analyze_for_claims(self, data_path: str, system_info: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         """Analyze spectroscopy data and generate scientific claims."""
         structure_image_path = kwargs.get('structure_image_path')
         structure_system_info = kwargs.get('structure_system_info')
         
-        return self.analysis_agent.analyze_hyperspectral_data_for_claims(
+        return self.analysis_agent.analyze_for_claims(
             data_path,
             metadata_path=system_info,
             structure_image_path=structure_image_path,

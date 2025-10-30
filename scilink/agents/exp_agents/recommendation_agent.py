@@ -19,7 +19,7 @@ class RecommendationAgent:
     on the textual output of other agents to provide the final recommendations.
     """
 
-    def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05"):
+    def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05",  local_model: str = None):
         """
         Initializes the RecommendationAgent.
 
@@ -33,15 +33,22 @@ class RecommendationAgent:
             google_api_key = get_api_key('google')
             if not google_api_key:
                 raise APIKeyNotFoundError('google')
-        genai.configure(api_key=google_api_key)
 
-        self.model_name = model_name 
-
-        self.model = genai.GenerativeModel(self.model_name)
-        self.generation_config = GenerationConfig(response_mime_type="application/json")
-        self.safety_settings = {
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        }
+        if (local_model is not None) and ('ai-incubator' in local_model): # True when we are using the local network models
+            from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
+            model_name = 'gemini-2.5-pro-birthright' # This is hard-coded, which will be a problem in the future: the calling of **some** agents uses hard-coded model names. A dict being passed from the outmost API or a config file would work better.
+            self.model_name = model_name 
+            self.model = OpenAIAsGenerativeModel(model_name, api_key = google_api_key, base_url= local_model) #This not google API key but API key
+            self.generation_config = None
+            self.safety_settings = None
+        else:
+            genai.configure(api_key=google_api_key)
+            self.model_name = model_name 
+            self.model = genai.GenerativeModel(self.model_name)
+            self.generation_config = GenerationConfig(response_mime_type="application/json")
+            self.safety_settings = {
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            }
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"RecommendationAgent initialized with model: {self.model_name}")
 

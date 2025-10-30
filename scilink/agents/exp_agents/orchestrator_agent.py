@@ -7,6 +7,7 @@ from .microscopy_agent import MicroscopyAnalysisAgent
 from .sam_microscopy_agent import SAMMicroscopyAnalysisAgent
 from .atomistic_microscopy_agent import AtomisticMicroscopyAnalysisAgent
 from .hyperspectral_analysis_agent import HyperspectralAnalysisAgent
+from .holistic_microscopy_agent import HolisticMicroscopyAgent
 from .instruct import ORCHESTRATOR_INSTRUCTIONS
 from ...auth import get_api_key, APIKeyNotFoundError
 
@@ -16,6 +17,7 @@ AGENT_MAP = {
     1: SAMMicroscopyAnalysisAgent,
     2: AtomisticMicroscopyAnalysisAgent,
     3: HyperspectralAnalysisAgent,
+    4: HolisticMicroscopyAgent
 }
 
 class OrchestratorAgent:
@@ -25,11 +27,30 @@ class OrchestratorAgent:
     """
     def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-flash-preview-05-20", local_model: str = None):
         if local_model is not None:
-            logging.info(f"💻 Using local agent as the orchestrator.")
-            from .llama_wrapper import LocalLlamaModel
-            self.model = LocalLlamaModel(local_model)
-            self.generation_config = None
-            self.safety_settings = None
+            if 'gguf' in local_model:
+                logging.info(f"💻 Using local agent as the orchestrator.")
+                from ...wrappers.llama_wrapper import LocalLlamaModel
+                self.model = LocalLlamaModel(local_model)
+                self.generation_config = None
+                self.safety_settings = None
+            elif 'ai-incubator' in local_model:
+                logging.info(f"🏛️ Using network agent as the orchestrator.")
+                from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
+                # Auto-discover API key
+                if google_api_key is None:
+                    google_api_key = get_api_key('google')
+                    if not google_api_key:
+                        raise APIKeyNotFoundError('google')
+                model_name = 'gemini-2.5-pro-birthright'# This is hard-coded, which will be a problem in the future: the calling of **some** agents uses hard-coded model names. A dict being passed from the outmost API or a config file would work better.
+                self.model = OpenAIAsGenerativeModel(model_name, api_key = google_api_key, base_url= local_model) #This not google API key but API key
+                self.generation_config = None
+                self.safety_settings = None
+                self.model_name = model_name
+            else:
+                logging.info(f"Invalid local_model argument.")
+                self.model = None
+                self.generation_config = None
+                self.safety_settings = None
         else:
             logging.info(f"☁️ Using cloud agent as the orchestrator.")
             if google_api_key is None:

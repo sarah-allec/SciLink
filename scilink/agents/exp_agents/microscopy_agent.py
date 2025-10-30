@@ -25,7 +25,7 @@ from atomai.stat import SlidingFFTNMF
 
 class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
-    Agent for analyzing microscopy images using generative AI models
+    Agent for analyzing microscopy images
     """
 
     def __init__(self,
@@ -139,6 +139,8 @@ class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                 hamming_filter=self.fft_nmf_settings.get('hamming_filter', True),
                 components=n_components
             )
+            
+            loaded_image = load_image(image_path)
             
             # AtomAI's analyze_image method handles both file paths and arrays
             components, abundances = analyzer.analyze_image(image_path, output_path=fft_output_base)
@@ -367,7 +369,7 @@ class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             
             # Lazy initialization: create the agent only when it's first needed.
             if not self._recommendation_agent:
-                self._recommendation_agent = RecommendationAgent(self.google_api_key, self.model_name)
+                self._recommendation_agent = RecommendationAgent(self.google_api_key, self.model_name, self.local_model)
             
             # Correctly delegate the call with all necessary arguments
             return self._recommendation_agent.generate_dft_recommendations_from_text(
@@ -408,7 +410,7 @@ class MicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         # Return a consistent key for the main textual output for the calling script
         return {"analysis_summary_or_reasoning": analysis_output_text, "recommendations": sorted_recommendations}
 
-    def analyze_microscopy_image_for_claims(self, image_path: str, system_info: dict | str | None = None):
+    def analyze_for_claims(self, image_path: str, system_info: dict | str | None = None):
         """
         Analyze microscopy image to generate scientific claims for literature comparison.
         This path always uses image-based analysis.

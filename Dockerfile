@@ -10,9 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy your requirements file and install the exact Python dependencies.
-# This step is cached by Docker if requirements.txt doesn't change.
+# Upgrade pip to ensure it's the latest version.
+RUN pip install --no-cache-dir --upgrade pip
+
+# Copy the pre-compiled requirements file first to leverage Docker's layer caching.
 COPY requirements.txt .
+
+# Install the exact Python dependencies from the locked requirements file.
+# This step is fast because no dependency resolution is needed.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Download and unzip the DCNN model needed by AtomisticMicroscopyAnalysisAgent.
@@ -23,13 +28,13 @@ RUN gdown --id ${DCNN_MODEL_GDRIVE_ID} -O ${DCNN_MODEL_DIR}.zip && \
     unzip ${DCNN_MODEL_DIR}.zip -d ${DCNN_MODEL_DIR} && \
     rm ${DCNN_MODEL_DIR}.zip
 
-# Copy your application source code and setup file.
+# Copy your application source code and project definition.
+COPY pyproject.toml .
 COPY scilink/ ./scilink/
-COPY setup.py .
 
-# Install the scilink package itself into the builder stage.
-# This will also pick up the console_scripts entry point.
-RUN pip install --no-cache-dir .
+# Install the scilink package itself (without reinstalling its dependencies).
+# This will also pick up the console_scripts entry point from pyproject.toml.
+RUN pip install --no-cache-dir --no-deps .
 
 
 # --- Stage 2: Final Image ---
@@ -38,7 +43,7 @@ FROM python:3.11-slim
 
 # Install the missing system dependency libGL.so.1 required by OpenCV.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 

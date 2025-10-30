@@ -3,6 +3,7 @@ import os
 from PIL import Image
 import logging
 import numpy as np
+from datetime import datetime
 
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockThreshold
@@ -20,8 +21,7 @@ from atomai.models import ParticleAnalyzer
 
 class SAMMicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
-    Agent for analyzing microscopy images using Segment Anything Model (SAM) and generative AI models.
-    Refactored to inherit from BaseAnalysisAgent and follows the same pattern as other microscopy agents.
+    Agent for analyzing microscopy images using Segment Anything Model (SAM).
     """
 
     def __init__(self,
@@ -175,6 +175,26 @@ class SAMMicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             particles_df = ParticleAnalyzer.particles_to_dataframe(sam_result)
             
             if not particles_df.empty:
+                try:
+                    # Define data output directory (parallel to visualizations)
+                    data_output_dir = "sam_analysis_data"
+                    os.makedirs(data_output_dir, exist_ok=True)
+
+                    # Create a unique filename
+                    base_name = os.path.splitext(os.path.basename(image_path))[0]
+                    safe_base_name = "".join(c if c.isalnum() else "_" for c in base_name)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    data_filename = f"{safe_base_name}_particles_{timestamp}.csv"
+                    data_filepath = os.path.join(data_output_dir, data_filename)
+
+                    # Save the DataFrame to CSV
+                    particles_df.to_csv(data_filepath, index=False)
+                    self.logger.info(f"💾 Saved per-particle data ({len(particles_df)} particles) to: {data_filepath}")
+                    print(f"💾 Saved per-particle data to: {data_filepath}")
+
+                except Exception as e:
+                    self.logger.error(f"Failed to save per-particle data: {e}", exc_info=True)
+
                 # Determine the effective scaling factors based on original image pixels and nm/pixel
                 if nm_per_pixel is not None and nm_per_pixel > 0:
                     linear_scale_factor = pixel_rescaling_factor_to_original * nm_per_pixel
@@ -491,11 +511,10 @@ class SAMMicroscopyAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             self.logger.exception(f"An unexpected error occurred during SAM image analysis setup: {e}")
             return None, {"error": "An unexpected error occurred during analysis setup", "details": str(e)}
 
-    def analyze_microscopy_image_for_claims(self, image_path: str, system_info: dict | str | None = None):
+    def analyze_for_claims(self, image_path: str, system_info: dict | str | None = None):
         """
         Analyze microscopy image to generate scientific claims for literature comparison.
         This path always uses image-based analysis with SAM segmentation.
-        Now uses base class validation methods.
         """
         result_json, error_dict = self._analyze_image_base(
             image_path, system_info, SAM_MICROSCOPY_CLAIMS_INSTRUCTIONS

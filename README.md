@@ -226,7 +226,7 @@ image_path = "data/graphene_stm.npy"
 system_info_path = "data/graphene_stm.json"
 
 # 3. Run the analysis to generate a detailed summary and scientific claims
-result = microscopy_agent.analyze_microscopy_image_for_claims(
+result = microscopy_agent.analyze_for_claims(
     image_path=image_path,
     system_info=system_info_path
 )
@@ -264,3 +264,18 @@ The modular, agent-based architecture of SciLink is designed for growth. Future 
 - A Google Generative AI API key (required)
 - A FutureHouse API key (optional, for literature search)
 - A Materials Project API key (optional, for automatic structure lookups)
+
+## Citation
+
+If you use SciLink in your research, please cite:
+
+```bibtex
+@misc{yao2025operationalizingserendipitymultiagentai,
+      title={Operationalizing Serendipity: Multi-Agent AI Workflows for Enhanced Materials Characterization with Theory-in-the-Loop}, 
+      author={Lance Yao and Suman Samantray and Ayana Ghosh and Kevin Roccapriore and Libor Kovarik and Sarah Allec and Maxim Ziatdinov},
+      year={2025},
+      eprint={2508.06569},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2508.06569}, 
+}
