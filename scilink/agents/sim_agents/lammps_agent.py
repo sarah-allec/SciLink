@@ -426,10 +426,15 @@ class LAMMPSSimulationAgent:
             research_goal=research_goal,
             system_description=system_description,
             element_info_str=element_info_str,
-            system_info=system_info,
+            atom_count=system_info.get('atom_count', 0),
+            box_dimensions=system_info.get('box_dimensions', [40, 40, 40]),
             bond_types=bond_types,
             angle_types=angle_types,
-            properties_to_calculate=properties_to_calculate,
+            has_water="Yes" if system_info.get('has_water', False) else "No",
+            has_ions="Yes" if system_info.get('has_ions', False) else "No",
+            has_organic="Yes" if system_info.get('has_organic', False) else "No",
+            properties_to_calculate_str=", ".join(properties_to_calculate),
+            required_outputs_str=", ".join(required_outputs),
             temperature=temperature,
             pressure=pressure,
             ensemble=ensemble,
@@ -437,11 +442,8 @@ class LAMMPSSimulationAgent:
             simulation_time=simulation_time,
             equil_steps=equil_steps,
             prod_steps=prod_steps,
-            required_outputs=required_outputs,
             data_filename=data_filename,
-            output_commands=output_commands
-        )
- 
+            output_commands=output_commands) 
         response = self.model.generate_content(prompt)
         script_text = response.text
         

@@ -261,13 +261,36 @@ class LammpsUpdater:
         
         # Add restart-specific instructions if needed
         if has_restart:
+            restart_basename = os.path.basename(str(latest_restart))
             correction_prompt += f"""
             IMPORTANT: A restart file was found at {latest_restart}. 
             Please modify the script to:
             1. Use this restart file instead of the data file for initial configuration
-            2. Comment out the 'read_data' command and uncomment/add the 'read_restart {os.path.basename(str(latest_restart))}' command
+            2. Comment out the 'read_data' command and uncomment/add the 'read_restart {restart_basename}' command
             3. Skip minimization if it was already completed
             4. Resume the simulation from where it left off
+
+            When modifying the script for restart, follow these CRITICAL rules:
+            
+            1. COMMAND ORDERING IS CRITICAL for LAMMPS restarts. Follow this exact sequence:
+               a. Keep initialization commands (units, dimension, atom_style)
+               b. Replace 'read_data' with 'read_restart {restart_basename}'
+               c. Define groups AFTER read_restart
+               d. Apply 'set' commands (charges, etc.) AFTER read_restart
+               e. Define force field parameters (pair_style, bond_style, etc.)
+               f. Define 'fix shake' commands BEFORE any box-changing fixes
+               g. Define box-changing fixes (fix npt, fix nvt, etc.) AFTER shake
+               h. Skip minimization steps that were already completed
+               
+            2. CRITICAL ERROR PREVENTION:
+               - NEVER place 'set' commands before 'read_restart'
+               - NEVER place 'fix shake' after box-changing fixes like 'fix npt'
+               - Always define groups after the restart file is read
+               - Ensure all force field parameters are redefined even with restart
+            
+            3. RESUME STRATEGY: 
+               - If the error occurred in equilibration, skip to production
+               - If the error occurred mid-production, continue production from the saved point
             """
         
         # Step 3: Generate corrected script

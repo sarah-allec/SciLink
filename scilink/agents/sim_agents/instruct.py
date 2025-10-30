@@ -374,18 +374,18 @@ SYSTEM DESCRIPTION: {system_description}
 
 SYSTEM COMPOSITION:
   - {element_info_str}
-  - Total atoms: {system_info.get('atom_count', 0)}
-  - Box dimensions: {system_info.get('box_dimensions', [40, 40, 40])}
+  - Total atoms: {atom_count}
+  - Box dimensions: {box_dimensions}
   - Bond types: {bond_types}
   - Angle types: {angle_types}
-  
+
 DETECTED COMPONENTS:
-  - Water: {'Yes' if system_info.get('has_water', False) else 'No'}
-  - Ions: {'Yes' if system_info.get('has_ions', False) else 'No'}
-  - Organic molecules: {'Yes' if system_info.get('has_organic', False) else 'No'}
+  - Water: {has_water}
+  - Ions: {has_ions}
+  - Organic molecules: {has_organic}
 
 SIMULATION PARAMETERS:
-  - Properties to calculate: {', '.join(properties_to_calculate)}
+  - Properties to calculate: {properties_to_calculate_str}
   - Temperature: {temperature} K
   - Pressure: {pressure} atm
   - Ensemble: {ensemble}
@@ -393,7 +393,7 @@ SIMULATION PARAMETERS:
   - Total simulation time: {simulation_time} ns
   - Equilibration steps: {equil_steps}
   - Production steps: {prod_steps}
-  - Required outputs: {', '.join(required_outputs)}
+  - Required outputs: {required_outputs_str}
 
 REQUIRED SECTIONS:
 1. Initialization (units, atom_style, etc.)
