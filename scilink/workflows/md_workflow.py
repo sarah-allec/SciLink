@@ -308,8 +308,22 @@ class LAMMPSWorkflow:
         }
         
         for cycle in range(1, max_cycles + 1):
+            # Update final_cycle for this iteration
+            results["final_cycle"] = cycle
+            
             print(f"\n🔄 REFINEMENT CYCLE {cycle}/{max_cycles}")
             print(f"{'─'*50}")
+            
+            # Make backup of current script
+            backup_path = f"{script_path}.bak{cycle}"
+            shutil.copy2(script_path, backup_path)
+            print(f"📁 Script backup created: {os.path.basename(backup_path)}")
+            
+            # If log file exists from previous run, save a backup
+            if os.path.exists(log_path):
+                log_backup = f"{log_path}.bak{cycle}"
+                shutil.copy2(log_path, log_backup)
+                print(f"📄 Log backup created: {os.path.basename(log_backup)}")
             
             # Run LAMMPS with proper path handling
             print(f"▶️ Running LAMMPS simulation...")
@@ -334,35 +348,66 @@ class LAMMPSWorkflow:
                     f.write(process.stdout)
                 with open(stderr_path, "w") as f:
                     f.write(process.stderr)
-                    
-                # Check for errors in stdout/stderr and add to log
-                if "ERROR" in process.stderr or "ERROR" in process.stdout:
-                    with open(log_path, "w") as f:  # Create/overwrite log file
-                        if "ERROR" in process.stdout:
-                            f.write("=== STDOUT ERRORS ===\n")
-                            f.write(process.stdout)
-                        if "ERROR" in process.stderr:
-                            f.write("\n=== STDERR ERRORS ===\n")
-                            f.write(process.stderr)
-                    
-                    # Print errors to console for visibility
-                    print(f"⚠️ LAMMPS reported errors:")
-                    for source, content in [("STDOUT", process.stdout), ("STDERR", process.stderr)]:
-                        for line in content.splitlines():
-                            if "ERROR" in line:
-                                print(f"   [{source}] {line.strip()}")
                 
                 # Check for success
-                if process.returncode == 0 and "ERROR" not in process.stdout and "ERROR" not in process.stderr:
+                run_successful = process.returncode == 0
+                
+                # Look for LAMMPS errors in the log file (primary source of error info)
+                lammps_errors = []
+                if os.path.exists(log_path):
+                    with open(log_path, 'r') as f:
+                        log_content = f.read()
+                        # Extract LAMMPS errors from log file
+                        error_matches = re.findall(r"ERROR:.*", log_content)
+                        if error_matches:
+                            lammps_errors.extend(error_matches)
+                
+                # If we didn't find errors in the log, check stdout as fallback
+                if not lammps_errors:
+                    error_matches = re.findall(r"ERROR:.*", process.stdout)
+                    if error_matches:
+                        lammps_errors.extend(error_matches)
+                        # Append stdout errors to log file if we found errors there but not in the log
+                        if os.path.exists(log_path):
+                            with open(log_path, 'a') as f:
+                                f.write("\n=== ERRORS FROM STDOUT ===\n")
+                                for line in process.stdout.splitlines():
+                                    if "ERROR" in line:
+                                        f.write(f"{line}\n")
+                
+                # Check for system errors in stderr
+                system_errors = []
+                if "ERROR" in process.stderr:
+                    system_errors = [line.strip() for line in process.stderr.splitlines() if "ERROR" in line]
+                    # If there are system errors and no LAMMPS log was created, create one
+                    if system_errors and not os.path.exists(log_path):
+                        with open(log_path, "w") as f:
+                            f.write("=== SYSTEM ERRORS ===\n")
+                            f.write(process.stderr)
+                
+                # Log errors to console
+                if lammps_errors:
+                    print(f"⚠️ LAMMPS reported errors:")
+                    for error in lammps_errors[:3]:  # Show first few errors
+                        print(f"   {error.strip()}")
+                    if len(lammps_errors) > 3:
+                        print(f"   ...and {len(lammps_errors) - 3} more errors")
+                
+                if system_errors:
+                    print(f"⚠️ System reported errors:")
+                    for error in system_errors[:3]:  # Show first few errors
+                        print(f"   {error.strip()}")
+                
+                # Determine if simulation was successful
+                if run_successful and not lammps_errors and not system_errors:
                     print(f"✅ Simulation completed successfully!")
                     results["status"] = "success"
-                    results["final_cycle"] = cycle
                     results["success"] = True
                     break
+                else:
+                    print(f"⚠️ Simulation encountered issues (return code: {process.returncode})")
                 
-                print(f"⚠️ Simulation encountered issues (return code: {process.returncode})")
-                
-                # Wait for log file to be written
+                # Wait for any asynchronous file operations to complete
                 time.sleep(1)
                 
                 # Refine the script
@@ -375,13 +420,14 @@ class LAMMPSWorkflow:
                 results["cycles"].append({
                     "cycle": cycle,
                     "return_code": process.returncode,
+                    "lammps_errors": lammps_errors,
+                    "system_errors": system_errors,
                     "refinement": refine_result
                 })
                 
                 if refine_result["status"] != "success":
                     print(f"❌ Failed to refine script: {refine_result.get('message', 'Unknown error')}")
                     results["status"] = "failed_refinement"
-                    results["final_cycle"] = cycle
                     break
                     
             except Exception as e:
@@ -391,14 +437,13 @@ class LAMMPSWorkflow:
                     "error": str(e)
                 })
                 results["status"] = "error"
-                results["final_cycle"] = cycle
                 break
-                    
+        
         # Final summary
         if results.get("success", False):
             print(f"\n✅ Simulation successfully completed after {results['final_cycle']} refinement cycles")
         else:
-            print(f"\n⚠️ Failed to achieve successful simulation after {cycle} refinement cycles")
+            print(f"\n⚠️ Failed to achieve successful simulation after {results['final_cycle']} refinement cycles")
                 
         return results
  
