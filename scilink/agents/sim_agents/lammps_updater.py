@@ -30,11 +30,18 @@ class LammpsUpdater:
             self.logger.addHandler(handler)
 
     def _extract_errors(self, log_content: str) -> List[str]:
-        """Extract all errors from LAMMPS output."""
-        patterns = [r"ERROR.*"]
+        """Extract all errors from LAMMPS output with the following line for context."""
+        lines = log_content.splitlines()
         issues = []
-        for pattern in patterns:
-            issues.extend([m.strip() for m in re.findall(pattern, log_content, flags=re.IGNORECASE)])
+        
+        for i, line in enumerate(lines):
+            if re.search(r"ERROR", line, flags=re.IGNORECASE):
+                error_msg = line.strip()
+                # Add the next line if it exists
+                if i + 1 < len(lines):
+                    error_msg += "\nLast command: " + lines[i + 1].strip()
+                issues.append(error_msg)
+        
         return issues
 
     def _analyze_issues(self, errors: List[str], input_script: str, data_content: str = "", 
