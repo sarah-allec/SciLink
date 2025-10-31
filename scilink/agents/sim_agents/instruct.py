@@ -252,3 +252,168 @@ You MUST respond with a JSON object containing:
 
 Focus on actionable parameter changes. Only suggest adjustments if the literature clearly indicates issues.
 """
+
+"""
+LLM instruction templates for the PackmolGeneratorAgent.
+Contains all major prompts used for molecule extraction, SMILES generation, and PACKMOL script creation.
+"""
+
+MOLECULE_EXTRACTION_TEMPLATE = """
+Analyze this molecular system description and extract ALL molecules mentioned:
+
+"{description}"
+
+For each molecule, provide:
+1. The identifier used in the description
+2. The most likely chemical formula (if determinable)
+3. Alternative names that might work in databases
+4. SMILES string (if you know it)
+5. Estimated count/concentration from context
+
+Respond as JSON:
+{{
+  "molecules": [
+    {{
+      "identifier": "what was mentioned in description",
+      "formula": "chemical formula like H2O, C6H6, etc.",
+      "alternative_names": ["list", "of", "possible", "database", "names"],
+      "smiles": "SMILES string if known",
+      "estimated_count": "number or description like '1.0 M' or 'solvent'"
+    }}
+  ],
+  "box_info": {{
+    "dimensions": "box dimensions from description",
+    "volume_cubic_angstrom": "calculated volume"
+  }}
+}}
+
+Focus on identifying the specific molecules mentioned in the description without using any external examples.
+
+Response:"""
+
+SMILES_GENERATION_TEMPLATE = """
+Provide the SMILES string for this molecule: {molecule_identifier}
+
+IMPORTANT GUIDELINES:
+- For ionic compounds, provide the SIMPLEST possible SMILES that RDKit can handle
+- Avoid complex charged species if possible
+- For metal complexes, try to provide the organic ligand SMILES instead
+- Focus on the main organic component that can be built with standard force fields
+
+If you know a working SMILES, respond with just the SMILES string.
+If uncertain or if it's a complex ionic compound, respond with: UNKNOWN
+
+Examples of simple molecules:
+- "water" -> O
+- "benzene" -> c1ccccc1
+- "methanol" -> CO
+- "acetone" -> CC(=O)C
+
+For complex metal salts, prefer the organic component only.
+
+Molecule: {molecule_identifier}
+SMILES:"""
+
+PACKMOL_SCRIPT_GENERATION_TEMPLATE = """
+You are an expert in PACKMOL for molecular dynamics simulation setup.
+
+ORIGINAL REQUEST: "{description}"
+
+AVAILABLE MOLECULES (successfully built):
+{molecule_list}
+
+YOUR TASK: Generate a complete PACKMOL input script
+
+PACKMOL REFERENCE:
+1. Start with global parameters:
+   tolerance 2.0
+   filetype pdb
+   output {{output_filename}}
+
+2. For each molecule type:
+   structure components/molecule_name.pdb
+     number COUNT
+     inside cube 0. 0. 0. 40.
+   end structure
+
+CONCENTRATION CALCULATIONS:
+- Box volume: 40×40×40 = 64,000 Å³
+- 1 M concentration ≈ 38-40 molecules in this volume
+- 0.1 M concentration ≈ 4-5 molecules in this volume
+- Water solvent: typically 500-2000 molecules
+- Cosolvents: 50-500 molecules depending on ratio
+- Solutes: 10-100 molecules for reasonable concentrations
+
+BEST PRACTICES:
+- Larger molecules need more space (fewer count)
+- Ensure realistic density (don't overpack)
+- Use whole numbers for molecule counts
+- Consider molecular sizes when setting counts
+- For electrolytes, use reasonable ion concentrations
+
+OUTPUT FORMAT (JSON only):
+{{
+  "thought": "Explain your packing strategy and molecule count reasoning",
+  "components": {{
+    "molecule_name": integer_count
+  }},
+  "output_filename": "descriptive_filename.pdb",
+  "packmol_script": "complete script with proper syntax"
+}}
+
+IMPORTANT: Use ONLY the molecules listed above. Do not reference any molecules that failed to build.
+
+Generate the PACKMOL script:"""
+
+LAMMPS_INPUT_GENERATION_TEMPLATE = """
+Generate a complete LAMMPS script for molecular dynamics simulation to achieve the following research goal:
+
+RESEARCH GOAL: "{research_goal}"
+
+SYSTEM DESCRIPTION: {system_description}
+
+SYSTEM COMPOSITION:
+  - {element_info_str}
+  - Total atoms: {atom_count}
+  - Box dimensions: {box_dimensions}
+  - Bond types: {bond_types}
+  - Angle types: {angle_types}
+
+DETECTED COMPONENTS:
+  - Water: {has_water}
+  - Ions: {has_ions}
+  - Organic molecules: {has_organic}
+
+SIMULATION PARAMETERS:
+  - Properties to calculate: {properties_to_calculate_str}
+  - Temperature: {temperature} K
+  - Pressure: {pressure} atm
+  - Ensemble: {ensemble}
+  - Timestep: {timestep} fs
+  - Total simulation time: {simulation_time} ns
+  - Equilibration steps: {equil_steps}
+  - Production steps: {prod_steps}
+  - Required outputs: {required_outputs_str}
+
+REQUIRED SECTIONS:
+1. Initialization (units, atom_style, etc.)
+2. System setup (read data file "{data_filename}")
+3. Force field settings (complete with all coefficients)
+4. Energy minimization
+5. Equilibration phase(s) 
+6. Production phase with appropriate outputs
+7. Analysis commands for the specified properties
+
+SPECIAL OUTPUT REQUIREMENTS:
+{output_commands}
+
+IMPORTANT: Include regular restart file writing capabilities in the script using these guidelines:
+1. Write restart files periodically (every 10,000-50,000 steps) during both equilibration and production
+2. Use timestep-based naming like "restart.*.equil" for equilibration and "restart.*.prod" for production
+3. Include a commented-out 'read_restart' command that can be uncommented if needed to restart the simulation
+4. Ensure all necessary variables and settings are properly initialized even when reading from a restart file
+
+Include thorough comments explaining each section and its purpose. The script should be directly executable in LAMMPS.
+
+IMPORTANT: Return ONLY the raw LAMMPS script content without any markdown formatting, code block markers, or backticks.
+"""
