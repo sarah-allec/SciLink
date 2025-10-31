@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import google.generativeai as genai
 from .lammps_agent import LAMMPSSimulationAgent
 
-class LammpsUpdater:
+class LAMMPSUpdater:
     """
     Self-evolving updater that analyzes LAMMPS errors and generates solutions.
     """

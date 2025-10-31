@@ -4,7 +4,7 @@ import tempfile
 import logging
 from typing import Optional, Dict, List, Union, Tuple
 
-class VmdLammpsConverter:
+class VMDLAMMPSConverter:
     """
     A class for converting PDB files to LAMMPS data files using VMD.
     This class uses VMD's Topo Tools plugin to create LAMMPS data files with

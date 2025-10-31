@@ -9,10 +9,10 @@ from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 
 from ..auth import get_api_key, APIKeyNotFoundError
-from ..agents.sim_agents.lammps_utils import VmdLammpsConverter
+from ..agents.sim_agents.lammps_utils import VMDLAMMPSConverter
 from ..agents.sim_agents.force_field_agent import ForceFieldAgent
 from ..agents.sim_agents.lammps_agent import LAMMPSSimulationAgent
-from ..agents.sim_agents.lammps_updater import LammpsUpdater
+from ..agents.sim_agents.lammps_updater import LAMMPSUpdater
 
 class LAMMPSWorkflow:
     """
@@ -77,7 +77,7 @@ class LAMMPSWorkflow:
         os.makedirs(self.sim_dir, exist_ok=True)
         
         # Initialize agents
-        self.converter = VmdLammpsConverter(
+        self.converter = VMDLAMMPSConverter(
             vmd_path=vmd_path,
             working_dir=self.base_dir
         ) if vmd_path else None
@@ -92,7 +92,7 @@ class LAMMPSWorkflow:
             working_dir=self.sim_dir
         )
         
-        self.lammps_updater = LammpsUpdater(
+        self.lammps_updater = LAMMPSUpdater(
             api_key=google_api_key,
             model_name=model_name
         )
