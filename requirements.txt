@@ -6,3 +6,4 @@ aimsgb>=1.1.1
 gdown>=5.2.0
 atomate2>=0.0.21
 mdanalysis>=2.9.0
+faiss>=1.12.0
