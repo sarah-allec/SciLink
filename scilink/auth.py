@@ -78,18 +78,18 @@ class APIKeyNotFoundError(Exception):
         suggestions = {
             'google': [
                 "Set environment variable: export GOOGLE_API_KEY='your-key'",
-                "Configure in code: scilinkllm.configure('google', 'your-key')",
-                "Get API key at: https://aistudio.google.com/apikey"
+                "Configure in code: scilink.configure('google', 'your-key')",
+                "Note: You can get API key at: https://aistudio.google.com/apikey"
             ],
             'futurehouse': [
                 "Set environment variable: export FUTUREHOUSE_API_KEY='your-key'",
-                "Configure in code: scilinkllm.configure('futurehouse', 'your-key')",
-                "Contact FutureHouse for API access"
+                "Configure in code: scilink.configure('futurehouse', 'your-key')",
+                "Note: You can get API key at https://platform.futurehouse.org/"
             ],
             'materials_project': [
                 "Set environment variable: export MP_API_KEY='your-key'",
-                "Configure in code: scilinkllm.configure('materials_project', 'your-key')",
-                "Get API key at: https://next-gen.materialsproject.org/api"
+                "Configure in code: scilink.configure('materials_project', 'your-key')",
+                "Note: You can get API key at: https://next-gen.materialsproject.org/api"
             ]
         }
         
