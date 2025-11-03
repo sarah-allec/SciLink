@@ -38,7 +38,9 @@ dependencies = [
     "gdown>=5.2.0",
     "atomate2>=0.0.21",
     "faiss-cpu>=1.12.0",
-    "mdanalysis>=2.9.0"
+    "mdanalysis>=2.9.0",
+    "pymupdf>=1.26.5",
+    "pdfplumber>=0.11.7"
 ]
 
 [project.urls]
