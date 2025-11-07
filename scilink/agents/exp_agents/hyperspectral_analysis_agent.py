@@ -18,6 +18,7 @@ from .instruct import (
 )
 
 from .human_feedback import SimpleFeedbackMixin
+from .preprocess import HyperspectralPreprocessingAgent
 
 from atomai.stat import SpectralUnmixer
 
@@ -41,10 +42,18 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             'normalize': True,
             'enabled': True,
             'auto_components': True,
+            'run_preprocessing': True
             #'max_iter': 500
         }
         self.spectral_settings = spectral_unmixing_settings if spectral_unmixing_settings else default_settings
         self.run_spectral_unmixing = self.spectral_settings.get('enabled', True)
+        self.run_preprocessing = self.spectral_settings.get('run_preprocessing', True)
+
+        self.preprocessor = HyperspectralPreprocessingAgent(
+            google_api_key=google_api_key,
+            model_name=model_name,
+            local_model=local_model
+        )
 
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -695,6 +704,18 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         analysis_desc = "claims generation" if analysis_type == "claims" else "analysis"
         self.logger.info(f"Loading hyperspectral data for {analysis_desc}: {data_path}")
         hspy_data = self._load_hyperspectral_data(data_path)
+
+        if self.run_preprocessing:
+            if self.preprocessor:
+                self.logger.info("--- Starting LLM-guided preprocessing ---")
+                # The preprocessor runs, cleans the data, and returns the cleaned cube
+                hspy_data, applied_mask = self.preprocessor.run_preprocessing(hspy_data, system_info)
+                # We get the applied_mask back in case we want to visualize it later
+                self.logger.info("--- Preprocessing complete, proceeding with analysis ---")
+            else:
+                self.logger.warning("Preprocessing is enabled but preprocessor agent failed to initialize. Skipping.")
+        else:
+            self.logger.info("Preprocessing is disabled. Analyzing raw data.")
         
         components = None
         abundance_maps = None

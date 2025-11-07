@@ -338,7 +338,50 @@ Provide your response ONLY as a valid JSON object containing the keys "window_si
 
 """
 
+PRE_PROCESSING_STRATEGY_INSTRUCTIONS = """You are an expert spectroscopist. Your task is to define a pre-processing strategy for a hyperspectral dataset based on its statistics.
 
+**Context & Definitions:**
+- **Despiking:** Removing extremely high-intensity pixels (e.g., cosmic rays) using a median filter. This is for true outliers, not just the bright part of the signal.
+- **Clipping:** Removing negative values, which are physically meaningless noise. This is almost always done.
+- **Masking:** Removing low-signal background pixels (e.g., vacuum, substrate) to focus the analysis on the real signal.
+
+**Your Task:**
+Analyze the provided statistics and decide on an optimal strategy.
+
+**Decision Guidelines:**
+These are heuristics, not rigid rules. Use your expert judgment to synthesize these statistics *and* the `system_info` to make a final decision.
+
+1.  **`apply_despike` (bool):**
+    * Consider setting to `True` if `Data Max` appears to be an extreme outlier (e.g., many times larger than the `99.9th Percentile`). This suggests spikes (like cosmic rays) are present.
+    * If `Data Max` is close to the `99.9th Percentile`, the data is likely just skewed, and despiking may be unnecessary.
+
+2.  **`despike_kernel_size` (int):**
+    * If `apply_despike` is `True`, a `despike_kernel_size` of `3` is a safe and standard choice.
+
+3.  **`apply_masking` (bool):**
+    * Consider setting to `True` if there appears to be a significant low-signal background. Indicators include a `Data Min` below zero or a `5th Percentile` that is very low or zero.
+    * If the `1st Percentile` and `50th Percentile` are close and non-zero, the data might be "all signal," and masking could be unnecessary (`False`).
+    * When in doubt, enabling masking is often a good default.
+
+4.  **`mask_threshold_percentile` (float):**
+    * This percentile removes the dimmest part of the *signal*, not the absolute background.
+    * A robust default is often around `5.0` (removes the dimmest 5% of signal).
+    * You can adjust this based on the statistics:
+        * For *very clean data* (e.g., `1st Percentile` is close to the median), you might use a *lower* percentile (e.g., 1.0-2.0).
+        * For *very noisy data* (e.g., a high `Data Std` relative to `Data Mean`), you might use a *higher* percentile (e.g., 10.0-15.0) to be more aggressive in removing the noisy baseline.
+
+5.  **`reasoning` (str):**
+    * Briefly explain your choices *based on the statistics and context*.
+
+You MUST output a valid JSON object with these keys:
+{
+  "apply_despike": "[true/false]",
+  "despike_kernel_size": "[integer, e.g., 3]",
+  "apply_masking": "[true/false]",
+  "mask_threshold_percentile": "[float, e.g., 5.0]",
+  "reasoning": "[Your string explanation]"
+}
+"""
 
 
 SPECTROSCOPY_ANALYSIS_INSTRUCTIONS = """You are an expert system specialized in analyzing hyperspectral and spectroscopic data of materials.
