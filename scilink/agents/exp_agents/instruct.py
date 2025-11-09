@@ -343,7 +343,7 @@ PRE_PROCESSING_STRATEGY_INSTRUCTIONS = """You are an expert spectroscopist. Your
 **Context & Definitions:**
 - **Despiking:** Removing extremely high-intensity pixels (e.g., cosmic rays) using a median filter. This is for true outliers, not just the bright part of the signal.
 - **Clipping:** Removing negative values, which are physically meaningless noise. This is almost always done.
-- **Masking:** Removing low-signal background pixels (e.g., vacuum, substrate) to focus the analysis on the real signal.
+- **Masking:** Removing *near-zero* background pixels (e.g., detector noise) to focus on the real signal. A non-zero, flat baseline is often a 'substrate' and should typically be kept as part of the signal.
 
 **Your Task:**
 Analyze the provided statistics and decide on an optimal strategy.

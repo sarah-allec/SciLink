@@ -110,7 +110,8 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             return {}
 
     def _llm_estimate_components_from_system(self, hspy_data: np.ndarray, 
-                                           system_info: Dict[str, Any] = None) -> int:
+                                             system_info: Dict[str, Any] = None,
+                                             data_quality: Dict[str, Any] = None) -> int:
         """
         LLM estimates optimal number of components based on system description.
         """
@@ -128,8 +129,13 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             prompt_parts.append(f"Data statistics:")
             prompt_parts.append(f"- Mean intensity: {np.mean(hspy_data):.3f}")
             prompt_parts.append(f"- Intensity range: {np.min(hspy_data):.3f} to {np.max(hspy_data):.3f}")
-            prompt_parts.append(f"- Signal-to-noise estimate: {np.mean(hspy_data) / np.std(hspy_data):.2f}")
-            
+            if data_quality:
+                prompt_parts.append("\n--- Data Quality Assessment (from Preprocessor) ---")
+                prompt_parts.append(f"- Robust SNR Estimate: {data_quality.get('snr_estimate', 'N/A'):.2f}")
+                prompt_parts.append(f"- Assessment: {data_quality.get('reasoning', 'No assessment provided.')}")
+            else:
+                prompt_parts.append("\n--- Data Quality Assessment ---")
+                prompt_parts.append("- No preprocessing assessment was provided (e.g., preprocessing disabled).")
             # Add system information
             if system_info:
                 prompt_parts.append("\n\n--- System Information ---")
@@ -299,7 +305,10 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             self.logger.error(f"LLM final component selection failed: {e}", exc_info=True)
             return initial_estimate # Fallback
 
-    def _llm_guided_component_workflow(self, hspy_data: np.ndarray, system_info: dict = None) -> tuple[int, np.ndarray, np.ndarray]:
+    def _llm_guided_component_workflow(self, 
+                                       hspy_data: np.ndarray, 
+                                       system_info: dict = None,
+                                       data_quality: Dict[str, Any] = None) -> tuple[int, np.ndarray, np.ndarray]:
         """
         LLM-guided component optimization using reconstruction error elbow plot and visual inspection.
         1. LLM estimates initial optimal components.
@@ -317,7 +326,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         }
 
         # --- Step 1: LLM initial estimate ---
-        initial_estimate = self._llm_estimate_components_from_system(hspy_data, system_info)
+        initial_estimate = self._llm_estimate_components_from_system(hspy_data, system_info, data_quality)
         reasoning_log["initial_estimate"] = initial_estimate
         print(f"  💡 LLM suggests initial estimate: {initial_estimate} components")
         step1_data = {
@@ -455,7 +464,10 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
         return final_n_components, final_components, final_abundance_maps
 
-    def _perform_spectral_unmixing(self, hspy_data: np.ndarray, system_info: Dict[str, Any] = None) -> Tuple[np.ndarray, np.ndarray]:
+    def _perform_spectral_unmixing(self,
+                                   hspy_data: np.ndarray,
+                                   system_info: Dict[str, Any] = None,
+                                   data_quality: Dict[str, Any] = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Perform spectral unmixing using the complete LLM-guided workflow.
         """
@@ -465,7 +477,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             if self.spectral_settings.get('auto_components', True):
                 # Use complete LLM-guided workflow
                 final_n_components, components, abundance_maps = self._llm_guided_component_workflow(
-                    hspy_data, system_info
+                    hspy_data, system_info, data_quality
                 )
                 return components, abundance_maps
             else:
@@ -709,13 +721,15 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             if self.preprocessor:
                 self.logger.info("--- Starting LLM-guided preprocessing ---")
                 # The preprocessor runs, cleans the data, and returns the cleaned cube
-                hspy_data, applied_mask = self.preprocessor.run_preprocessing(hspy_data, system_info)
+                hspy_data, applied_mask, data_quality = self.preprocessor.run_preprocessing(hspy_data, system_info)
                 # We get the applied_mask back in case we want to visualize it later
                 self.logger.info("--- Preprocessing complete, proceeding with analysis ---")
             else:
                 self.logger.warning("Preprocessing is enabled but preprocessor agent failed to initialize. Skipping.")
+                data_quality = None
         else:
             self.logger.info("Preprocessing is disabled. Analyzing raw data.")
+            data_quality = None
         
         components = None
         abundance_maps = None
@@ -723,7 +737,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         # Perform spectral unmixing if enabled
         if self.run_spectral_unmixing:
             self.logger.info(f"Performing spectral unmixing for {analysis_desc}...")
-            components, abundance_maps = self._perform_spectral_unmixing(hspy_data, system_info)
+            components, abundance_maps = self._perform_spectral_unmixing(hspy_data, system_info, data_quality)
         
         # Create component-abundance pairs for final analysis
         component_pair_images = []
