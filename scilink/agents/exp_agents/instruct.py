@@ -359,9 +359,10 @@ These are heuristics, not rigid rules. Use your expert judgment to synthesize th
     * If `apply_despike` is `True`, a `despike_kernel_size` of `3` is a safe and standard choice.
 
 3.  **`apply_masking` (bool):**
-    * Consider setting to `True` if there appears to be a significant low-signal background. Indicators include a `Data Min` below zero or a `5th Percentile` that is very low or zero.
-    * If the `1st Percentile` and `50th Percentile` are close and non-zero, the data might be "all signal," and masking could be unnecessary (`False`).
-    * When in doubt, enabling masking is often a good default.
+    * **Default to `False`.** Masking is a destructive step and should be avoided unless absolutely necessary.
+    * **Only set to `True`** if there is *clear and unambiguous* evidence of a true, near-zero background (like detector noise). The *only* reliable indicator for this is a **`50th Percentile (Median)` that is very close to zero.**
+    * If the `50th Percentile` is **significantly non-zero** (like 0.1), this is a substrate and **must not be masked**. Set `apply_masking` to `False`.
+    * (Note: The `Data Max` or `Data Min` values are handled by despiking/clipping and are not a reason to enable masking.)
 
 4.  **`mask_threshold_percentile` (float):**
     * This percentile removes the dimmest part of the *signal*, not the absolute background.

@@ -194,7 +194,7 @@ class HyperspectralPreprocessingAgent(BaseAnalysisAgent):
         np.clip(data_to_process, 0, None, out=data_to_process)
 
         # 3. Calculate Masking strategy
-        if strategy.get('apply_masking', True):
+        if strategy.get('apply_masking', False):
             total_intensities = np.sum(data_to_process, axis=2) # (h, w)
             signal_pixels = total_intensities[total_intensities > 1e-9]
             
