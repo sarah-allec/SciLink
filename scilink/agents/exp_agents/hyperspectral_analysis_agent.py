@@ -435,7 +435,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             normalize=self.spectral_settings.get('normalize', True),
             #max_iter=self.spectral_settings.get('max_iter', 500), # Use full iterations for final run
             **{k: v for k, v in self.spectral_settings.items()
-            if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components', 'min_auto_components', 'max_auto_components']}
+            if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components', 'min_auto_components', 'max_auto_components', 'run_preprocessing']}
         )
         final_components, final_abundance_maps = final_unmixer.fit(hspy_data)
         final_reconstruction_error = final_unmixer.model.reconstruction_err_
@@ -490,7 +490,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                     n_components=n_components,
                     normalize=self.spectral_settings.get('normalize', True),
                     **{k: v for k, v in self.spectral_settings.items() 
-                       if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components']}
+                       if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components', 'run_preprocessing']}
                 )
                 
                 components, abundance_maps = unmixer.fit(hspy_data)
@@ -1087,32 +1087,35 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             json.dump(reasoning_log, f, indent=2)
         
         # 2. Create clean final results plot
+        import matplotlib.gridspec as gridspec
+
+        # Create figure
         fig = plt.figure(figsize=(16, 10))
-        
-        # Top section: Component spectra
-        ax_spectra = plt.subplot(2, 1, 1)
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1.5], hspace=0.3)
+
+        # Top: Spectra
+        ax_spectra = fig.add_subplot(gs[0])
         for i in range(final_n_components):
-            plt.plot(energy_axis, components[i], label=f'Component {i+1}', linewidth=2)
-        plt.title(f'Final Spectral Components (n={final_n_components})')
-        plt.xlabel(xlabel)
-        plt.ylabel('Intensity')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Bottom section: Abundance maps with proper grid
+            ax_spectra.plot(energy_axis, components[i], label=f'Component {i+1}', linewidth=2)
+        ax_spectra.set_title(f'Final Spectral Components (n={final_n_components})')
+        ax_spectra.set_xlabel(xlabel)
+        ax_spectra.set_ylabel('Intensity')
+        ax_spectra.legend()
+        ax_spectra.grid(True, alpha=0.3)
+
+        # Bottom: Abundance maps in proper grid
         n_cols = min(4, final_n_components)
         n_rows = (final_n_components + n_cols - 1) // n_cols
-        
-        # Create abundance map subplots
+        gs_bottom = gridspec.GridSpecFromSubplotSpec(n_rows, n_cols, subplot_spec=gs[1])
+
         for i in range(final_n_components):
             row = i // n_cols
             col = i % n_cols
-            ax = plt.subplot(2 * n_rows, n_cols, n_cols + row * n_cols + col + 1)
-            im = plt.imshow(abundance_maps[..., i], cmap='viridis')
-            plt.title(f'Component {i+1}')
-            plt.colorbar(im, fraction=0.046, pad=0.04)
-            plt.axis('off')
-        plt.tight_layout()
+            ax = fig.add_subplot(gs_bottom[row, col])
+            im = ax.imshow(abundance_maps[..., i], cmap='viridis')
+            ax.set_title(f'Component {i+1}')
+            ax.axis('off')
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         
         # Save final results plot
         results_file = f"final_results_{timestamp}.png"
