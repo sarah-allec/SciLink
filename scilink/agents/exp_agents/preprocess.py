@@ -3,9 +3,17 @@ from scipy.ndimage import median_filter
 import logging
 import json
 from typing import Tuple, Dict, Any
+import os
+import re
+import tempfile
 
 from .base_agent import BaseAnalysisAgent
-from .instruct import PRE_PROCESSING_STRATEGY_INSTRUCTIONS
+from .instruct import (
+    PRE_PROCESSING_STRATEGY_INSTRUCTIONS,
+    CUSTOM_PREPROCESSING_SCRIPT_INSTRUCTIONS,
+    CUSTOM_SCRIPT_CORRECTION_INSTRUCTIONS
+)
+from ...executors import ScriptExecutor
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -14,14 +22,23 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 class HyperspectralPreprocessingAgent(BaseAnalysisAgent):
     """
     An agent that uses an LLM to determine the optimal pre-processing strategy
-    and deterministically calculates data quality.
+    AND can run custom Python scripts for non-standard processing.
     """
 
-    def __init__(self, *args, **kwargs):
+    MAX_SCRIPT_ATTEMPTS = 3
+
+    def __init__(self, *args,
+                 output_dir: str = "preprocessing_output",
+                 executor_timeout: int = 120,
+                 **kwargs):
         """Initialize the pre-processing agent."""
         super().__init__(*args, **kwargs)
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.info("HyperspectralPreprocessingAgent initialized.")
+        
+        self.output_dir = os.path.abspath(output_dir)
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.executor = ScriptExecutor(timeout=executor_timeout, enforce_sandbox=False)
+        self.logger.info(f"HyperspectralPreprocessingAgent initialized. Custom script output dir: {self.output_dir}")
         
     def _calculate_statistics(self, hspy_data: np.ndarray) -> Dict[str, Any]:
         """Calculates robust statistics for the LLM and for deterministic SNR."""
@@ -57,10 +74,6 @@ class HyperspectralPreprocessingAgent(BaseAnalysisAgent):
         """
         self.logger.debug("Calculating deterministic SNR...")
         
-        # A robust heuristic for SNR, especially for sparse (mostly zero) data.
-        # It measures the "signal range" (99th percentile) against the
-        # "noise" or "background" level (the median, or p50).
-        
         signal = stats["p99"]
         noise = stats["p50"]
         
@@ -82,10 +95,13 @@ class HyperspectralPreprocessingAgent(BaseAnalysisAgent):
         
         return float(snr), reasoning
 
-
     def run_preprocessing(self, hspy_data: np.ndarray, system_info: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
         """
         Runs the full LLM-guided pre-processing pipeline.
+        
+        This will check for a `custom_processing_instruction` in system_info.
+        If present, it runs the script executor.
+        If absent, it runs the standard strategy selection.
         """
         if hspy_data.ndim != 3:
             self.logger.error(f"Input data must be 3D (h, w, e), but got {hspy_data.ndim}D. Skipping processing.")
@@ -96,24 +112,45 @@ class HyperspectralPreprocessingAgent(BaseAnalysisAgent):
             }
             return hspy_data, default_mask, default_quality
 
-        # 1. Calculate robust statistics ONCE
+        # 1. Calculate robust statistics
         stats = self._calculate_statistics(hspy_data)
         
-        # 2. Get cleaning strategy from LLM (Task 1)
-        strategy = self._llm_select_preprocessing_strategy(stats, system_info)
-        
-        # 3. Deterministically calculate SNR (Task 2)
+        # 2. Deterministically calculate SNR
         snr_value, snr_reasoning = self._calculate_snr(stats)
-        
-        # 4. Construct the final data_quality object
         data_quality = {
             "snr_estimate": snr_value,
-            "reasoning": snr_reasoning
+            "reasoning": f"SNR of *original* data: {snr_reasoning}"
         }
         self.logger.info(f"Deterministic Data Quality: SNR = {snr_value:.2f} ({snr_reasoning})")
 
-        # 5. Apply the LLM's cleaning strategy
-        processed_data, mask_2d = self._apply_preprocessing(hspy_data, strategy)
+        # Check for a custom, overriding instruction
+        custom_instruction = system_info.get("custom_processing_instruction")
+        
+        if custom_instruction:
+            self.logger.info(f"Detected custom processing instruction. Diverting to script executor.")
+            self.logger.info(f"Instruction: {custom_instruction}")
+            
+            try:
+                processed_data, mask_2d, script_path = self._run_custom_script_processing(
+                    hspy_data, stats, custom_instruction
+                )
+                self.logger.info("Custom script processing successful.")
+                if script_path:
+                    data_quality["custom_script_path"] = script_path
+            except Exception as e:
+                self.logger.error(f"Custom script processing failed: {e}. Returning original data.")
+                processed_data = hspy_data
+                mask_2d = np.ones(hspy_data.shape[:2], dtype=bool)
+                data_quality["reasoning"] += f" | CUSTOM SCRIPT FAILED: {e}"
+
+        else:
+            self.logger.info("No custom instruction. Running standard LLM strategy selection.")
+            
+            # 4. Get cleaning strategy from LLM
+            strategy = self._llm_select_preprocessing_strategy(stats, system_info)
+            
+            # 5. Apply the LLM's cleaning strategy
+            processed_data, mask_2d = self._apply_preprocessing(hspy_data, strategy)
 
         # 6. Return all results
         return processed_data, mask_2d, data_quality
@@ -223,3 +260,158 @@ class HyperspectralPreprocessingAgent(BaseAnalysisAgent):
             mask_2d = np.ones(data_to_process.shape[:2], dtype=bool)
 
         return data_to_process, mask_2d
+
+    def _extract_script_from_response(self, response_text: str) -> str:
+        """Extracts Python code from an LLM response."""
+        script_content = response_text.strip()
+        match = re.search(r"```(?:python)?\n(.*?)\n```", script_content, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        
+        # Fallback: check if it starts with 'python' and strip it
+        if script_content.lower().startswith("python"):
+            potential_code = script_content[len("python"):].strip()
+            if potential_code.startswith(("import ", "def ", "#")):
+                return potential_code
+        
+        # Fallback: check if it starts directly with code
+        if script_content.startswith(("import ", "def ", "#")):
+            return script_content
+
+        self.logger.error(f"LLM response did not contain a recognizable Python code block: {script_content[:300]}")
+        raise ValueError("LLM failed to generate Python script in a recognizable format.")
+
+    def _generate_custom_script(self, stats: dict, instruction: str, input_filename: str) -> str: # <-- Renamed variable
+        """Uses an LLM to generate a Python fitting script."""
+        self.logger.info("Generating Python script for custom preprocessing...")
+        
+        prompt = CUSTOM_PREPROCESSING_SCRIPT_INSTRUCTIONS.format(
+            instruction=instruction,
+            stats_json=json.dumps(stats, indent=2),
+            input_filename=input_filename
+        )
+        
+        response = self.model.generate_content(prompt)
+        fitting_script = self._extract_script_from_response(response.text)
+        
+        if not fitting_script:
+            raise ValueError("LLM generated an empty or unextractable script.")
+
+        return fitting_script
+
+    def _generate_and_execute_custom_script_with_retry(
+        self, stats: dict, instruction: str, input_filename: str # <-- Renamed variable
+    ) -> dict:
+        """
+        Generates and executes the custom script, with a retry loop for self-correction.
+        """
+        last_error = "No script generated yet."
+        custom_script = None
+
+        for attempt in range(1, self.MAX_SCRIPT_ATTEMPTS + 1):
+            try:
+                if attempt == 1:
+                    self.logger.info(f"Attempt {attempt}/{self.MAX_SCRIPT_ATTEMPTS}: Generating initial script...")
+                    custom_script = self._generate_custom_script(stats, instruction, input_filename)
+                else:
+                    self.logger.warning(f"Attempt {attempt}/{self.MAX_SCRIPT_ATTEMPTS}: Script failed. Requesting correction...")
+                    correction_prompt = CUSTOM_SCRIPT_CORRECTION_INSTRUCTIONS.format(
+                        instruction=instruction,
+                        failed_script=custom_script,
+                        error_message=last_error,
+                        input_filename=input_filename 
+                    )
+                    response = self.model.generate_content(correction_prompt)
+                    custom_script = self._extract_script_from_response(response.text)
+                # Execute the current version of the script
+                self.logger.info(f"Executing script (attempt {attempt})...")
+                # Scripts are run *in the output directory*
+                exec_result = self.executor.execute_script(custom_script, working_dir=self.output_dir)
+
+                if exec_result.get("status") == "success":
+                    self.logger.info("✅ Script executed successfully.")
+                    return {
+                        "status": "success",
+                        "exec_result": exec_result,
+                        "final_script": custom_script,
+                        "attempts": attempt
+                    }
+                else:
+                    last_error = exec_result.get("message", "Unknown execution error.")
+                    self.logger.warning(f"Script execution attempt {attempt} failed. Error: {last_error}")
+
+            except Exception as e:
+                last_error = f"An error occurred during script generation/execution: {str(e)}"
+                self.logger.error(last_error, exc_info=True)
+
+        # If loop finishes without success
+        self.logger.error(f"Script processing failed after {self.MAX_SCRIPT_ATTEMPTS} attempts.")
+        return {
+            "status": "error",
+            "message": f"Failed to generate a working script after {self.MAX_SCRIPT_ATTEMPTS} attempts. Last error: {last_error}",
+            "last_script": custom_script
+        }
+
+    def _run_custom_script_processing(
+        self, hspy_data: np.ndarray, stats: dict, instruction: str
+    ) -> tuple[np.ndarray, np.ndarray, str]:
+        """
+        Orchestrates the custom script pipeline:
+        1. Saves input data to a temp file.
+        2. Calls the generate/execute retry loop.
+        3. Saves the final script.
+        4. Loads the resulting data and mask from the output files.
+        """
+        # 1. Save input data so the script can access it
+        input_filename = f"input_data_{os.getpid()}.npy"
+        input_data_path = os.path.join(self.output_dir, input_filename)
+        try:
+            np.save(input_data_path, hspy_data)
+            self.logger.info(f"Saved input data for script to: {input_data_path}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to save temporary input data: {e}")
+
+        # 2. Run the generation and execution loop
+        script_bundle = self._generate_and_execute_custom_script_with_retry(
+            stats, instruction, input_filename
+        )
+
+        if script_bundle["status"] != "success":
+            # Clean up input file even on failure
+            if os.path.exists(input_data_path):
+                os.remove(input_data_path)
+            raise RuntimeError(script_bundle["message"])
+        
+        # 3. Save the final, successful script for transparency
+        final_script = script_bundle.get("final_script", "# No script was returned.")
+        script_save_path = os.path.join(self.output_dir, "custom_preprocessing_script.py")
+        try:
+            with open(script_save_path, "w") as f:
+                f.write(f"# --- SciLink Auto-Generated Preprocessing Script ---\n")
+                f.write(f"# Original Instruction: {instruction}\n")
+                f.write(f"# --------------------------------------------------\n\n")
+                f.write(final_script)
+            self.logger.info(f"✅ Saved final script for transparency to: {script_save_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to save final script: {e}")
+            script_save_path = None # Don't crash, just log the warning
+        
+        # 4. Load the results produced by the script
+        processed_data_path = os.path.join(self.output_dir, "processed_data.npy")
+        mask_path = os.path.join(self.output_dir, "mask_2d.npy")
+        
+        if not os.path.exists(processed_data_path):
+            raise RuntimeError(f"Script finished but did not create 'processed_data.npy' in {self.output_dir}")
+        if not os.path.exists(mask_path):
+            raise RuntimeError(f"Script finished but did not create 'mask_2d.npy' in {self.output_dir}")
+
+        self.logger.info("Loading processed data and mask from script output...")
+        processed_data = np.load(processed_data_path)
+        mask_2d = np.load(mask_path)
+        
+        # 5. Clean up all temp files
+        os.remove(input_data_path)
+        os.remove(processed_data_path)
+        os.remove(mask_path)
+        
+        return processed_data, mask_2d, script_save_path

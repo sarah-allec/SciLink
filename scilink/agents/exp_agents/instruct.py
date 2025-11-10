@@ -342,7 +342,6 @@ PRE_PROCESSING_STRATEGY_INSTRUCTIONS = """You are an expert spectroscopist. Your
 
 **Context & Definitions:**
 - **Despiking:** Removing extremely high-intensity pixels (e.g., cosmic rays) using a median filter. This is for true outliers, not just the bright part of the signal.
-- **Clipping:** Removing negative values, which are physically meaningless noise. This is almost always done.
 - **Masking:** Removing *near-zero* background pixels (e.g., detector noise) to focus on the real signal. A non-zero, flat baseline is often a 'substrate' and should typically be kept as part of the signal.
 
 **Your Task:**
@@ -382,6 +381,75 @@ You MUST output a valid JSON object with these keys:
   "mask_threshold_percentile": "[float, e.g., 5.0]",
   "reasoning": "[Your string explanation]"
 }
+"""
+
+
+CUSTOM_PREPROCESSING_SCRIPT_INSTRUCTIONS = """
+You are an expert in hyperspectral data processing with Python.
+Your task is to write a Python script to perform a custom preprocessing step.
+
+**Context:**
+- The script will be executed in the same directory as the data file.
+- The input data filename is: {input_filename}
+- The user's specific request is: {instruction}
+- You also have some statistics about the original data: {stats_json}
+
+**Requirements:**
+1.  **Security Restriction:** You MUST restrict your imports to the "allow-list":
+    * `numpy`
+    * `scipy` (e.g., `scipy.ndimage`, `scipy.signal`)
+    * `sklearn` (e.g., `sklearn.decomposition`, `sklearn.preprocessing`)
+    * `warnings`
+    * You are **explicitly forbidden** from importing any other libraries.
+2.  Define all logic inside a `main()` function.
+3.  **Inside `main()`, you MUST define the data path variable exactly like this:**
+    `input_data_path = "{input_filename}"`
+4.  Load the data using `data = np.load(input_data_path)`.
+5.  Perform the custom processing requested using *only* the allowed libraries.
+6.  **Crucially, you MUST save two files to the current working directory:**
+    * `'processed_data.npy'`: The final, processed 3D numpy array.
+    * `'mask_2d.npy'`: A 2D boolean numpy array. If no mask is generated, save `np.ones(data.shape[:2], dtype=bool)`.
+7.  Print "CUSTOM_SCRIPT_SUCCESS" to stdout if everything completes.
+8.  **You MUST call the `main()` function at the end of the script** using:
+    ```python
+    if __name__ == "__main__":
+        main()
+    ```
+
+**User Request:**
+{instruction}
+
+Provide ONLY the complete Python script inside a ```python ... ``` block.
+"""
+
+CUSTOM_SCRIPT_CORRECTION_INSTRUCTIONS = """
+The previous script failed to run.
+Your goal is to fix it.
+
+**Original User Request:**
+{instruction}
+
+**The Failed Script:**
+```python
+{failed_script}
+
+The Error Message (Traceback): {error_message}
+
+Your Task: Analyze the Error Message and the Failed Script to understand the bug and produce a corrected, working script.
+
+You MUST follow all original requirements in your corrected script:
+
+Security: Only import numpy, scipy, sklearn, or warnings.
+
+Input: Define the input path inside main(): input_data_path = "{input_filename}"
+
+Output: Save 'processed_data.npy' (3D array) and 'mask_2d.npy' (2D bool array).
+
+Execution: Call main() at the end using if __name__ == "__main__":.
+
+Success: Print "CUSTOM_SCRIPT_SUCCESS" just before main finishes.
+
+Provide ONLY the complete, corrected Python script in a ```python ... ``` block. 
 """
 
 
