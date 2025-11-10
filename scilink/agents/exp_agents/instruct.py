@@ -559,6 +559,29 @@ Provide ONLY the complete, corrected Python script in a ```python ... ``` block.
 """
 
 
+PREPROCESSING_QUALITY_ASSESSMENT_INSTRUCTIONS = """
+You are an expert in signal processing. Your task is to validate a preprocessing step.
+
+You will be given:
+1.  A plot of the **Raw Data**.
+2.  A plot of the **Processed Data** (the output of the script).
+3.  The original **User Instruction** given to the script.
+
+Your Job:
+Compare the "Raw Data" plot to the "Processed Data" plot. Did the script successfully follow the "User Instruction"?
+
+-   **If the instruction was to "remove a baseline"**: Is the baseline gone?
+-   **If the instruction was to "remove spikes"**: Are the spikes gone?
+-   **Critically**: Did the script *also* damage the signal (e.g., flatten peaks, remove good data)?
+
+You MUST output a valid JSON object with these keys:
+{
+  "is_good_preprocessing": "[true/false]",
+  "critique": "[Your brief reasoning for why it succeeded or failed.]",
+  "suggestion": "[If it failed, a brief suggestion for a *different approach* (e.g., 'Use a polynomial baseline instead of ALS', 'Use a median filter instead of clipping').]"
+}
+"""
+
 
 SPECTROSCOPY_ANALYSIS_INSTRUCTIONS = """You are an expert system specialized in analyzing hyperspectral and spectroscopic data of materials.
 You will receive hyperspectral data along with summary images showing:

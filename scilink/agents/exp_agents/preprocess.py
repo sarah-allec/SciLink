@@ -6,6 +6,8 @@ import json
 from typing import Tuple, Dict, Any
 import os
 import re
+import matplotlib.pyplot as plt 
+from io import BytesIO
 
 from .base_agent import BaseAnalysisAgent
 from .instruct import (
@@ -14,7 +16,8 @@ from .instruct import (
     CUSTOM_SCRIPT_CORRECTION_INSTRUCTIONS,
     CUSTOM_PREPROCESSING_SCRIPT_1D_INSTRUCTIONS, 
     CUSTOM_SCRIPT_CORRECTION_1D_INSTRUCTIONS,
-    CURVE_PREPROCESSING_STRATEGY_INSTRUCTIONS
+    CURVE_PREPROCESSING_STRATEGY_INSTRUCTIONS,
+    PREPROCESSING_QUALITY_ASSESSMENT_INSTRUCTIONS
 )
 from ...executors import ScriptExecutor
 
@@ -445,6 +448,7 @@ class CurvePreprocessingAgent(BaseAnalysisAgent):
     """
     
     MAX_SCRIPT_ATTEMPTS = 5
+    MAX_MODEL_ATTEMPTS = 3
 
     def __init__(self, *args,
                  output_dir: str = "preprocessing_output",
@@ -701,49 +705,140 @@ class CurvePreprocessingAgent(BaseAnalysisAgent):
         self, curve_data: np.ndarray, system_info: dict, instruction: str
     ) -> tuple[np.ndarray, str]:
         """
-        Orchestrates the custom 1D script pipeline.
-        (This is copied from the 3D agent, but for 1D data)
+        Orchestrates the custom 1D script pipeline and validates the result
+        using a logic-correction loop.
         """
         stats = self._calculate_statistics_1d(curve_data)
         
         input_filename = f"input_data_1d_{os.getpid()}.npy"
         input_data_path = os.path.join(self.output_dir, input_filename)
+        processed_data_path = os.path.join(self.output_dir, "processed_data.npy")
+        script_save_path = os.path.join(self.output_dir, "custom_preprocessing_script_1d.py")
+
+        # This context string will be updated with critiques if validation fails
+        processing_context = instruction
+
         try:
             np.save(input_data_path, curve_data)
             self.logger.info(f"Saved 1D input data for script to: {input_data_path}")
         except Exception as e:
             raise RuntimeError(f"Failed to save temporary 1D input data: {e}")
 
-        script_bundle = self._generate_and_execute_custom_script_1d(
-            stats, instruction, input_filename
-        )
+        
+        # Loop for logic/model correction
+        for model_attempt in range(1, self.MAX_MODEL_ATTEMPTS + 1):
+            self.logger.info(f"\n🤖 PREPROCESSING MODEL ATTEMPT {model_attempt}/{self.MAX_MODEL_ATTEMPTS}")
 
-        if script_bundle["status"] != "success":
-            if os.path.exists(input_data_path):
+            # 1. Run the inner script generation/execution loop
+            #    This loop handles code-level bugs (SyntaxError, etc.)
+            script_bundle = self._generate_and_execute_custom_script_1d(
+                stats, processing_context, input_filename
+            )
+
+            if script_bundle["status"] != "success":
+                # This means the *inner* loop failed 5 times. We must stop.
+                raise RuntimeError(script_bundle["message"])
+            
+            # 2. Load the data created by the script
+            if not os.path.exists(processed_data_path):
+                raise RuntimeError(f"1D script finished but did not create 'processed_data.npy'")
+            processed_data = np.load(processed_data_path)
+
+            # 3. Validation step (LLM quality check)
+            self.logger.info("🤖 Validating custom preprocessing script output...")
+            raw_plot_bytes = self._plot_curve_to_bytes(curve_data, "1. Raw Data (Before)")
+            processed_plot_bytes = self._plot_curve_to_bytes(processed_data, "2. Processed Data (After)")
+            
+            assessment = self._evaluate_preprocessing_quality(
+                raw_plot_bytes,
+                processed_plot_bytes,
+                instruction # Use the *original* instruction for validation
+            )
+            self.logger.info(f"Preprocessing Assessment: {assessment['critique']}")
+            
+            # 4. Check assessment and decide to loop or break
+            if assessment.get("is_good_preprocessing", False):
+                self.logger.info("✅ Preprocessing quality is acceptable.")
+                
+                # Save the final script and return the good data
+                final_script = script_bundle.get("final_script", "# No script was returned.")
+                try:
+                    with open(script_save_path, "w") as f:
+                        f.write(f"# --- SciLink Auto-Generated 1D Preprocessing Script ---\n")
+                        f.write(f"# Original Instruction: {instruction}\n")
+                        f.write(f"# Final Validation: {assessment['critique']}\n")
+                        f.write(f"# --------------------------------------------------\n\n")
+                        f.write(final_script)
+                    self.logger.info(f"✅ Saved final 1D script for transparency to: {script_save_path}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to save final 1D script: {e}")
+                    script_save_path = None
+                
+                # Clean up temp files and return
                 os.remove(input_data_path)
-            raise RuntimeError(script_bundle["message"])
-        
-        final_script = script_bundle.get("final_script", "# No script was returned.")
-        script_save_path = os.path.join(self.output_dir, "custom_preprocessing_script_1d.py")
-        try:
-            with open(script_save_path, "w") as f:
-                f.write(f"# --- SciLink Auto-Generated 1D Preprocessing Script ---\n")
-                f.write(f"# Original Instruction: {instruction}\n")
-                f.write(f"# --------------------------------------------------\n\n")
-                f.write(final_script)
-            self.logger.info(f"✅ Saved final 1D script for transparency to: {script_save_path}")
-        except Exception as e:
-            self.logger.warning(f"Failed to save final 1D script: {e}")
-            script_save_path = None
-        
-        processed_data_path = os.path.join(self.output_dir, "processed_data.npy")
-        
-        if not os.path.exists(processed_data_path):
-            raise RuntimeError(f"1D script finished but did not create 'processed_data.npy'")
+                os.remove(processed_data_path)
+                return processed_data, script_save_path
+            
+            elif model_attempt < self.MAX_MODEL_ATTEMPTS:
+                self.logger.warning("⚠️ Preprocessing quality is unacceptable. Attempting to correct the logic.")
+                
+                # Update the context for the *next* loop iteration
+                processing_context = (
+                    f"The original instruction was: '{instruction}'\n\n"
+                    f"--- CRITIQUE OF YOUR LAST ATTEMPT ---\n"
+                    f"Critique: {assessment['critique']}\n"
+                    f"Suggestion: {assessment.get('suggestion', 'No suggestion provided.')}\n\n"
+                    f"Please provide a new script with a different approach to fix this."
+                )
+                # We don't return; the loop continues to the next model_attempt
 
-        processed_data = np.load(processed_data_path)
+            else:
+                # Max model attempts reached, this is a final failure
+                self.logger.error(f"Failed to produce a good preprocessing script after {self.MAX_MODEL_ATTEMPTS} attempts.")
+                raise ValueError(f"Custom preprocessing failed LLM validation after {self.MAX_MODEL_ATTEMPTS} attempts. Last critique: {assessment['critique']}")
+
+        # This part should not be reachable, but as a fallback:
+        raise RuntimeError("Agent failed to preprocess data.")
+    
+    def _plot_curve_to_bytes(self, curve_data: np.ndarray, title: str) -> bytes:
+        """Helper to plot a 1D curve into in-memory bytes."""
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(curve_data[:, 0], curve_data[:, 1], 'b-')
+        ax.set_title(title)
+        ax.set_xlabel("X-axis")
+        ax.set_ylabel("Y-axis")
+        ax.grid(True, linestyle='--')
+        plt.tight_layout()
+        buf = BytesIO()
+        plt.savefig(buf, format='jpeg', dpi=100)
+        buf.seek(0)
+        image_bytes = buf.getvalue()
+        plt.close(fig)
+        return image_bytes
+
+    def _evaluate_preprocessing_quality(self, raw_data_plot_bytes: bytes, processed_data_plot_bytes: bytes, instruction: str) -> dict:
+        """Uses an LLM to visually assess the quality of the preprocessing."""
+        self.logger.info("🤖 Assessing the quality of the preprocessing script...")
+        if not instruction:
+            instruction = "No custom instruction was provided."
+            
+        prompt = [
+            PREPROCESSING_QUALITY_ASSESSMENT_INSTRUCTIONS,
+            "## User Instruction\n" + instruction,
+            "## 1. Raw Data (Before)", {"mime_type": "image/jpeg", "data": raw_data_plot_bytes},
+            "## 2. Processed Data (After)", {"mime_type": "image/jpeg", "data": processed_data_plot_bytes},
+        ]
         
-        os.remove(input_data_path)
-        os.remove(processed_data_path)
-        
-        return processed_data, script_save_path
+        try:
+            response = self.model.generate_content(prompt, generation_config=self.generation_config)
+            result_json, error = self._parse_llm_response(response)
+            
+            if error or not result_json:
+                self.logger.warning("Failed to get a valid preprocessing assessment from LLM. Assuming it's acceptable.")
+                return {"is_good_preprocessing": True, "critique": "Assessment failed."}
+            
+            return result_json
+            
+        except Exception as e:
+            self.logger.error(f"Error during preprocessing assessment: {e}", exc_info=True)
+            return {"is_good_preprocessing": True, "critique": f"Assessment call failed: {e}"}
