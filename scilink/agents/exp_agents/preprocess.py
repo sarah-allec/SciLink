@@ -23,6 +23,16 @@ class HyperspectralPreprocessingAgent(BaseAnalysisAgent):
     """
     An agent that uses an LLM to determine the optimal pre-processing strategy
     AND can run custom Python scripts for non-standard processing.
+
+    **Standard Mode:**
+    By default, the agent will analyze data statistics and ask an LLM
+    to choose a standard strategy (despiking, masking, etc.).
+
+    **Custom Script Mode:**
+    To override this, you can provide a special key named "custom_processing_instruction"
+    in the metadata json file file. If the agent this key, it will read the string value 
+    and automatically generate, execute, and self-correct a Python script 
+    to perform that specific task.
     """
 
     MAX_SCRIPT_ATTEMPTS = 3
