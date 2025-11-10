@@ -31,6 +31,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05", 
                  local_model: str = None,
                  spectral_unmixing_settings: dict | None = None,
+                 run_preprocessing: bool = True,
                  output_dir: str = "spectroscopy_output",
                  enable_human_feedback: bool = False):
         super().__init__(google_api_key, model_name, local_model, enable_human_feedback=enable_human_feedback)
@@ -41,13 +42,12 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             'n_components': 4,
             'normalize': True,
             'enabled': True,
-            'auto_components': True,
-            'run_preprocessing': True
+            'auto_components': True
             #'max_iter': 500
         }
         self.spectral_settings = spectral_unmixing_settings if spectral_unmixing_settings else default_settings
         self.run_spectral_unmixing = self.spectral_settings.get('enabled', True)
-        self.run_preprocessing = self.spectral_settings.get('run_preprocessing', True)
+        self.run_preprocessing = run_preprocessing
 
         self.preprocessor = HyperspectralPreprocessingAgent(
             google_api_key=google_api_key,
@@ -435,7 +435,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             normalize=self.spectral_settings.get('normalize', True),
             #max_iter=self.spectral_settings.get('max_iter', 500), # Use full iterations for final run
             **{k: v for k, v in self.spectral_settings.items()
-            if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components', 'min_auto_components', 'max_auto_components', 'run_preprocessing']}
+            if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components', 'min_auto_components', 'max_auto_components']}
         )
         final_components, final_abundance_maps = final_unmixer.fit(hspy_data)
         final_reconstruction_error = final_unmixer.model.reconstruction_err_
@@ -490,7 +490,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                     n_components=n_components,
                     normalize=self.spectral_settings.get('normalize', True),
                     **{k: v for k, v in self.spectral_settings.items() 
-                       if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components', 'run_preprocessing']}
+                       if k not in ['method', 'n_components', 'normalize', 'enabled', 'auto_components']}
                 )
                 
                 components, abundance_maps = unmixer.fit(hspy_data)
