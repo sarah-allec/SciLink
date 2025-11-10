@@ -1,17 +1,20 @@
 import numpy as np
 from scipy.ndimage import median_filter
+from scipy.signal import savgol_filter
 import logging
 import json
 from typing import Tuple, Dict, Any
 import os
 import re
-import tempfile
 
 from .base_agent import BaseAnalysisAgent
 from .instruct import (
     PRE_PROCESSING_STRATEGY_INSTRUCTIONS,
     CUSTOM_PREPROCESSING_SCRIPT_INSTRUCTIONS,
-    CUSTOM_SCRIPT_CORRECTION_INSTRUCTIONS
+    CUSTOM_SCRIPT_CORRECTION_INSTRUCTIONS,
+    CUSTOM_PREPROCESSING_SCRIPT_1D_INSTRUCTIONS, 
+    CUSTOM_SCRIPT_CORRECTION_1D_INSTRUCTIONS,
+    CURVE_PREPROCESSING_STRATEGY_INSTRUCTIONS
 )
 from ...executors import ScriptExecutor
 
@@ -425,3 +428,322 @@ class HyperspectralPreprocessingAgent(BaseAnalysisAgent):
         os.remove(mask_path)
         
         return processed_data, mask_2d, script_save_path
+    
+
+
+class CurvePreprocessingAgent(BaseAnalysisAgent):
+    """
+    An agent that pre-processes 1D (X, Y) curve data.
+    
+   **Standard Mode:**
+    Uses an LLM to analyze stats and metadata to choose a safe, simple
+    strategy (clipping, smoothing) appropriate for the experiment type.
+    
+    **Custom Script Mode:**
+    If a "custom_processing_instruction" key is found in the metadata,
+    it will generate and execute a Python script to perform the custom task.
+    """
+    
+    MAX_SCRIPT_ATTEMPTS = 5
+
+    def __init__(self, *args,
+                 output_dir: str = "preprocessing_output",
+                 executor_timeout: int = 120,
+                 **kwargs):
+        """Initialize the 1D pre-processing agent."""
+        super().__init__(*args, **kwargs)
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+        self.output_dir = os.path.abspath(output_dir)
+        os.makedirs(self.output_dir, exist_ok=True)
+        # It needs its own executor
+        self.executor = ScriptExecutor(timeout=executor_timeout, enforce_sandbox=False)
+        self.logger.info(f"CurvePreprocessingAgent initialized. Custom script output dir: {self.output_dir}")
+
+    def run_preprocessing(self, curve_data: np.ndarray, system_info: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """
+        Runs the full 1D pre-processing pipeline.
+        
+        Args:
+            curve_data: A (N, 2) numpy array [X, Y].
+            system_info: The metadata dictionary.
+            
+        Returns:
+            A tuple of (processed_data, data_quality_dict).
+        """
+        if curve_data.ndim != 2 or curve_data.shape[1] != 2:
+            self.logger.error(f"Input data must be 2D (N, 2), but got {curve_data.shape}. Skipping processing.")
+            return curve_data, {"reasoning": "Processing skipped: Input data was not 2-column (N, 2)."}
+        
+        data_quality = {}
+        
+        # Check for a custom, overriding instruction
+        custom_instruction = system_info.get("custom_processing_instruction")
+        
+        if custom_instruction: # custom script path
+            self.logger.info(f"Detected custom 1D processing instruction. Diverting to script executor.")
+            self.logger.info(f"Instruction: {custom_instruction}")
+            
+            try:
+                processed_data, script_path = self._run_custom_script_processing_1d(
+                    curve_data, system_info, custom_instruction
+                )
+                self.logger.info("Custom 1D script processing successful.")
+                if script_path:
+                    data_quality["custom_script_path"] = script_path
+            except Exception as e:
+                self.logger.error(f"Custom 1D script processing failed: {e}. Returning original data.")
+                processed_data = curve_data
+                data_quality["reasoning"] = f"CUSTOM 1D SCRIPT FAILED: {e}"
+
+        else: # Stadnard path
+            self.logger.info("No custom instruction. Running LLM-guided standard 1D processing.")
+            
+            # 1. Calculate stats (needed for the LLM)
+            stats = self._calculate_statistics_1d(curve_data)
+            
+            # 2. Get strategy from LLM
+            strategy = self._llm_select_1d_strategy(stats, system_info)
+            
+            # 3. Apply the strategy
+            processed_data = self._apply_1d_strategy(curve_data, strategy)
+            data_quality["reasoning"] = strategy.get('reasoning', 'LLM-guided standard processing applied.')
+
+        return processed_data, data_quality
+
+    def _llm_select_1d_strategy(self, stats: Dict[str, Any], system_info: dict) -> dict:
+        """Asks an LLM to choose the best standard 1D pre-processing steps."""
+        self.logger.info("🤖 Asking LLM for standard 1D processing strategy...")
+        
+        # Fallback strategy (the "dumb" one we're replacing)
+        fallback_strategy = {
+            "apply_clip": True,
+            "apply_smoothing": True,
+            "smoothing_window": 5,
+            "reasoning": "Fallback: Default clipping and smoothing."
+        }
+        
+        try:
+            prompt_parts = [
+                CURVE_PREPROCESSING_STRATEGY_INSTRUCTIONS,
+                "\n--- Data Statistics (Y-axis) ---",
+                f"Data Shape: {stats['shape']}",
+                f"Y Mean: {stats['y_mean']:.4e}",
+                f"Y Std: {stats['y_std']:.4e}",
+                f"Y Min: {stats['y_min']:.4e}",
+                f"Y Max: {stats['y_max']:.4e}",
+                f"Y Median (p50): {stats['y_p50']:.4e}",
+                f"Y p99: {stats['y_p99']:.4e}",
+            ]
+            
+            system_info_section = self._build_system_info_prompt_section(system_info)
+            if system_info_section:
+                prompt_parts.append(system_info_section)
+
+            prompt_parts.append("\n\nProvide your strategy in the requested JSON format.")
+
+            response = self.model.generate_content(
+                contents=prompt_parts,
+                generation_config=self.generation_config,
+                safety_settings=self.safety_settings,
+            )
+            
+            result_json, error_dict = self._parse_llm_response(response)
+            
+            if error_dict:
+                self.logger.warning(f"LLM 1D strategy selection failed: {error_dict}. Using default strategy.")
+                return fallback_strategy
+
+            self.logger.info(f"LLM 1D Strategy: {result_json.get('reasoning', 'No reasoning provided.')}")
+            return result_json
+
+        except Exception as e:
+            self.logger.error(f"LLM 1D strategy selection failed: {e}. Falling back to default.")
+            return fallback_strategy
+
+    def _apply_1d_strategy(self, curve_data: np.ndarray, strategy: dict) -> np.ndarray:
+        """
+        Applies the simple 1D processing strategy chosen by the LLM.
+        """
+        self.logger.info("\n\n🤖 -------------------- DATA AGENT STEP: Applying Standard 1D Strategy -------------------- 🤖\n")
+        
+        # Log the reasoning before taking action.
+        self.logger.info(f"LLM Strategy: {strategy.get('reasoning', 'No reasoning provided.')}")
+        
+        processed_data = curve_data.copy()
+        y_data = processed_data[:, 1] # Extract Y-data
+        
+        # 1. Apply Clipping (if LLM said to)
+        if strategy.get('apply_clip', False):
+            negative_count = np.sum(y_data < 0)
+            if negative_count > 0:
+                self.logger.info(f"Applying clipping: Setting {negative_count} negative Y-values to 0.")
+                # Re-assign the y_data variable
+                y_data = np.clip(y_data, 0, None)
+            else:
+                self.logger.info("Clipping was True, but no negative values were found.")
+        else:
+            self.logger.info("Skipping clipping (as per LLM strategy or default).")
+
+        # 2. Apply Smoothing (if LLM said to)
+        if strategy.get('apply_smoothing', False):
+            try:
+                window_length = int(strategy.get('smoothing_window', 5))
+                if window_length % 2 == 0:
+                    window_length += 1
+                polyorder = 2
+                
+                if len(y_data) > window_length:
+                    self.logger.info(f"Applying Savitzky-Golay smoothing (window={window_length}, order={polyorder}).")
+                    # Re-assign the y_data variable again
+                    y_data = savgol_filter(y_data, window_length, polyorder)
+                else:
+                    self.logger.warning(f"Skipping smoothing: Data length ({len(y_data)}) is too short for window ({window_length}).")
+            except Exception as e:
+                self.logger.error(f"Failed to apply smoothing: {e}")
+        else:
+            self.logger.info("Skipping smoothing (as per LLM strategy).")
+        
+        # Finally, put the processed Y-data back into the copied array
+        processed_data[:, 1] = y_data
+        
+        return processed_data
+    
+    def _calculate_statistics_1d(self, curve_data: np.ndarray) -> Dict[str, Any]:
+        """Calculates robust statistics for the 1D data."""
+        x = curve_data[:, 0]
+        y = curve_data[:, 1]
+        stats = {
+            "shape": curve_data.shape,
+            "x_min": np.min(x),
+            "x_max": np.max(x),
+            "y_mean": np.mean(y),
+            "y_std": np.std(y),
+            "y_min": np.min(y),
+            "y_max": np.max(y),
+            "y_p50": np.percentile(y, 50),
+            "y_p99": np.percentile(y, 99),
+        }
+        return stats
+
+    def _extract_script_from_response(self, response_text: str) -> str:
+        """Extracts Python code from an LLM response. (Same as 3D agent)"""
+        # This method is identical to the one in the hyperspectral agent
+        script_content = response_text.strip()
+        match = re.search(r"```(?:python)?\n(.*?)\n```", script_content, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        if script_content.lower().startswith("python"):
+            # ... (omitted for brevity, just copy from your hyperspectral agent) ...
+            pass
+        if script_content.startswith(("import ", "def ", "#")):
+            return script_content
+        self.logger.error(f"LLM response did not contain a recognizable Python code block: {script_content[:300]}")
+        raise ValueError("LLM failed to generate Python script in a recognizable format.")
+
+    def _generate_custom_script_1d(self, stats: dict, instruction: str, input_filename: str) -> str:
+        """Uses an LLM to generate a Python 1D processing script."""
+        self.logger.info("Generating Python script for custom 1D preprocessing...")
+        
+        prompt = CUSTOM_PREPROCESSING_SCRIPT_1D_INSTRUCTIONS.format(
+            instruction=instruction,
+            stats_json=json.dumps(stats, indent=2),
+            input_filename=input_filename
+        )
+        
+        response = self.model.generate_content(prompt)
+        fitting_script = self._extract_script_from_response(response.text)
+        
+        if not fitting_script:
+            raise ValueError("LLM generated an empty or unextractable 1D script.")
+        return fitting_script
+
+    def _generate_and_execute_custom_script_1d(
+        self, stats: dict, instruction: str, input_filename: str
+    ) -> dict:
+        """
+        Generates and executes the custom 1D script, with a retry loop.
+        (This is copied from the 3D agent, but calls the 1D-specific prompts)
+        """
+        last_error = "No script generated yet."
+        custom_script = None
+
+        for attempt in range(1, self.MAX_SCRIPT_ATTEMPTS + 1):
+            try:
+                if attempt == 1:
+                    custom_script = self._generate_custom_script_1d(stats, instruction, input_filename)
+                else:
+                    self.logger.warning(f"Attempt {attempt}/{self.MAX_SCRIPT_ATTEMPTS}: 1D script failed. Requesting correction...")
+                    correction_prompt = CUSTOM_SCRIPT_CORRECTION_1D_INSTRUCTIONS.format(
+                        instruction=instruction,
+                        failed_script=custom_script,
+                        error_message=last_error,
+                        input_filename=input_filename 
+                    )
+                    response = self.model.generate_content(correction_prompt)
+                    custom_script = self._extract_script_from_response(response.text)
+                
+                exec_result = self.executor.execute_script(custom_script, working_dir=self.output_dir)
+
+                if exec_result.get("status") == "success":
+                    return { "status": "success", "final_script": custom_script }
+                else:
+                    last_error = exec_result.get("message", "Unknown execution error.")
+                    self.logger.warning(f"1D script execution attempt {attempt} failed. Error: {last_error}")
+
+            except Exception as e:
+                last_error = f"An error occurred during 1D script generation/execution: {str(e)}"
+                self.logger.error(last_error, exc_info=True)
+
+        return { "status": "error", "message": f"Failed after {self.MAX_SCRIPT_ATTEMPTS} attempts. Last error: {last_error}" }
+
+    def _run_custom_script_processing_1d(
+        self, curve_data: np.ndarray, system_info: dict, instruction: str
+    ) -> tuple[np.ndarray, str]:
+        """
+        Orchestrates the custom 1D script pipeline.
+        (This is copied from the 3D agent, but for 1D data)
+        """
+        stats = self._calculate_statistics_1d(curve_data)
+        
+        input_filename = f"input_data_1d_{os.getpid()}.npy"
+        input_data_path = os.path.join(self.output_dir, input_filename)
+        try:
+            np.save(input_data_path, curve_data)
+            self.logger.info(f"Saved 1D input data for script to: {input_data_path}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to save temporary 1D input data: {e}")
+
+        script_bundle = self._generate_and_execute_custom_script_1d(
+            stats, instruction, input_filename
+        )
+
+        if script_bundle["status"] != "success":
+            if os.path.exists(input_data_path):
+                os.remove(input_data_path)
+            raise RuntimeError(script_bundle["message"])
+        
+        final_script = script_bundle.get("final_script", "# No script was returned.")
+        script_save_path = os.path.join(self.output_dir, "custom_preprocessing_script_1d.py")
+        try:
+            with open(script_save_path, "w") as f:
+                f.write(f"# --- SciLink Auto-Generated 1D Preprocessing Script ---\n")
+                f.write(f"# Original Instruction: {instruction}\n")
+                f.write(f"# --------------------------------------------------\n\n")
+                f.write(final_script)
+            self.logger.info(f"✅ Saved final 1D script for transparency to: {script_save_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to save final 1D script: {e}")
+            script_save_path = None
+        
+        processed_data_path = os.path.join(self.output_dir, "processed_data.npy")
+        
+        if not os.path.exists(processed_data_path):
+            raise RuntimeError(f"1D script finished but did not create 'processed_data.npy'")
+
+        processed_data = np.load(processed_data_path)
+        
+        os.remove(input_data_path)
+        os.remove(processed_data_path)
+        
+        return processed_data, script_save_path

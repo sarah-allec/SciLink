@@ -453,6 +453,113 @@ Provide ONLY the complete, corrected Python script in a ```python ... ``` block.
 """
 
 
+# --- (Keep all your other prompts) ---
+
+# --- NEW PROMPT FOR 1D CURVE STRATEGY ---
+
+CURVE_PREPROCESSING_STRATEGY_INSTRUCTIONS = """
+You are an expert in 1D signal processing. Your task is to define a simple, standard preprocessing strategy for a 1D curve based on its statistics and, most importantly, the experiment type from the metadata.
+
+**Context & Definitions:**
+- **Clipping:** Setting negative Y-values to zero. This is ONLY safe for intensity spectra (like Raman, PL) where negative values are just noise.
+- **Smoothing:** Applying a simple filter (like Savitzky-Golay) to reduce high-frequency noise.
+
+**Your Task:**
+Analyze the provided statistics and `system_info` and decide on an optimal, simple strategy.
+
+**Decision Guidelines:**
+
+1.  **`apply_clip` (bool):**
+    * **Check the `system_info`:**
+        * If `technique` is 'Absorption', 'Transmission', 'Circular Dichroism', or any differential measurement, set this to `False`. These experiments have meaningful negative data.
+        * If `technique` is 'Raman', 'Photoluminescence', 'Fluorescence', or 'Intensity', it is safe to set this to `True` to remove negative noise.
+    * If `system_info` is missing or ambiguous, default to `False` to be safe.
+
+2.  **`apply_smoothing` (bool):**
+    * Set to `True` if `y_std` (Y-axis standard deviation) is high compared to the `y_p99` (signal) or if the `y_min` is very low. This suggests noisy data.
+    * If the data looks clean (low `y_std`), set to `False` to avoid over-processing.
+
+3.  **`smoothing_window` (int):**
+    * If `apply_smoothing` is `True`, a `smoothing_window` of `5` is a safe, modest default. It must be an odd integer.
+
+4.  **`reasoning` (str):**
+    * Briefly explain your choices *based on the statistics and metadata*.
+
+You MUST output a valid JSON object with these keys:
+{
+  "apply_clip": "[true/false]",
+  "apply_smoothing": "[true/false]",
+  "smoothing_window": "[integer, e.g., 5]",
+  "reasoning": "[Your string explanation]"
+}
+"""
+
+
+CUSTOM_PREPROCESSING_SCRIPT_1D_INSTRUCTIONS = """
+You are an expert in 1D signal processing with Python.
+Your task is to write a Python script to perform a custom preprocessing step on a 2-column (X, Y) curve.
+
+**Context:**
+- The script will be executed in the same directory as the data file.
+- The input data filename is: {input_filename}
+- The user's specific request is: {instruction}
+- You also have some statistics about the original data: {stats_json}
+
+**Requirements:**
+1.  **Security Restriction:** You MUST restrict your imports to the "allow-list":
+    * `numpy`
+    * `scipy` (e.g., `scipy.signal`, `scipy.interpolate`)
+    * `sklearn` (e.g., `sklearn.preprocessing`)
+    * `warnings`
+    * You are **explicitly forbidden** from importing any other libraries.
+2.  Define all logic inside a `main()` function.
+3.  **Inside `main()`, you MUST define the data path variable exactly like this:**
+    `input_data_path = "{input_filename}"`
+4.  Load the data using `data = np.load(input_data_path)`. This is a (N, 2) array.
+5.  Perform the custom processing requested using *only* the allowed libraries.
+6.  **Crucially, you MUST save one file to the current working directory:**
+    * `'processed_data.npy'`: The final, processed 2-column (N, 2) numpy array.
+7.  Print "CUSTOM_SCRIPT_SUCCESS" to stdout if everything completes.
+8.  **You MUST call the `main()` function at the end** using `if __name__ == "__main__":`.
+
+**User Request:**
+{instruction}
+
+Provide ONLY the complete Python script in a python block.
+"""
+
+CUSTOM_SCRIPT_CORRECTION_1D_INSTRUCTIONS = """
+The previous script failed to run.
+Your goal is to fix it.
+
+**Original User Request:**
+{instruction}
+
+**The Failed Script:**
+```python
+{failed_script}
+
+The Error Message (Traceback): {error_message}
+
+Your Task: Analyze the Error Message and the Failed Script to understand the bug and produce a corrected, working script.
+
+You MUST follow all original requirements in your corrected script:
+
+Security: Only import numpy, scipy, sklearn, or warnings.
+
+Input: Define the input path inside main(): input_data_path = "{input_filename}"
+
+Output: Save 'processed_data.npy' (a 2-column array).
+
+Execution: Call main() at the end using if __name__ == "__main__":.
+
+Success: Print "CUSTOM_SCRIPT_SUCCESS" just before main finishes.
+
+Provide ONLY the complete, corrected Python script in a ```python ... ``` block.
+"""
+
+
+
 SPECTROSCOPY_ANALYSIS_INSTRUCTIONS = """You are an expert system specialized in analyzing hyperspectral and spectroscopic data of materials.
 You will receive hyperspectral data along with summary images showing:
 1. Average spectrum across all spatial pixels and the pure component spectra identified by spectral unmixing
