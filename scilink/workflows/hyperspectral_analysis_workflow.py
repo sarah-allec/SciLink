@@ -27,6 +27,7 @@ class HyperspectralAnalysisWorkflow(ExperimentNoveltyAssessment):
                  measurement_recommendations: bool = False,
                  enable_human_feedback: bool = True,
                  display_agent_logs: bool = True,
+                 run_preprocessing: bool = True,
                  **analyzer_kwargs):
         """
         Initialize the Hyperspectral Novelty Assessment workflow.
@@ -60,6 +61,7 @@ class HyperspectralAnalysisWorkflow(ExperimentNoveltyAssessment):
             measurement_recommendations=measurement_recommendations,
             enable_human_feedback=enable_human_feedback,
             display_agent_logs=display_agent_logs,
+            run_preprocessing=run_preprocessing,
             # Pass specific flags and any extra kwargs for the SpectroscopyAnalyzer
             spectral_unmixing_enabled=spectral_unmixing_enabled,
             **analyzer_kwargs
