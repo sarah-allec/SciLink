@@ -95,6 +95,7 @@ class SpectroscopyAnalyzer(BaseExperimentAnalyzer):
                  local_model: str = None,
                  output_dir: str = "", spectral_unmixing_enabled: bool = True,
                  enable_human_feedback: bool = False,
+                 run_preprocessing: bool = True,
                  **kwargs):
         self.google_api_key = google_api_key
         self.analysis_model = analysis_model
@@ -117,7 +118,8 @@ class SpectroscopyAnalyzer(BaseExperimentAnalyzer):
             local_model=local_model,
             spectral_unmixing_settings=spectral_settings,
             output_dir=output_dir,
-            enable_human_feedback=enable_human_feedback
+            enable_human_feedback=enable_human_feedback,
+            run_preprocessing=run_preprocessing
         )
 
         # if kwargs:
@@ -145,12 +147,14 @@ class CurveAnalyzer(BaseExperimentAnalyzer):
     def __init__(self, google_api_key: str = None, futurehouse_api_key: str = None, 
                  analysis_model: str = "gemini-2.5-pro-preview-06-05", 
                  output_dir: str = "",
+                 run_preprocessing: bool = True,
                  **kwargs):
         self.analysis_agent = CurveFittingAgent(
             google_api_key=google_api_key,
             futurehouse_api_key=futurehouse_api_key,
             model_name=analysis_model,
             output_dir=output_dir,
+            run_preprocessing=run_preprocessing,
             **kwargs
         )
     

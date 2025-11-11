@@ -18,6 +18,7 @@ from .instruct import (
 )
 
 from .human_feedback import SimpleFeedbackMixin
+from .preprocess import HyperspectralPreprocessingAgent
 
 from atomai.stat import SpectralUnmixer
 
@@ -30,6 +31,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05", 
                  local_model: str = None,
                  spectral_unmixing_settings: dict | None = None,
+                 run_preprocessing: bool = True,
                  output_dir: str = "spectroscopy_output",
                  enable_human_feedback: bool = False):
         super().__init__(google_api_key, model_name, local_model, enable_human_feedback=enable_human_feedback)
@@ -40,11 +42,18 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             'n_components': 4,
             'normalize': True,
             'enabled': True,
-            'auto_components': True,
+            'auto_components': True
             #'max_iter': 500
         }
         self.spectral_settings = spectral_unmixing_settings if spectral_unmixing_settings else default_settings
         self.run_spectral_unmixing = self.spectral_settings.get('enabled', True)
+        self.run_preprocessing = run_preprocessing
+
+        self.preprocessor = HyperspectralPreprocessingAgent(
+            google_api_key=google_api_key,
+            model_name=model_name,
+            local_model=local_model
+        )
 
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -101,7 +110,8 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             return {}
 
     def _llm_estimate_components_from_system(self, hspy_data: np.ndarray, 
-                                           system_info: Dict[str, Any] = None) -> int:
+                                             system_info: Dict[str, Any] = None,
+                                             data_quality: Dict[str, Any] = None) -> int:
         """
         LLM estimates optimal number of components based on system description.
         """
@@ -119,8 +129,13 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             prompt_parts.append(f"Data statistics:")
             prompt_parts.append(f"- Mean intensity: {np.mean(hspy_data):.3f}")
             prompt_parts.append(f"- Intensity range: {np.min(hspy_data):.3f} to {np.max(hspy_data):.3f}")
-            prompt_parts.append(f"- Signal-to-noise estimate: {np.mean(hspy_data) / np.std(hspy_data):.2f}")
-            
+            if data_quality:
+                prompt_parts.append("\n--- Data Quality Assessment (from Preprocessor) ---")
+                prompt_parts.append(f"- Robust SNR Estimate: {data_quality.get('snr_estimate', 'N/A'):.2f}")
+                prompt_parts.append(f"- Assessment: {data_quality.get('reasoning', 'No assessment provided.')}")
+            else:
+                prompt_parts.append("\n--- Data Quality Assessment ---")
+                prompt_parts.append("- No preprocessing assessment was provided (e.g., preprocessing disabled).")
             # Add system information
             if system_info:
                 prompt_parts.append("\n\n--- System Information ---")
@@ -290,7 +305,10 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             self.logger.error(f"LLM final component selection failed: {e}", exc_info=True)
             return initial_estimate # Fallback
 
-    def _llm_guided_component_workflow(self, hspy_data: np.ndarray, system_info: dict = None) -> tuple[int, np.ndarray, np.ndarray]:
+    def _llm_guided_component_workflow(self, 
+                                       hspy_data: np.ndarray, 
+                                       system_info: dict = None,
+                                       data_quality: Dict[str, Any] = None) -> tuple[int, np.ndarray, np.ndarray]:
         """
         LLM-guided component optimization using reconstruction error elbow plot and visual inspection.
         1. LLM estimates initial optimal components.
@@ -308,7 +326,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         }
 
         # --- Step 1: LLM initial estimate ---
-        initial_estimate = self._llm_estimate_components_from_system(hspy_data, system_info)
+        initial_estimate = self._llm_estimate_components_from_system(hspy_data, system_info, data_quality)
         reasoning_log["initial_estimate"] = initial_estimate
         print(f"  💡 LLM suggests initial estimate: {initial_estimate} components")
         step1_data = {
@@ -446,7 +464,10 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
         return final_n_components, final_components, final_abundance_maps
 
-    def _perform_spectral_unmixing(self, hspy_data: np.ndarray, system_info: Dict[str, Any] = None) -> Tuple[np.ndarray, np.ndarray]:
+    def _perform_spectral_unmixing(self,
+                                   hspy_data: np.ndarray,
+                                   system_info: Dict[str, Any] = None,
+                                   data_quality: Dict[str, Any] = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Perform spectral unmixing using the complete LLM-guided workflow.
         """
@@ -456,7 +477,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             if self.spectral_settings.get('auto_components', True):
                 # Use complete LLM-guided workflow
                 final_n_components, components, abundance_maps = self._llm_guided_component_workflow(
-                    hspy_data, system_info
+                    hspy_data, system_info, data_quality
                 )
                 return components, abundance_maps
             else:
@@ -695,6 +716,20 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         analysis_desc = "claims generation" if analysis_type == "claims" else "analysis"
         self.logger.info(f"Loading hyperspectral data for {analysis_desc}: {data_path}")
         hspy_data = self._load_hyperspectral_data(data_path)
+
+        if self.run_preprocessing:
+            if self.preprocessor:
+                self.logger.info("--- Starting LLM-guided preprocessing ---")
+                # The preprocessor runs, cleans the data, and returns the cleaned cube
+                hspy_data, applied_mask, data_quality = self.preprocessor.run_preprocessing(hspy_data, system_info)
+                # We get the applied_mask back in case we want to visualize it later
+                self.logger.info("--- Preprocessing complete, proceeding with analysis ---")
+            else:
+                self.logger.warning("Preprocessing is enabled but preprocessor agent failed to initialize. Skipping.")
+                data_quality = None
+        else:
+            self.logger.info("Preprocessing is disabled. Analyzing raw data.")
+            data_quality = None
         
         components = None
         abundance_maps = None
@@ -702,7 +737,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         # Perform spectral unmixing if enabled
         if self.run_spectral_unmixing:
             self.logger.info(f"Performing spectral unmixing for {analysis_desc}...")
-            components, abundance_maps = self._perform_spectral_unmixing(hspy_data, system_info)
+            components, abundance_maps = self._perform_spectral_unmixing(hspy_data, system_info, data_quality)
         
         # Create component-abundance pairs for final analysis
         component_pair_images = []
@@ -1052,32 +1087,35 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             json.dump(reasoning_log, f, indent=2)
         
         # 2. Create clean final results plot
+        import matplotlib.gridspec as gridspec
+
+        # Create figure
         fig = plt.figure(figsize=(16, 10))
-        
-        # Top section: Component spectra
-        ax_spectra = plt.subplot(2, 1, 1)
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1.5], hspace=0.3)
+
+        # Top: Spectra
+        ax_spectra = fig.add_subplot(gs[0])
         for i in range(final_n_components):
-            plt.plot(energy_axis, components[i], label=f'Component {i+1}', linewidth=2)
-        plt.title(f'Final Spectral Components (n={final_n_components})')
-        plt.xlabel(xlabel)
-        plt.ylabel('Intensity')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Bottom section: Abundance maps with proper grid
+            ax_spectra.plot(energy_axis, components[i], label=f'Component {i+1}', linewidth=2)
+        ax_spectra.set_title(f'Final Spectral Components (n={final_n_components})')
+        ax_spectra.set_xlabel(xlabel)
+        ax_spectra.set_ylabel('Intensity')
+        ax_spectra.legend()
+        ax_spectra.grid(True, alpha=0.3)
+
+        # Bottom: Abundance maps in proper grid
         n_cols = min(4, final_n_components)
         n_rows = (final_n_components + n_cols - 1) // n_cols
-        
-        # Create abundance map subplots
+        gs_bottom = gridspec.GridSpecFromSubplotSpec(n_rows, n_cols, subplot_spec=gs[1])
+
         for i in range(final_n_components):
             row = i // n_cols
             col = i % n_cols
-            ax = plt.subplot(2 * n_rows, n_cols, n_cols + row * n_cols + col + 1)
-            im = plt.imshow(abundance_maps[..., i], cmap='viridis')
-            plt.title(f'Component {i+1}')
-            plt.colorbar(im, fraction=0.046, pad=0.04)
-            plt.axis('off')
-        plt.tight_layout()
+            ax = fig.add_subplot(gs_bottom[row, col])
+            im = ax.imshow(abundance_maps[..., i], cmap='viridis')
+            ax.set_title(f'Component {i+1}')
+            ax.axis('off')
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         
         # Save final results plot
         results_file = f"final_results_{timestamp}.png"

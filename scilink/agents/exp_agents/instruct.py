@@ -338,7 +338,249 @@ Provide your response ONLY as a valid JSON object containing the keys "window_si
 
 """
 
+PRE_PROCESSING_STRATEGY_INSTRUCTIONS = """You are an expert spectroscopist. Your task is to define a pre-processing strategy for a hyperspectral dataset based on its statistics.
 
+**Context & Definitions:**
+- **Despiking:** Removing extremely high-intensity pixels (e.g., cosmic rays) using a median filter. This is for true outliers, not just the bright part of the signal.
+- **Masking:** Removing *near-zero* background pixels (e.g., detector noise) to focus on the real signal. A non-zero, flat baseline is often a 'substrate' and should typically be kept as part of the signal.
+
+**Your Task:**
+Analyze the provided statistics and decide on an optimal strategy.
+
+**Decision Guidelines:**
+These are heuristics, not rigid rules. Use your expert judgment to synthesize these statistics *and* the `system_info` to make a final decision.
+
+1.  **`apply_despike` (bool):**
+    * Consider setting to `True` if `Data Max` appears to be an extreme outlier (e.g., many times larger than the `99.9th Percentile`). This suggests spikes (like cosmic rays) are present.
+    * If `Data Max` is close to the `99.9th Percentile`, the data is likely just skewed, and despiking may be unnecessary.
+
+2.  **`despike_kernel_size` (int):**
+    * If `apply_despike` is `True`, a `despike_kernel_size` of `3` is a safe and standard choice.
+
+3.  **`apply_masking` (bool):**
+    * **Default to `False`.** Masking is a destructive step and should be avoided unless absolutely necessary.
+    * **Only set to `True`** if there is *clear and unambiguous* evidence of a true, near-zero background (like detector noise). The *only* reliable indicator for this is a **`50th Percentile (Median)` that is very close to zero.**
+    * If the `50th Percentile` is **significantly non-zero** (like 0.1), this is a substrate and **must not be masked**. Set `apply_masking` to `False`.
+    * (Note: The `Data Max` or `Data Min` values are handled by despiking/clipping and are not a reason to enable masking.)
+
+4.  **`mask_threshold_percentile` (float):**
+    * This percentile removes the dimmest part of the *signal*, not the absolute background.
+    * A robust default is often around `5.0` (removes the dimmest 5% of signal).
+    * You can adjust this based on the statistics:
+        * For *very clean data* (e.g., `1st Percentile` is close to the median), you might use a *lower* percentile (e.g., 1.0-2.0).
+        * For *very noisy data* (e.g., a high `Data Std` relative to `Data Mean`), you might use a *higher* percentile (e.g., 10.0-15.0) to be more aggressive in removing the noisy baseline.
+
+5.  **`reasoning` (str):**
+    * Briefly explain your choices *based on the statistics and context*.
+
+You MUST output a valid JSON object with these keys:
+{
+  "apply_despike": "[true/false]",
+  "despike_kernel_size": "[integer, e.g., 3]",
+  "apply_masking": "[true/false]",
+  "mask_threshold_percentile": "[float, e.g., 5.0]",
+  "reasoning": "[Your string explanation]"
+}
+"""
+
+
+CUSTOM_PREPROCESSING_SCRIPT_INSTRUCTIONS = """
+You are an expert in hyperspectral data processing with Python.
+Your task is to write a Python script to perform a custom preprocessing step.
+
+**Context:**
+- The script will be executed in the same directory as the data file.
+- The input data filename is: {input_filename}
+- The user's specific request is: {instruction}
+- You also have some statistics about the original data: {stats_json}
+
+**Requirements:**
+1.  **Security Restriction:** You MUST restrict your imports to the "allow-list":
+    * `numpy`
+    * `scipy` (e.g., `scipy.ndimage`, `scipy.signal`)
+    * `sklearn` (e.g., `sklearn.decomposition`, `sklearn.preprocessing`)
+    * `warnings`
+    * You are **explicitly forbidden** from importing any other libraries.
+2.  Define all logic inside a `main()` function.
+3.  **Inside `main()`, you MUST define the data path variable exactly like this:**
+    `input_data_path = "{input_filename}"`
+4.  Load the data using `data = np.load(input_data_path)`.
+5.  Perform the custom processing requested using *only* the allowed libraries.
+6.  **Crucially, you MUST save two files to the current working directory:**
+    * `'processed_data.npy'`: The final, processed 3D numpy array.
+    * `'mask_2d.npy'`: A 2D boolean numpy array. If no mask is generated, save `np.ones(data.shape[:2], dtype=bool)`.
+7.  Print "CUSTOM_SCRIPT_SUCCESS" to stdout if everything completes.
+8.  **You MUST call the `main()` function at the end of the script** using:
+    ```python
+    if __name__ == "__main__":
+        main()
+    ```
+
+**User Request:**
+{instruction}
+
+Provide ONLY the complete Python script inside a ```python ... ``` block.
+"""
+
+CUSTOM_SCRIPT_CORRECTION_INSTRUCTIONS = """
+The previous script failed to run.
+Your goal is to fix it.
+
+**Original User Request:**
+{instruction}
+
+**The Failed Script:**
+```python
+{failed_script}
+
+The Error Message (Traceback): {error_message}
+
+Your Task: Analyze the Error Message and the Failed Script to understand the bug and produce a corrected, working script.
+
+You MUST follow all original requirements in your corrected script:
+
+Security: Only import numpy, scipy, sklearn, or warnings.
+
+Input: Define the input path inside main(): input_data_path = "{input_filename}"
+
+Output: Save 'processed_data.npy' (3D array) and 'mask_2d.npy' (2D bool array).
+
+Execution: Call main() at the end using if __name__ == "__main__":.
+
+Success: Print "CUSTOM_SCRIPT_SUCCESS" just before main finishes.
+
+Provide ONLY the complete, corrected Python script in a ```python ... ``` block. 
+"""
+
+
+# --- (Keep all your other prompts) ---
+
+# --- NEW PROMPT FOR 1D CURVE STRATEGY ---
+
+CURVE_PREPROCESSING_STRATEGY_INSTRUCTIONS = """
+You are an expert in 1D signal processing. Your task is to define a simple, standard preprocessing strategy for a 1D curve based on its statistics and, most importantly, the experiment type from the metadata.
+
+**Context & Definitions:**
+- **Clipping:** Setting negative Y-values to zero. This is ONLY safe for intensity spectra (like Raman, PL) where negative values are just noise.
+- **Smoothing:** Applying a simple filter (like Savitzky-Golay) to reduce high-frequency noise.
+
+**Your Task:**
+Analyze the provided statistics and `system_info` and decide on an optimal, simple strategy.
+
+**Decision Guidelines:**
+
+1.  **`apply_clip` (bool):**
+    * **Check the `system_info`:**
+        * If `technique` is 'Absorption', 'Transmission', 'Circular Dichroism', or any differential measurement, set this to `False`. These experiments have meaningful negative data.
+        * If `technique` is 'Raman', 'Photoluminescence', 'Fluorescence', or 'Intensity', it is safe to set this to `True` to remove negative noise.
+    * If `system_info` is missing or ambiguous, default to `False` to be safe.
+
+2.  **`apply_smoothing` (bool):**
+    * Set to `True` if `y_std` (Y-axis standard deviation) is high compared to the `y_p99` (signal) or if the `y_min` is very low. This suggests noisy data.
+    * If the data looks clean (low `y_std`), set to `False` to avoid over-processing.
+
+3.  **`smoothing_window` (int):**
+    * If `apply_smoothing` is `True`, a `smoothing_window` of `5` is a safe, modest default. It must be an odd integer.
+
+4.  **`reasoning` (str):**
+    * Briefly explain your choices *based on the statistics and metadata*.
+
+You MUST output a valid JSON object with these keys:
+{
+  "apply_clip": "[true/false]",
+  "apply_smoothing": "[true/false]",
+  "smoothing_window": "[integer, e.g., 5]",
+  "reasoning": "[Your string explanation]"
+}
+"""
+
+
+CUSTOM_PREPROCESSING_SCRIPT_1D_INSTRUCTIONS = """
+You are an expert in 1D signal processing with Python.
+Your task is to write a Python script to perform a custom preprocessing step on a 2-column (X, Y) curve.
+
+**Context:**
+- The script will be executed in the same directory as the data file.
+- The input data filename is: {input_filename}
+- The user's specific request is: {instruction}
+- You also have some statistics about the original data: {stats_json}
+
+**Requirements:**
+1.  **Security Restriction:** You MUST restrict your imports to the "allow-list":
+    * `numpy`
+    * `scipy` (e.g., `scipy.signal`, `scipy.interpolate`)
+    * `sklearn` (e.g., `sklearn.preprocessing`)
+    * `warnings`
+    * You are **explicitly forbidden** from importing any other libraries.
+2.  Define all logic inside a `main()` function.
+3.  **Inside `main()`, you MUST define the data path variable exactly like this:**
+    `input_data_path = "{input_filename}"`
+4.  Load the data using `data = np.load(input_data_path)`. This is a (N, 2) array.
+5.  Perform the custom processing requested using *only* the allowed libraries.
+6.  **Crucially, you MUST save one file to the current working directory:**
+    * `'processed_data.npy'`: The final, processed 2-column (N, 2) numpy array.
+7.  Print "CUSTOM_SCRIPT_SUCCESS" to stdout if everything completes.
+8.  **You MUST call the `main()` function at the end** using `if __name__ == "__main__":`.
+
+**User Request:**
+{instruction}
+
+Provide ONLY the complete Python script in a python block.
+"""
+
+CUSTOM_SCRIPT_CORRECTION_1D_INSTRUCTIONS = """
+The previous script failed to run.
+Your goal is to fix it.
+
+**Original User Request:**
+{instruction}
+
+**The Failed Script:**
+```python
+{failed_script}
+
+The Error Message (Traceback): {error_message}
+
+Your Task: Analyze the Error Message and the Failed Script to understand the bug and produce a corrected, working script.
+
+You MUST follow all original requirements in your corrected script:
+
+Security: Only import numpy, scipy, sklearn, or warnings.
+
+Input: Define the input path inside main(): input_data_path = "{input_filename}"
+
+Output: Save 'processed_data.npy' (a 2-column array).
+
+Execution: Call main() at the end using if __name__ == "__main__":.
+
+Success: Print "CUSTOM_SCRIPT_SUCCESS" just before main finishes.
+
+Provide ONLY the complete, corrected Python script in a ```python ... ``` block.
+"""
+
+
+PREPROCESSING_QUALITY_ASSESSMENT_INSTRUCTIONS = """
+You are an expert in signal processing. Your task is to validate a preprocessing step.
+
+You will be given:
+1.  A plot of the **Raw Data**.
+2.  A plot of the **Processed Data** (the output of the script).
+3.  The original **User Instruction** given to the script.
+
+Your Job:
+Compare the "Raw Data" plot to the "Processed Data" plot. Did the script successfully follow the "User Instruction"?
+
+-   **If the instruction was to "remove a baseline"**: Is the baseline gone?
+-   **If the instruction was to "remove spikes"**: Are the spikes gone?
+-   **Critically**: Did the script *also* damage the signal (e.g., flatten peaks, remove good data)?
+
+You MUST output a valid JSON object with these keys:
+{
+  "is_good_preprocessing": "[true/false]",
+  "critique": "[Your brief reasoning for why it succeeded or failed.]",
+  "suggestion": "[If it failed, a brief suggestion for a *different approach* (e.g., 'Use a polynomial baseline instead of ALS', 'Use a median filter instead of clipping').]"
+}
+"""
 
 
 SPECTROSCOPY_ANALYSIS_INSTRUCTIONS = """You are an expert system specialized in analyzing hyperspectral and spectroscopic data of materials.

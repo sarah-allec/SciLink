@@ -24,6 +24,7 @@ class Spectroscopy1DAnalysisWorkflow(ExperimentNoveltyAssessment):
                  measurement_recommendations: bool = False,
                  enable_human_feedback: bool = True,
                  display_agent_logs: bool = True,
+                 run_preprocessing: bool = True,
                  **analyzer_kwargs):
         """
         Initialize the 1D Spectroscopy Novelty Assessment workflow.
@@ -55,6 +56,7 @@ class Spectroscopy1DAnalysisWorkflow(ExperimentNoveltyAssessment):
             measurement_recommendations=measurement_recommendations,
             enable_human_feedback=enable_human_feedback,
             display_agent_logs=display_agent_logs,
+            run_preprocessing=run_preprocessing,
             # Pass any extra kwargs specific to the CurveAnalyzer (which handles CurveFittingAgent)
             **analyzer_kwargs
         )

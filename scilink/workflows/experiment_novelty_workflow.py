@@ -99,6 +99,7 @@ class ExperimentNoveltyAssessment:
                  measurement_recommendations: bool = False,
                  enable_human_feedback: bool = True,
                  display_agent_logs: bool = True,
+                 run_preprocessing: bool = True,
                  **analyzer_kwargs):
         """
         Initialize the unified experiment novelty assessment workflow.
@@ -167,6 +168,7 @@ class ExperimentNoveltyAssessment:
             local_model=local_model,
             output_dir=str(self.output_dir),
             enable_human_feedback=enable_human_feedback,
+            run_preprocessing=run_preprocessing,
             **analyzer_kwargs
         )
         

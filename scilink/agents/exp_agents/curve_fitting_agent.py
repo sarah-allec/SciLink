@@ -19,6 +19,8 @@ from .instruct import (
     FITTING_MODEL_CORRECTION_INSTRUCTIONS,
     CURVE_FITTING_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
 )
+from .preprocess import CurvePreprocessingAgent
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
     def __init__(self, google_api_key: str = None, futurehouse_api_key: str = None, 
                  model_name: str = "gemini-2.5-pro-preview-06-05", local_model: str = None, 
+                 run_preprocessing: bool = True,
                  enable_human_feedback: bool = True, executor_timeout: int = 60, 
                  output_dir: str = "curve_analysis_output", max_wait_time: int = 600, **kwargs):
         super().__init__(google_api_key, model_name, local_model, enable_human_feedback=enable_human_feedback)
@@ -39,6 +42,18 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         self.output_dir = output_dir
         self.literature_agent = None
         effective_api_key = futurehouse_api_key or os.getenv("FUTUREHOUSE_API_KEY")
+
+        self.run_preprocessing = run_preprocessing
+        if self.run_preprocessing: 
+            self.preprocessor = CurvePreprocessingAgent(
+                google_api_key=google_api_key, 
+                model_name=model_name, 
+                local_model=local_model,
+                output_dir=os.path.join(self.output_dir, "preprocessing"),
+                executor_timeout=executor_timeout
+            )
+        else:
+            self.preprocessor = None
 
         if effective_api_key:
             try:
@@ -276,11 +291,48 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
     def analyze_for_claims(self, data_path: str, system_info: dict = None, **kwargs) -> dict:
         self.logger.info(f"Starting advanced curve analysis with fitting for: {data_path}")
+
+        # This will be the path to the data the fitter *actually* uses.
+        # Default to the original input path.
+        fit_data_path = data_path
+        
+        # This is the temp file path, only used if preprocessing runs.
+        processed_data_path = os.path.join(self.output_dir, "preprocessed_curve_data.npy") 
+
         try:
-            # Step 0: Load Data and Visualize
+            # Step 0: Load Original Data
             curve_data = self._load_curve_data(data_path)
             system_info = self._handle_system_info(system_info)
-            original_plot_bytes = self._plot_curve(curve_data, system_info, " (Original Data)")
+            plot_title = " (Raw Data)" # Default plot title
+
+            # --- PREPROCESSING STEP ---
+            # Check the flag from __init__
+            if self.run_preprocessing and self.preprocessor:
+                self.logger.info("--- Running Preprocessing Step ---")
+                
+                # Run the preprocessing agent
+                curve_data, prep_quality = self.preprocessor.run_preprocessing(curve_data, system_info)
+                self.logger.info("Preprocessing complete.")
+                
+                # Save the processed data
+                try:
+                    np.save(processed_data_path, curve_data)
+                    self.logger.info(f"Saved preprocessed data for script to: {processed_data_path}")
+                    fit_data_path = processed_data_path # Point the fitter to the new file
+                    plot_title = " (Processed Data)" # Update plot title
+                except Exception as e:
+                    self.logger.error(f"Failed to save temporary processed data: {e}. Fitting will use original data.", exc_info=True)
+                    # fit_data_path remains the original data_path
+                    # curve_data remains the processed data (for plotting)
+            
+            else:
+                self.logger.info("--- Skipping Preprocessing Step ---")
+                # curve_data is the original (raw) data
+                # fit_data_path is the original (raw) data_path
+
+            # Step 1: Visualize the data
+            # This plots the in-memory curve_data (processed or raw)
+            original_plot_bytes = self._plot_curve(curve_data, system_info, plot_title)
 
             # Initialize fallback values in case literature agent is missing or fails
             lit_query = "N/A (Literature agent not available)"
@@ -289,42 +341,29 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
             # Step 1: Search Literature (Conditional)
             print(f"\n🤖 -------------------- ANALYSIS AGENT STEP: LITERATURE SEARCH -------------------- 🤖")
-            if self.literature_agent: # Check if the literature agent was successfully initialized
+            if self.literature_agent:
                 try:
-                    # Attempt to generate the search query using the LLM
                     lit_query = self._generate_lit_search_query(original_plot_bytes, system_info)
-
-                    # Perform the literature search using the generated query
                     lit_result = self.literature_agent.query_for_models(lit_query)
 
-                    # Check if the literature search was successful
                     if lit_result["status"] == "success":
-                        literature_context = lit_result["formatted_answer"] # Use the successful search result
+                        literature_context = lit_result["formatted_answer"]
                         print("✅ Literature search successful.")
-                        # Save the query and the successful report
                         saved_lit_files = self._save_literature_step_results(lit_query, literature_context)
                     else:
-                        # Handle cases where the literature agent reported a failure
                         warning_message = f"Literature search failed ({lit_result['message']}). Falling back to LLM's internal knowledge."
                         self.logger.warning(warning_message)
                         print(f"⚠️  {warning_message}")
-                        # Use the fallback context message
                         literature_context = "The external literature search failed. Fall back to your internal knowledge to propose a suitable physical fitting model."
-                        # Save the query and the failure context/message
                         saved_lit_files = self._save_literature_step_results(lit_query, f"Search Failed: {lit_result['message']}\n\nFallback context:\n{literature_context}")
 
                 except Exception as lit_e:
-                    # Catch any other exceptions during query generation or the API call
                     logger.error(f"Error during literature search step: {lit_e}", exc_info=True)
                     print(f"⚠️ Error during literature search: {lit_e}. Falling back to LLM's internal knowledge.")
-                    # Use a fallback context indicating an error occurred
                     literature_context = "An error occurred during the literature search. Fall back to your internal knowledge to propose a suitable physical fitting model."
-                    # Save the query (if generated) and the error context
                     saved_lit_files = self._save_literature_step_results(lit_query, f"Error during search:\n{lit_e}\n\nFallback context:\n{literature_context}")
             else:
-                # This block executes if self.literature_agent is None (key wasn't provided/valid)
                 print("⚠️ Literature agent not available. Using LLM's internal knowledge.")
-                # Save the initial 'not available' context and the placeholder query
                 saved_lit_files = self._save_literature_step_results(lit_query, literature_context)
 
             fitting_script = None
@@ -334,15 +373,14 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             for model_attempt in range(1, self.MAX_MODEL_ATTEMPTS + 1):
                 print(f"\n🤖 MODELING ATTEMPT {model_attempt}/{self.MAX_MODEL_ATTEMPTS}")
                 
-                # Step 2 & 3: Generate and Execute Script (with code-level retry)
                 if model_attempt > 1:
-                    # On subsequent attempts, the 'literature_context' has been updated with the critique
                     print(f"\n🤖 --- STEP: GENERATING CORRECTED SCRIPT (from Fit Critique) --- 🤖")
                 else:
                     print(f"\n🤖 --- STEP: SCRIPT GENERATION & EXECUTION (from Literature) --- 🤖")
                 
+                # Pass the correct file path (processed or raw) to the script generator
                 script_execution_bundle = self._generate_and_execute_fitting_script_with_retry(
-                    curve_data, literature_context, data_path
+                    curve_data, literature_context, fit_data_path 
                 )
                 
                 if script_execution_bundle["status"] != "success":
@@ -361,14 +399,12 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
                 is_good_fit_flag = assessment.get("is_good_fit")
 
-                # This now correctly checks for the boolean True OR the string "true"
                 if is_good_fit_flag is True or str(is_good_fit_flag).lower() == 'true':
                     print("✅ Fit quality is acceptable. Proceeding to final interpretation.")
-                    break  # Exit the model refinement loop
+                    break
                 
                 elif model_attempt < self.MAX_MODEL_ATTEMPTS:
                     print("⚠️ Fit quality is unacceptable. Attempting to correct the model.")
-                    # Update the context for the next attempt with the critique
                     literature_context += (
                         f"\n\n--- CRITIQUE OF ATTEMPT {model_attempt} ---\n"
                         f"Critique: {assessment['critique']}\n"
@@ -424,6 +460,15 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         except Exception as e:
             self.logger.exception(f"Curve analysis failed: {e}")
             return {"status": "error", "message": str(e)}
+
+        finally:
+            # Always check for the temp file and remove it if it exists.
+            if os.path.exists(processed_data_path):
+                try:
+                    os.remove(processed_data_path)
+                    self.logger.debug(f"Cleaned up temporary file: {processed_data_path}")
+                except Exception as e:
+                    self.logger.warning(f"Could not clean up temp file {processed_data_path}: {e}")
 
     def _get_claims_instruction_prompt(self) -> str:
         return FITTING_RESULTS_INTERPRETATION_INSTRUCTIONS
