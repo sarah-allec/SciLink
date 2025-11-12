@@ -41,7 +41,7 @@ class OrchestratorAgent:
                     google_api_key = get_api_key('google')
                     if not google_api_key:
                         raise APIKeyNotFoundError('google')
-                model_name = 'gemini-2.5-pro-birthright'# This is hard-coded, which will be a problem in the future: the calling of **some** agents uses hard-coded model names. A dict being passed from the outmost API or a config file would work better.
+                #model_name = 'gemini-2.5-pro-birthright'# This is hard-coded, which will be a problem in the future: the calling of **some** agents uses hard-coded model names. A dict being passed from the outmost API or a config file would work better.
                 self.model = OpenAIAsGenerativeModel(model_name, api_key = google_api_key, base_url= local_model) #This not google API key but API key
                 self.generation_config = None
                 self.safety_settings = None
