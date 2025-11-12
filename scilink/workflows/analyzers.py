@@ -51,7 +51,11 @@ class MicroscopyAnalyzer(BaseExperimentAnalyzer):
             logging.info(f"Using manually selected agent: {AGENT_MAP[selected_agent_id].__name__}")
         else:
             logging.info("Using orchestrator to select the best analysis agent...")
-            orchestrator = OrchestratorAgent(google_api_key=self.google_api_key, local_model = self.local_model)
+            orchestrator = OrchestratorAgent(
+                google_api_key=self.google_api_key,
+                model_name=self.analysis_model,
+                local_model = self.local_model
+            )
             selected_agent_id, reasoning = orchestrator.select_agent(
                 data_type="microscopy",
                 system_info=system_info,
