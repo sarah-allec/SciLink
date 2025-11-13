@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scilink"
-version = "0.0.6"
+version = "0.0.7"
 authors = [
   { name="SciLink Team", email="maxim.ziatdinov@gmail.com" },
 ]
@@ -32,7 +32,7 @@ keywords = [
 dependencies = [
     "google-generativeai>=0.8.5",
     "atomai>=0.8.1",
-    "futurehouse-client>=0.3.19",
+    "edison-client>=0.7.6",
     "ase>=0.8.5",
     "aimsgb>=1.1.1",
     "gdown>=5.2.0",
