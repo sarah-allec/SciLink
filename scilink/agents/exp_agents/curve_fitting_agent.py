@@ -36,7 +36,7 @@ class CurveFittingAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                  model_name: str = "gemini-2.5-pro-preview-06-05", local_model: str = None, 
                  run_preprocessing: bool = True,
                  enable_human_feedback: bool = True, executor_timeout: int = 60, 
-                 output_dir: str = "curve_analysis_output", max_wait_time: int = 600, **kwargs):
+                 output_dir: str = "curve_analysis_output", max_wait_time: int = 1000, **kwargs):
         super().__init__(google_api_key, model_name, local_model, enable_human_feedback=enable_human_feedback)
         self.executor = ScriptExecutor(timeout=executor_timeout, enforce_sandbox=False)
         self.output_dir = output_dir

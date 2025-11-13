@@ -4,15 +4,15 @@ import json
 from time import sleep
 
 try:
-    from futurehouse_client import FutureHouseClient, JobNames
+    from edison_client import EdisonClient, JobNames
 except ImportError:
-    logging.error("Error: futurehouse_client is not installed. Please install it with pip.")
+    logging.error("Error: edison_client is not installed. Please install it with 'pip install edison-client'")
     raise
 
 class OwlLiteratureAgent:
     """
     Agent for querying scientific literature using the OWL system
-    through the FutureHouse API client.
+    through the FutureHouse (now knon as Edison) API client.
     """
 
     def __init__(self, api_key: str | None = None, max_wait_time: int = 300):
@@ -20,7 +20,7 @@ class OwlLiteratureAgent:
         Initialize the OWL literature agent.
         
         Args:
-            api_key: FutureHouse API key
+            api_key: FutureHouse (Edison) API key
             max_wait_time: Maximum time to wait for response in seconds
         """
         if api_key is None:
@@ -28,7 +28,7 @@ class OwlLiteratureAgent:
         if not api_key:
             raise ValueError("API key not provided and FUTUREHOUSE_API_KEY environment variable is not set.")
         
-        self.client = FutureHouseClient(api_key=api_key)
+        self.client = EdisonClient(api_key=api_key)
         self.max_wait_time = max_wait_time
         logging.info("OWLLiteratureAgent initialized with max wait time of %d seconds.", max_wait_time)
 
@@ -52,7 +52,7 @@ class OwlLiteratureAgent:
             
             # Create the task in OWL
             task_data = {
-                "name": JobNames.OWL,
+                "name": JobNames.PRECEDENT,
                 "query": has_anyone_question
             }
             
@@ -132,7 +132,7 @@ class IncarLiteratureAgent:
         if not api_key:
             raise ValueError("API key required")
         
-        self.client = FutureHouseClient(api_key=api_key)
+        self.client = EdisonClient(api_key=api_key)
         self.max_wait_time = max_wait_time
         self.logger = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ class IncarLiteratureAgent:
 
         try:
             # Submit to CROW
-            task_data = {"name": JobNames.CROW, "query": query}
+            task_data = {"name": JobNames.LITERATURE, "query": query}
             task_id = self.client.create_task(task_data)
             
             # Wait for completion
@@ -223,7 +223,7 @@ class FittingModelLiteratureAgent:
         if not api_key:
             raise ValueError("API key not provided and FUTUREHOUSE_API_KEY env variable is not set.")
         
-        self.client = FutureHouseClient(api_key=api_key)
+        self.client = EdisonClient(api_key=api_key)
         self.max_wait_time = max_wait_time
         self.logger = logging.getLogger(__name__)
         logging.info("FittingModelLiteratureAgent initialized to use CROW.")
@@ -242,7 +242,7 @@ class FittingModelLiteratureAgent:
         
         try:
             # Submit to CROW
-            task_data = {"name": JobNames.CROW, "query": search_query}
+            task_data = {"name": JobNames.LITERATURE, "query": search_query}
             task_id = self.client.create_task(task_data)
             
             # Wait for completion using the correct polling pattern
