@@ -17,7 +17,7 @@ class SimpleFeedbackCollector:
         claims = analysis_result.get("scientific_claims", [])
         
         print("\n" + "="*80)
-        print("🔬 ANALYSIS RESULTS")
+        print("🤖 AGENT's ANALYSIS RESULTS")
         print("="*80)
         
         # Display detailed analysis
