@@ -46,15 +46,10 @@ from .instruct import (
 MICROSCOPY_PIPELINE_REGISTRY = {
     'general': {
         'description': (
-            'Use for standard microstructure analysis (grains, phases, etc.) where atoms are not resolved. '
-            'Also use this agent when the image is dominated by **large-scale disorder**, '
-            'making direct atom-finding unreliable or less informative. '
-            'Examples of such disorder include: i) Large amorphous (non-crystalline) regions, '
-            'ii) Numerous small, disconnected, and poorly-ordered crystalline flakes, '
-            'iii) Extreme noise levels that obscure the atomic lattice.'
-            '**For STM images:** Also use this agent if the image shows large variations '
-            'in electronic contrast (LDOS) that are not simple atomic differences, '
-            'as an FFT-based analysis is more suitable for identifying the periodicities in such patterns.'
+            'Standard microstructure analysis using FFT and NMF decomposition. '
+            'Use for images where atoms are NOT individually resolved, OR for atomic-resolution '
+            'images that are severely disordered (amorphous, very noisy, fragmented). '
+            'Analyzes grains, phases, domains, and periodic structures at the meso-scale.'
         ),
         'factory': create_fftnmf_pipeline,
         'prompts': {
