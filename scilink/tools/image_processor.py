@@ -160,3 +160,112 @@ def calculate_global_fft(image_array: np.ndarray, save_path: str | None = None) 
     except Exception as e:
         logger.error(f"   (Tool Info: ❌ Global FFT calculation failed: {e})")
         raise # Re-raise the exception for the controller to catch
+
+
+def create_multi_abundance_overlays(structure_image: np.ndarray,
+                                    abundance_maps: np.ndarray,
+                                    threshold_percentile: float = 80.0,
+                                    alpha: float = 0.6,
+                                    use_simple_colors: bool = True) -> bytes:
+    """
+    Create overlays for all NMF components in a single image for LLM analysis.
+    
+    Args:
+        structure_image: 2D grayscale structure image
+        abundance_maps: 3D array (height, width, n_components)
+        threshold_percentile: Show pixels above this percentile
+        alpha: Transparency of overlays
+        use_simple_colors: If True, use solid colors; if False, use intensity gradients
+    
+    Returns:
+        Image bytes showing structural image + all component overlays
+    """
+    n_components = abundance_maps.shape[2]
+    
+    if use_simple_colors:
+        # Simple solid colors - easier to distinguish, unlimited components
+        colors = ['red', 'blue', 'green', 'purple', 'orange', 'cyan', 'magenta', 'yellow']
+        # Generate more colors if needed
+        while len(colors) < n_components:
+            colors.extend(['darkred', 'darkblue', 'darkgreen', 'indigo', 'brown', 'pink'])
+    else:
+        # Traditional colormaps with intensity gradients
+        colormaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Oranges', 'plasma', 'viridis', 'inferno']
+    
+    # Calculate grid layout: +1 for original structure image
+    total_plots = n_components + 1
+    cols = min(4, total_plots)  # Max 4 columns for readability
+    rows = (total_plots + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.5, rows * 3.5))
+    if rows == 1 and cols == 1:
+        axes = [axes]
+    elif rows == 1 or cols == 1:
+        axes = axes.flatten()
+    else:
+        axes = axes.flatten()
+    
+    # Normalize structure image
+    struct_norm = (structure_image - structure_image.min()) / (structure_image.max() - structure_image.min())
+    
+    # Plot 1: Original structural image
+    axes[0].imshow(struct_norm, cmap='gray', aspect='equal')
+    axes[0].set_title('Original Structure\n(Reference)', fontweight='bold', fontsize=14)
+    axes[0].axis('off')
+    
+    # Plot 2+: Component overlays
+    for i in range(n_components):
+        ax_idx = i + 1  # Offset by 1 for the structure image
+        abundance_map = abundance_maps[..., i]
+        
+        # Resize if needed
+        if structure_image.shape != abundance_map.shape:
+            abundance_map = cv2.resize(abundance_map, 
+                                     (structure_image.shape[1], structure_image.shape[0]))
+        
+        # Threshold
+        threshold = np.percentile(abundance_map, threshold_percentile)
+        mask = abundance_map >= threshold
+        
+        # Create overlay
+        axes[ax_idx].imshow(struct_norm, cmap='gray', aspect='equal')
+        
+        if np.any(mask):
+            if use_simple_colors:
+                # Simple solid color overlay - just show the mask
+                color_array = np.zeros((*mask.shape, 4))  # RGBA
+                if i < len(colors):
+                    from matplotlib.colors import to_rgba
+                    rgba = to_rgba(colors[i])
+                    color_array[mask] = rgba
+                    color_array[mask, 3] = alpha  # Set alpha
+                    axes[ax_idx].imshow(color_array, aspect='equal')
+            else:
+                # Traditional intensity-based overlay
+                if abundance_map.max() > abundance_map.min():
+                    abund_norm = (abundance_map - abundance_map.min()) / (abundance_map.max() - abundance_map.min())
+                else:
+                    abund_norm = abundance_map
+                
+                overlay_data = np.where(mask, abund_norm, np.nan)
+                axes[ax_idx].imshow(overlay_data, cmap=colormaps[i % len(colormaps)], 
+                                 alpha=alpha, aspect='equal')
+        
+        # Calculate coverage
+        coverage = np.sum(mask) / mask.size * 100
+        color_name = colors[i] if use_simple_colors and i < len(colors) else f"comp{i+1}"
+        axes[ax_idx].set_title(f'Component {i+1}\n({color_name}, {coverage:.1f}% coverage)', fontsize=14)
+        axes[ax_idx].axis('off')
+    
+    # Hide unused subplots
+    for i in range(total_plots, len(axes)):
+        axes[i].axis('off')
+    
+    plt.tight_layout()
+    
+    # Convert to bytes
+    buf = BytesIO()
+    plt.savefig(buf, format='jpeg', dpi=150, bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    return buf.getvalue()
