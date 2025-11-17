@@ -32,7 +32,7 @@ def create_fftnmf_pipeline(
     )
 
     # --- 2. Sliding FFT/NMF Specific Workflow ---
-    if settings.get('FFT_NMF_ENABLED', False):
+    if settings.get('FFT_NMF_ENABLED', True):
         
         # 2a. 🧠 LLM Step (Reason)
         pipeline.append(
