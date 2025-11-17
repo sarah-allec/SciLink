@@ -59,13 +59,13 @@ class PipelineSelector:
         if local_model is not None:
             if 'gguf' in local_model:
                 self.logger.info(f"💻 Using local agent as pipeline selector.")
-                from ..wrappers.llama_wrapper import LocalLlamaModel
+                from ...wrappers.llama_wrapper import LocalLlamaModel
                 self.model = LocalLlamaModel(local_model)
                 self.generation_config = None
                 self.safety_settings = None
             elif 'ai-incubator' in local_model:
                 self.logger.info(f"🏛️ Using network agent as pipeline selector.")
-                from ..wrappers.openai_wrapper import OpenAIAsGenerativeModel
+                from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
                 if google_api_key is None:
                     google_api_key = get_api_key('google')
                     if not google_api_key:
