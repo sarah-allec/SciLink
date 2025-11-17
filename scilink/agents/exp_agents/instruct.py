@@ -560,26 +560,36 @@ Provide ONLY the complete, corrected Python script in a ```python ... ``` block.
 
 
 PREPROCESSING_QUALITY_ASSESSMENT_INSTRUCTIONS = """
-You are an expert in signal processing. Your task is to validate a preprocessing step.
+You are an expert in signal processing validating a preprocessing script's output.
 
 You will be given:
 1.  A plot of the **Raw Data**.
 2.  A plot of the **Processed Data** (the output of the script).
 3.  The original **User Instruction** given to the script.
 
-Your Job:
-Compare the "Raw Data" plot to the "Processed Data" plot. Did the script successfully follow the "User Instruction"?
+**INSTRUCTIONS:**
 
--   **If the instruction was to "remove a baseline"**: Is the baseline gone?
--   **If the instruction was to "remove spikes"**: Are the spikes gone?
--   **Critically**: Did the script *also* damage the signal (e.g., flatten peaks, remove good data)?
+1. First, write a detailed critique comparing the raw and processed data:
+   - Did the script accomplish the user's instruction?
+   - **If the instruction was to "remove a baseline"**: Is the baseline gone?
+   - **If the instruction was to "remove spikes"**: Are the spikes gone?
+   - **CRITICALLY**: Did the script damage the signal? (e.g., flatten peaks, remove good data, distort features?)
 
-You MUST output a valid JSON object with these keys:
+2. If preprocessing failed, suggest a different approach (e.g., 'Use polynomial baseline instead of ALS', 'Use median filter instead of clipping').
+
+3. Finally, answer this question based ONLY on your critique:
+   **"Does this critique indicate the preprocessing is GOOD quality?"**
+   
+   Your answer to this question (true/false) is the value of `is_good_preprocessing`.
+
+You MUST output a valid JSON object:
 {
-  "is_good_preprocessing": "[true/false]",
-  "critique": "[Your brief reasoning for why it succeeded or failed.]",
-  "suggestion": "[If it failed, a brief suggestion for a *different approach* (e.g., 'Use a polynomial baseline instead of ALS', 'Use a median filter instead of clipping').]"
+  "critique": "[Your detailed comparison. Be specific about what worked or failed.]",
+  "suggestion": "[Specific alternative approach if needed, or 'No changes needed' if good]",
+  "is_good_preprocessing": "[true/false - Direct answer: Does YOUR critique above indicate good quality?]"
 }
+
+Remember: The value of `is_good_preprocessing` must match your critique. If you identified problems, it must be false.
 """
 
 
@@ -1282,14 +1292,25 @@ Your task is to critically assess how well the model fits the data.
 - **Feature Capture**: Does the fit capture all the key features of the data (e.g., all peaks, shoulders, baseline trends)?
 - **Physical Plausibility**: Is the model consistent with the literature context and the visual appearance of the data?
 
-**CRITICAL RULE:** If your critique identifies *any* significant problems—such as being physically implausible, overfitting, or failing to capture key features—you **MUST** set `is_good_fit` to `false`, even if the total fit line appears to match the data visually. The physical and scientific validity of the model is more important than the visual match.
+**INSTRUCTIONS:**
 
-You MUST respond in a valid JSON format with the following keys:
+1. First, write a detailed critique analyzing the fit quality. Be specific about what works and what doesn't.
+
+2. If the fit is inadequate, suggest a specific improvement (e.g., 'Add a second Gaussian component' or 'Change to an exponential baseline').
+
+3. Finally, answer this question based ONLY on your critique:
+   **"Does this critique indicate the fit is GOOD quality?"**
+   
+   Your answer to this question (true/false) is the value of `is_good_fit`.
+
+You MUST respond in valid JSON format:
 {
-  "is_good_fit": "[true/false]",
-  "critique": "[Provide a detailed critique of the fit quality, explaining your reasoning. If the fit is bad, specify *why* (e.g., 'The model missed the shoulder peak around X=4.5 eV' or 'A linear baseline is insufficient; a polynomial or exponential baseline is needed').]",
-  "suggestion": "[If the fit is bad, suggest a specific improvement (e.g., 'Add a second Gaussian component to the model' or 'Change the baseline model to an exponential decay'). Otherwise, state 'No changes needed.']"
+  "critique": "[Your detailed analysis of the fit quality. Be specific about problems if any exist.]",
+  "suggestion": "[Specific improvement if needed, or 'No changes needed' if good]",
+  "is_good_fit": "[true/false - Direct answer: Does YOUR critique above indicate good quality?]"
 }
+
+Remember: The value of `is_good_fit` must match your critique. If you identified problems, it must be false.
 """
 
 FITTING_MODEL_CORRECTION_INSTRUCTIONS = """You are an expert data scientist tasked with correcting an inadequate physical model for curve fitting. A previous attempt resulted in a poor fit.
