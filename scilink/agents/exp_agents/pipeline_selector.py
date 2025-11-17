@@ -7,45 +7,6 @@ from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockT
 from ...auth import get_api_key, APIKeyNotFoundError
 
 
-PIPELINE_SELECTION_INSTRUCTIONS = """You are an expert materials scientist. 
-
-Your task is to match the input data to one of the pipelines listed above. Use the following logic, which is based on the *purpose* of the pipelines:
-
-* **For Countable Objects:**
-    * **Use the pipeline for 'sam' (Segment Anything Model):** This is the correct choice for images containing **large, distinct, countable objects**.
-    * **Use-case:** Measuring size distribution, shape, and spatial arrangement of features like nanoparticles, cells, pores, or other discrete entities.
-
-* **For Standard Microstructure:**
-    * **Use the 'general' analysis pipeline:** This is for standard microstructure analysis (grains, phases, etc.) where **atoms are not resolved**.
-
-* **For Atomically-Resolved Images (The complex case):**
-    You must decide between the 'atomistic' pipeline and the 'general' (FFT/NMF) pipeline.
-
-    * **Use the 'atomistic' pipeline when:**
-        * The image is **high-quality** and **individual atoms or atomic columns are clearly visible in a crystalline lattice**.
-        * The goal is to analyze well-defined interfaces, grain boundaries, and point defects within an otherwise crystalline structure.
-
-    * **Use the 'general' (FFT/NMF) pipeline when:**
-        * The image is dominated by **large-scale disorder**, making direct atom-finding unreliable or less informative.
-        * **Examples of such disorder include:**
-            * Large amorphous (non-crystalline) regions.
-            * Numerous small, disconnected, and poorly-ordered crystalline flakes.
-            * Extreme noise levels that obscure the atomic lattice.
-        * **For STM images:** Also use this pipeline if the image shows large variations in electronic contrast (LDOS) that are not simple atomic differences, as an FFT-based analysis is more suitable for identifying periodicities.
-
-**Input You Will Receive:**
-1. A microscopy image
-2. System information (metadata)
-3. Optional user-specified analysis goal
-
-You MUST output a valid JSON object with two keys:
-1. `pipeline_id`: (String) The ID of the pipeline you have selected
-2. `reasoning`: (String) A brief explanation for your choice, justifying it based on the visual data
-
-Output ONLY the JSON object.
-"""
-
-
 class PipelineSelector:
     """
     A general-purpose pipeline selector that uses an LLM to choose
@@ -119,13 +80,23 @@ class PipelineSelector:
             Returns (None, error_message) on failure
         """
         self.logger.info("Pipeline selector: Analyzing input to choose best pipeline...")
+    
+        selection_instructions = available_pipelines.get('_meta', {}).get('selection_instructions')
         
-        # Build pipeline descriptions for the prompt
+        if not selection_instructions:
+            return None, "No selection instructions found in pipeline registry"
+        
+        # Build pipeline descriptions (skip metadata entries)
         pipeline_desc_text = ""
         for pid, info in available_pipelines.items():
+            if pid.startswith('_'):  # Skip metadata keys like '_meta'
+                continue
             pipeline_desc_text += f"- **ID '{pid}'**: {info.get('description', 'No description')}\n"
         
-        prompt_parts = [PIPELINE_SELECTION_INSTRUCTIONS.format(pipeline_descriptions=pipeline_desc_text)]
+        # Build prompt with domain-specific instructions
+        prompt_parts = [selection_instructions.replace('**Available Pipelines:**\n(These will be inserted automatically)', 
+                                                    f'**Available Pipelines:**\n{pipeline_desc_text}')]
+
         
         # Add image if available
         if image_blob:
@@ -157,8 +128,10 @@ class PipelineSelector:
             
             self.logger.info(f"\n\n🧠 Pipeline Selector Reasoning: {reasoning}\n")
             
-            if pipeline_id not in available_pipelines:
-                error_msg = f"LLM selected invalid pipeline: '{pipeline_id}'. Available: {list(available_pipelines.keys())}"
+            valid_pipeline_ids = [pid for pid in available_pipelines.keys() if not pid.startswith('_')]
+
+            if pipeline_id not in valid_pipeline_ids:
+                error_msg = f"LLM selected invalid pipeline: '{pipeline_id}'. Available: {valid_pipeline_ids}"
                 self.logger.warning(error_msg)
                 return None, error_msg
             

@@ -26,7 +26,8 @@ from .instruct import (
     SAM_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS,
     ATOMISTIC_MICROSCOPY_ANALYSIS_INSTRUCTIONS,
     ATOMISTIC_MICROSCOPY_CLAIMS_INSTRUCTIONS,
-    ATOMISTIC_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
+    ATOMISTIC_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS,
+    MICROSCOPY_PIPELINE_SELECTION_INSTRUCTIONS
 )
 
 
@@ -44,6 +45,10 @@ from .instruct import (
 # }
 
 MICROSCOPY_PIPELINE_REGISTRY = {
+    '_meta': { 
+        'selection_instructions': MICROSCOPY_PIPELINE_SELECTION_INSTRUCTIONS
+    },
+    
     'general': {
         'description': (
             'Standard microstructure analysis using FFT and NMF decomposition. '

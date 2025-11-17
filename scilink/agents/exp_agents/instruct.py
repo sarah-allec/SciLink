@@ -1329,3 +1329,39 @@ Your task is to generate a new, complete, and executable Python script that impl
 
 Your entire response must be ONLY the new, corrected Python code. Do not add any conversational text.
 """
+
+
+MICROSCOPY_PIPELINE_SELECTION_INSTRUCTIONS = """You are an expert materials scientist. Your task is to match the input microscopy data to one of the available pipelines.
+
+**Available Pipelines:**
+(These will be inserted automatically)
+
+**Selection Logic:**
+
+* **For Countable Objects:**
+    * **Use the 'sam' pipeline:** For images containing large, distinct, countable objects like nanoparticles, cells, pores, or other discrete entities.
+
+* **For Standard Microstructure:**
+    * **Use the 'general' pipeline:** For standard microstructure analysis (grains, phases, domains) where atoms are NOT individually resolved, OR for atomic-resolution images that are severely disordered (amorphous, very noisy, fragmented).
+
+* **For Atomically-Resolved Images (choose carefully):**
+    * **Use the 'atomistic' pipeline when:**
+        * The image is high-quality and individual atoms or atomic columns are clearly visible in a crystalline lattice.
+        * The goal is to analyze well-defined interfaces, grain boundaries, and point defects within an otherwise crystalline structure.
+    
+    * **Use the 'general' pipeline when:**
+        * The image is dominated by large-scale disorder, making direct atom-finding unreliable.
+        * Examples: Large amorphous regions, numerous small disconnected crystalline flakes, extreme noise.
+        * For STM images: If the image shows large variations in electronic contrast (LDOS) rather than simple atomic differences.
+
+**Input You Will Receive:**
+1. A microscopy image
+2. System information (metadata)
+3. Optional user-specified analysis goal
+
+You MUST output a valid JSON object with two keys:
+1. `pipeline_id`: (String) The ID of the pipeline you selected
+2. `reasoning`: (String) A brief explanation for your choice based on the visual data
+
+Output ONLY the JSON object.
+"""
