@@ -7,20 +7,31 @@ from google.generativeai.types import GenerationConfig, HarmCategory, HarmBlockT
 from ...auth import get_api_key, APIKeyNotFoundError
 
 
-PIPELINE_SELECTION_INSTRUCTIONS = """You are an expert materials scientist. Your task is to select the most appropriate analysis pipeline for a given microscopy dataset.
+PIPELINE_SELECTION_INSTRUCTIONS = """You are an expert materials scientist. 
 
-**Your Core Responsibility:**
-Your decision MUST be based on the visual evidence in the image and accompanying information about the experimental system.
+Your task is to match the input data to one of the pipelines listed above. Use the following logic, which is based on the *purpose* of the pipelines:
 
-**Available Pipelines:**
-{pipeline_descriptions}
+* **For Countable Objects:**
+    * **Use the pipeline for 'sam' (Segment Anything Model):** This is the correct choice for images containing **large, distinct, countable objects**.
+    * **Use-case:** Measuring size distribution, shape, and spatial arrangement of features like nanoparticles, cells, pores, or other discrete entities.
 
-**Decision Guide:**
+* **For Standard Microstructure:**
+    * **Use the 'general' analysis pipeline:** This is for standard microstructure analysis (grains, phases, etc.) where **atoms are not resolved**.
 
-For microscopy images:
-- **Use 'sam'**: For images containing large, distinct, countable objects (nanoparticles, cells, pores, etc.). This pipeline measures size distribution, shape, and spatial arrangement.
-- **Use 'atomistic'**: For high-quality images where individual atoms are clearly visible in a crystalline lattice. This analyzes defects and interfaces at the atomic scale.
-- **Use 'general'**: For standard microstructure analysis where atoms are not resolved OR for atomic-resolution images that are severely disordered (amorphous, very noisy, fragmented). This uses FFT/NMF analysis.
+* **For Atomically-Resolved Images (The complex case):**
+    You must decide between the 'atomistic' pipeline and the 'general' (FFT/NMF) pipeline.
+
+    * **Use the 'atomistic' pipeline when:**
+        * The image is **high-quality** and **individual atoms or atomic columns are clearly visible in a crystalline lattice**.
+        * The goal is to analyze well-defined interfaces, grain boundaries, and point defects within an otherwise crystalline structure.
+
+    * **Use the 'general' (FFT/NMF) pipeline when:**
+        * The image is dominated by **large-scale disorder**, making direct atom-finding unreliable or less informative.
+        * **Examples of such disorder include:**
+            * Large amorphous (non-crystalline) regions.
+            * Numerous small, disconnected, and poorly-ordered crystalline flakes.
+            * Extreme noise levels that obscure the atomic lattice.
+        * **For STM images:** Also use this pipeline if the image shows large variations in electronic contrast (LDOS) that are not simple atomic differences, as an FFT-based analysis is more suitable for identifying periodicities.
 
 **Input You Will Receive:**
 1. A microscopy image
