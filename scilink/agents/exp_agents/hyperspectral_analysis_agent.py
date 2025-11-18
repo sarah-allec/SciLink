@@ -203,10 +203,17 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
 
                 # --- 5. Update Loop State for Next Iteration ---
                 current_state["continue_loop"] = iteration_state.get("continue_loop", False)
-                current_state["data_for_this_iteration"] = iteration_state.get("data_for_this_iteration")
-                current_state["iteration_title"] = iteration_state.get("iteration_title", f"Iteration {iteration_count+1}")
-                # Propagate the updated system_info (with sliced energy range) to the next loop
-                current_state["system_info"] = iteration_state.get("system_info", current_state["system_info"])
+                if current_state["continue_loop"]:
+                    # Prepare data for next loop
+                    current_state["data_for_this_iteration"] = iteration_state.get("data_for_this_iteration")
+                    current_state["iteration_title"] = iteration_state.get("iteration_title")
+                    current_state["system_info"] = iteration_state.get("system_info")
+                    # Extract reasoning from the decision that triggered this continuation
+                    decision = iteration_state.get("refinement_decision", {})
+                    if decision.get("refinement_needed"):
+                        current_state["parent_refinement_reasoning"] = decision.get("reasoning", "Refinement requested.")
+                    else:
+                        current_state["parent_refinement_reasoning"] = None
                 iteration_count += 1
             
             # --- 6. Run Final Synthesis ---

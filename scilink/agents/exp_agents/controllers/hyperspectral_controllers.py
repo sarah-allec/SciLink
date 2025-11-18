@@ -458,6 +458,11 @@ class BuildHyperspectralPromptController:
         self.logger.info("\n\n📝 --- PREP STEP: BUILDING FINAL PROMPT --- 📝\n")
         
         prompt_parts = [state["instruction_prompt"]]
+
+        if state.get("parent_refinement_reasoning"):
+            prompt_parts.append("\n\n### 🔍 CONTEXT: Why are we performing this focused analysis?")
+            prompt_parts.append(f"**Reasoning from previous step:** \"{state['parent_refinement_reasoning']}\"")
+            prompt_parts.append("Use this context to guide your interpretation of the specific features in this zoom.")
         
         # Add data/unmixing info
         h, w, e = state["hspy_data"].shape
@@ -588,7 +593,10 @@ class ApplyRefinementTargetController:
     """
     [🛠️ Tool Step]
     Slices the data for the next iteration based on the LLM's decision.
+    Includes guardrails for minimum data size.
     """
+    MIN_SPECTRAL_CHANNELS = 10  # Guardrail: Minimum channels required for NMF
+
     def __init__(self, logger: logging.Logger):
         self.logger = logger
 
@@ -609,34 +617,18 @@ class ApplyRefinementTargetController:
             
             new_iteration_data = None
             iteration_title = f"Focused Analysis on {target_details.get('description', 'target')}"
-            new_system_info = state["system_info"] # Default to old one
+            new_system_info = state["system_info"] 
 
             if target_type == "spatial":
+                # ... (Keep existing spatial logic exactly as is) ...
                 self.logger.info(f"Applying SPATIAL refinement: {target_details.get('description')}")
                 component_index = int(target_value)
+                if component_index > 0: component_index -= 1
+                else: component_index = 0
                 
-                # The LLM provides a 1-based index (e.g., "Component 3" -> 3)
-                # We must convert it to a 0-based index for Python.
-                if component_index > 0:
-                    component_index = component_index - 1 # Convert 1-based to 0-based
-                else:
-                    component_index = 0 # Safety check, use first component
-                self.logger.info(f"  (Tool Info: LLM 1-based index {target_value} converted to 0-based index {component_index})")
-                
-                # Use the *current* iteration's data, not the original
-                current_data = state.get("hspy_data") 
-                if current_data is None:
-                    raise ValueError("'hspy_data' (current iteration data) not found in state.")
-                
+                current_data = state.get("hspy_data")
                 abundance_maps = state.get("final_abundance_maps")
-                if abundance_maps is None:
-                    raise ValueError("Cannot apply spatial mask: 'final_abundance_maps' not found.")
                 
-                # Check bounds *after* converting to 0-index
-                if not (0 <= component_index < abundance_maps.shape[2]):
-                    raise IndexError(f"LLM-provided component index {target_value} (corrected to {component_index}) is out of bounds for abundance maps with shape {abundance_maps.shape}")
-
-                # Call the *tool* function
                 new_iteration_data = tools.apply_spatial_mask(
                     current_data, abundance_maps, component_index
                 )
@@ -644,34 +636,41 @@ class ApplyRefinementTargetController:
             elif target_type == "spectral":
                 self.logger.info(f"Applying SPECTRAL refinement: {target_details.get('description')}")
                 
-                # Use the *original* data for a spectral slice
                 original_data = state.get("original_hspy_data")
-                if original_data is None:
-                    raise ValueError("'original_hspy_data' not found in state.")
-
-                # Ensure target_value is a list, as expected by the tool
                 if not isinstance(target_value, list):
-                    raise ValueError(f"Spectral target value must be a list [start, end], but got: {target_value}")
+                    raise ValueError(f"Spectral target value must be list, got: {target_value}")
                 
                 energy_range = list(target_value)
                 
-                # Call the *tool* function
+                # Call the tool
                 new_iteration_data, new_system_info = tools.apply_spectral_slice(
                     original_data, state["system_info"], energy_range
                 )
 
+                #  Check Spectral Width
+                n_channels = new_iteration_data.shape[-1]
+                if n_channels < self.MIN_SPECTRAL_CHANNELS:
+                    warning_msg = (f"Refinement stopped: Targeted spectral range only has "
+                                   f"{n_channels} channels. Minimum required is {self.MIN_SPECTRAL_CHANNELS}.")
+                    self.logger.warning(warning_msg)
+                    
+                    # Gracefully stop the loop
+                    state["continue_loop"] = False
+                    # Update the reasoning so the user knows why it stopped
+                    state["refinement_decision"]["reasoning"] += f" [STOPPED: {warning_msg}]"
+                    return state
+
             else:
                 raise ValueError(f"Unknown target_type: {target_type}")
 
-            self.logger.info(f"✅ Tool Complete: New data shape for next iteration: {new_iteration_data.shape}")
+            self.logger.info(f"✅ Tool Complete: New data shape: {new_iteration_data.shape}")
             state["data_for_this_iteration"] = new_iteration_data
             state["iteration_title"] = iteration_title
-            state["system_info"] = new_system_info # Update system info for the *next* loop
-            state["continue_loop"] = True # Explicitly continue
+            state["system_info"] = new_system_info
+            state["continue_loop"] = True
 
         except Exception as e:
             self.logger.error(f"❌ Tool Failed: Applying refinement failed: {e}", exc_info=True)
-            # Don't set error_dict, just stop the loop
             state["continue_loop"] = False
             state["refinement_decision"]["reasoning"] = f"Loop stopped. Error applying target: {e}"
             
