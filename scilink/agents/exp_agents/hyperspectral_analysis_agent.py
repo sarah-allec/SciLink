@@ -5,22 +5,32 @@ from typing import Dict, Any
 
 from .base_agent import BaseAnalysisAgent
 from .instruct import (
-    SPECTROSCOPY_ANALYSIS_INSTRUCTIONS, 
+    SPECTROSCOPY_ANALYSIS_INSTRUCTIONS,
     SPECTROSCOPY_CLAIMS_INSTRUCTIONS,
     SPECTROSCOPY_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
 )
 from .human_feedback import SimpleFeedbackMixin
 from .preprocess import HyperspectralPreprocessingAgent
-from .pipelines.hyperspectral_pipelines import create_hyperspectral_pipeline
+from .pipelines.hyperspectral_pipelines import (
+    create_hyperspectral_iteration_pipeline, 
+    create_hyperspectral_synthesis_pipeline
+)
 from ...tools.image_processor import load_image, convert_numpy_to_jpeg_bytes # For structure image
 
 class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
     Refactored agent for analyzing hyperspectral data using a modular,
     controller-based pipeline.
+    
+    This agent now implements a recursive "survey-then-focus" loop.
+    It runs an analysis, uses an LLM to select a region to "zoom in" on,
+    and re-runs the analysis on that subset. It continues this loop
+    until no further refinement is needed, then synthesizes all results.
     """
+    
+    MAX_REFINEMENT_ITERATIONS = 4 # Global + 3 zoom-ins
 
-    def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05", 
+    def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05",
                  local_model: str = None,
                  spectral_unmixing_settings: dict | None = None,
                  run_preprocessing: bool = True,
@@ -37,7 +47,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             'enabled': True,
             'auto_components': True,
             'min_auto_components': 2,
-            'max_auto_components': 8 
+            'max_auto_components': 8
         }
         self.spectral_settings = spectral_unmixing_settings if spectral_unmixing_settings else default_settings
         self.spectral_settings['run_preprocessing'] = run_preprocessing
@@ -54,18 +64,26 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             local_model=local_model
         )
 
+        # --- Common Pipeline Arguments ---
+        pipeline_args = {
+            "model": self.model,
+            "logger": self.logger,
+            "generation_config": self.generation_config,
+            "safety_settings": self.safety_settings,
+            "settings": self.spectral_settings,
+            "parse_fn": self._parse_llm_response,
+        }
+
         # --- Pipeline Initialization ---
-        self.pipeline = create_hyperspectral_pipeline(
-            model=self.model,
-            logger=self.logger,
-            generation_config=self.generation_config,
-            safety_settings=self.safety_settings,
-            settings=self.spectral_settings,
-            preprocessor=self.preprocessor, # Inject the dependency
-            parse_fn=self._parse_llm_response,
-            store_fn=self._store_analysis_images
+        self.iteration_pipeline = create_hyperspectral_iteration_pipeline(
+            **pipeline_args,
+            preprocessor=self.preprocessor # Iteration pipeline needs this
         )
-        self.logger.info(f"HyperspectralAnalysisAgent initialized with a pipeline of {len(self.pipeline)} controllers.")
+        self.synthesis_pipeline = create_hyperspectral_synthesis_pipeline(
+            **pipeline_args,
+            store_fn=self._store_analysis_images # Only synthesis pipeline stores
+        )
+        self.logger.info(f"HyperspectralAnalysisAgent initialized with recursive pipelines.")
 
     def _load_hyperspectral_data(self, data_path: str) -> np.ndarray:
         """
@@ -92,31 +110,32 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             raise
 
     def _run_analysis_pipeline(
-        self, 
-        data_path: str, 
-        system_info: dict, 
+        self,
+        data_path: str,
+        system_info: dict,
         instruction_prompt: str,
         structure_image_path: str | None = None,
         structure_system_info: dict | None = None
     ) -> tuple[dict | None, dict | None]:
         """
-        The agent's main execution engine.
-        It prepares the initial state and runs the loaded pipeline.
+        The agent's main execution engine, now a recursive loop.
+        It prepares an initial state and runs the iteration pipeline,
+        storing results and re-running on a subset until told to stop.
+        It then runs a final synthesis pipeline on all collected results.
         """
         try:
-            # --- 1. Common State Initialization ---
-            self.logger.info(f"--- Starting analysis pipeline for {data_path} ---")
+            # --- 1. Initial State Initialization ---
+            self.logger.info(f"--- Starting RECURSIVE analysis pipeline for {data_path} ---")
             self._clear_stored_images()
             system_info = self._handle_system_info(system_info)
             
-            hspy_data = self._load_hyperspectral_data(data_path)
+            original_hspy_data = self._load_hyperspectral_data(data_path)
 
             # Handle optional structure image
             structure_image_blob = None
             if structure_image_path and os.path.exists(structure_image_path):
                 try:
                     img = load_image(structure_image_path)
-                    # Use simple normalization for structure img, not full preprocess
                     if img.ndim == 3:
                         img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
                     structure_image_blob = {
@@ -126,36 +145,88 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                 except Exception as e:
                     self.logger.warning(f"Could not load structure image {structure_image_path}: {e}")
             
-            # This is the "state" dictionary that is passed through the pipeline
-            state = {
+            # --- 2. Recursive Loop Setup ---
+            all_iteration_results = []
+            iteration_count = 0
+            
+            # This is the base state shared by all iterations
+            base_state = {
                 "data_path": data_path,
                 "system_info": system_info,
-                "instruction_prompt": instruction_prompt,
-                "hspy_data": hspy_data, # The raw data
-                "settings": self.spectral_settings, # Pass settings to controllers
-                
-                # Optional structure context
+                "instruction_prompt": instruction_prompt, # Used by synthesis
+                "settings": self.spectral_settings,
+                "original_hspy_data": original_hspy_data, # Unmodified data
                 "structure_image_path": structure_image_path,
                 "structure_system_info": self._handle_system_info(structure_system_info),
                 "structure_image_blob": structure_image_blob,
-                
-                # Fields to be filled by the pipeline
-                "analysis_images": [], # Will be filled by controllers
-                "result_json": None,
+                "continue_loop": True,
+                "data_for_this_iteration": original_hspy_data, # Data to be sliced
+                "iteration_title": "Global Analysis",
                 "error_dict": None
             }
+
+            current_state = base_state.copy()
+
+            while iteration_count < self.MAX_REFINEMENT_ITERATIONS and current_state.get("continue_loop", False):
+                self.logger.info(f"\n--- STARTING HYPERSPECTRAL ITERATION {iteration_count} ({current_state.get('iteration_title', '')}) ---\n")
+                
+                # Create a fresh state for this iteration
+                iteration_state = current_state.copy()
+                iteration_state["analysis_images"] = [] # Reset images for this iteration
+                iteration_state["hspy_data"] = iteration_state["data_for_this_iteration"]
+                
+                # Disable preprocessing after the first run
+                if iteration_count > 0:
+                    iteration_state["settings"] = iteration_state["settings"].copy()
+                    iteration_state["settings"]['run_preprocessing'] = False
+                
+                # --- 3. Run Iteration Pipeline ---
+                for controller in self.iteration_pipeline:
+                    iteration_state = controller.execute(iteration_state)
+                    if iteration_state.get("error_dict"):
+                        self.logger.error(f"Pipeline failed at step {controller.__class__.__name__}. Stopping loop.")
+                        current_state["continue_loop"] = False
+                        break
+                
+                if iteration_state.get("error_dict"):
+                    break # Exit loop on error
+                
+                # --- 4. Store Iteration Results ---
+                all_iteration_results.append({
+                    "iteration_title": iteration_state.get('iteration_title', f'Iteration {iteration_count}'),
+                    "iteration_analysis_text": iteration_state.get("result_json", {}).get("detailed_analysis", "Analysis text not found."),
+                    "analysis_images": iteration_state.get("analysis_images", []),
+                    "refinement_decision": iteration_state.get("refinement_decision", {}),
+                    "final_components": iteration_state.get("final_components"),
+                    "final_abundance_maps": iteration_state.get("final_abundance_maps")
+                })
+
+                # --- 5. Update Loop State for Next Iteration ---
+                current_state["continue_loop"] = iteration_state.get("continue_loop", False)
+                current_state["data_for_this_iteration"] = iteration_state.get("data_for_this_iteration")
+                current_state["iteration_title"] = iteration_state.get("iteration_title", f"Iteration {iteration_count+1}")
+                # --- THIS IS THE FIX ---
+                # Propagate the updated system_info (with sliced energy range) to the next loop
+                current_state["system_info"] = iteration_state.get("system_info", current_state["system_info"])
+                # --- END FIX ---
+                iteration_count += 1
             
-            # --- 2. Run the Pipeline ---
-            for controller in self.pipeline:
-                state = controller.execute(state)
-                # Stop pipeline if a major error occurred
-                if state.get("error_dict"):
-                    self.logger.error(f"Pipeline failed at step {controller.__class__.__name__}. Stopping execution.")
+            # --- 6. Run Final Synthesis ---
+            self.logger.info(f"\n--- RECURSIVE LOOP FINISHED. RUNNING FINAL SYNTHESIS. ({len(all_iteration_results)} iterations) ---\n")
+
+            synthesis_state = base_state.copy()
+            synthesis_state["all_iteration_results"] = all_iteration_results
+            synthesis_state["instruction_prompt"] = instruction_prompt # Pass the *original* prompt
+
+            for controller in self.synthesis_pipeline:
+                synthesis_state = controller.execute(synthesis_state)
+                if synthesis_state.get("error_dict"):
+                    self.logger.error(f"Synthesis pipeline failed at step {controller.__class__.__name__}.")
                     break
 
-            # --- 3. Return Final Results (from the state) ---
+            # --- 7. Return Final Results ---
             self.logger.info(f"--- Analysis pipeline finished. ---")
-            return state.get("result_json"), state.get("error_dict")
+            return synthesis_state.get("result_json"), synthesis_state.get("error_dict")
 
         except FileNotFoundError:
             self._clear_stored_images()
@@ -177,7 +248,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         result_json, error_dict = self._run_analysis_pipeline(
             data_path=data_path,
             system_info=metadata_path,
-            instruction_prompt=SPECTROSCOPY_CLAIMS_INSTRUCTIONS,
+            instruction_prompt=SPECTROSCOPY_CLAIMS_INSTRUCTIONS, # This will be used by the *synthesis* controller
             structure_image_path=structure_image_path,
             structure_system_info=structure_system_info
         )
@@ -209,7 +280,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         result_json, error_dict = self._run_analysis_pipeline(
             data_path=data_path,
             system_info=metadata_path,
-            instruction_prompt=SPECTROSCOPY_ANALYSIS_INSTRUCTIONS,
+            instruction_prompt=SPECTROSCOPY_ANALYSIS_INSTRUCTIONS, # Used by synthesis
             structure_image_path=structure_image_path,
             structure_system_info=structure_system_info
         )
@@ -223,6 +294,8 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         return result_json
 
     def _get_claims_instruction_prompt(self) -> str:
+        # This is now used by the *feedback* mechanism.
+        # The main prompts are passed directly in _run_analysis_pipeline.
         return SPECTROSCOPY_CLAIMS_INSTRUCTIONS
 
     def _get_measurement_recommendations_prompt(self) -> str:

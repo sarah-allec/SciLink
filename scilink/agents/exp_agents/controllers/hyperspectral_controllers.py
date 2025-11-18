@@ -12,13 +12,17 @@ from ....tools.image_processor import load_image
 from ..preprocess import HyperspectralPreprocessingAgent
 from ..instruct import (
     COMPONENT_INITIAL_ESTIMATION_INSTRUCTIONS,
-    COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS
+    COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS,
+    SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS,
+    SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS
 )
 
 class RunPreprocessingController:
     """
     [🛠️ Tool Step]
-    Runs the HyperspectralPreprocessingAgent.
+    Runs the HyperspectralPreprocessingAgent *only if* settings['run_preprocessing'] is True.
+    If False (i.e., on a refinement iteration), it *only* calculates statistics
+    for the next step.
     """
     def __init__(self, logger: logging.Logger, preprocessor: HyperspectralPreprocessingAgent):
         self.logger = logger
@@ -30,7 +34,32 @@ class RunPreprocessingController:
             self.logger.warning("Preprocessing skipped: agent not initialized.")
             state["data_quality"] = {"reasoning": "Preprocessing skipped: agent not initialized."}
             return state
+
+        # --- THIS IS THE NEW LOGIC ---
+        # Check the runtime flag set by the agent
+        if not state.get("settings", {}).get("run_preprocessing", True):
+            self.logger.info("Preprocessing skipped for this refinement iteration (run_preprocessing=False).")
+            self.logger.info("Calculating statistics on *current* masked data for the next step...")
             
+            try:
+                # We still need stats (like SNR and shape) for the *next* controller
+                stats = self.preprocessor._calculate_statistics(state["hspy_data"])
+                snr_value, snr_reasoning = self.preprocessor._calculate_snr(stats)
+                state["data_quality"] = {
+                    "snr_estimate": snr_value,
+                    "reasoning": f"SNR of *current iteration* data: {snr_reasoning}"
+                }
+                # Set an all-true mask, since no masking was performed on this iter
+                state["preprocessing_mask"] = np.ones(state["hspy_data"].shape[:2], dtype=bool)
+                self.logger.info(f"✅ Tool Complete: Statistics calculated. SNR = {snr_value:.2f}")
+                return state # Skip the rest of the function
+            except Exception as e:
+                self.logger.error(f"❌ Tool Failed: Stat calculation on refinement data failed: {e}", exc_info=True)
+                state["error_dict"] = {"error": "Stat calculation on refinement data failed", "details": str(e)}
+                return state
+        # --- END OF NEW LOGIC ---
+
+        # This code now only runs for the *first* iteration (Global Analysis)
         try:
             processed_data, mask, data_quality = self.preprocessor.run_preprocessing(
                 state["hspy_data"], 
@@ -39,7 +68,7 @@ class RunPreprocessingController:
             state["hspy_data"] = processed_data # Overwrite with processed data
             state["preprocessing_mask"] = mask
             state["data_quality"] = data_quality
-            self.logger.info("✅ Tool Complete: Preprocessing finished.")
+            self.logger.info("✅ Tool Complete: Full preprocessing finished.")
         except Exception as e:
             self.logger.error(f"❌ Tool Failed: Preprocessing failed: {e}", exc_info=True)
             state["error_dict"] = {"error": "Preprocessing failed", "details": str(e)}
@@ -305,8 +334,10 @@ class RunFinalSpectralUnmixingController:
         
         final_n_components = state.get("final_n_components")
         if not final_n_components:
-            state["error_dict"] = {"error": "Pipeline failed: 'final_n_components' not set."}
-            return state
+            # If auto-comp failed, try falling back to fixed component count
+            final_n_components = self.settings.get('n_components', 4)
+            self.logger.warning(f"Auto-selection failed. Using fixed component count: {final_n_components}")
+            state["final_n_components"] = final_n_components
             
         try:
             components, abundance_maps, error = tools.run_spectral_unmixing(
@@ -360,6 +391,28 @@ class CreateAnalysisPlotsController:
         except Exception as e:
             self.logger.warning(f"Failed to save component pair plots: {e}")
         
+        # --- NEW BLOCK TO SAVE THE SUMMARY PLOT ---
+        try:
+            self.logger.info("  (Tool Info: Creating final NMF summary plot...)")
+            n_comp = state.get("final_n_components", components.shape[0])
+            summary_bytes = tools.create_nmf_summary_plot(
+                components, abundance_maps, n_comp, state["system_info"], self.logger
+            )
+            if summary_bytes:
+                output_dir = self.settings.get('output_dir', 'spectroscopy_output')
+                os.makedirs(output_dir, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Add iteration title to filename if available
+                iter_title = state.get('iteration_title', 'iter').replace(" ", "_")
+                filename = f"final_nmf_summary_{iter_title}_{n_comp}comp_{timestamp}.jpeg"
+                filepath = os.path.join(output_dir, filename)
+                with open(filepath, 'wb') as f:
+                    f.write(summary_bytes)
+                self.logger.info(f"📸 Saved final NMF summary plot to: {filepath}")
+        except Exception as e:
+            self.logger.warning(f"Failed to save final NMF summary plot: {e}")
+        # --- END NEW BLOCK ---
+        
         # 2. Create structure overlays if structure image exists
         if state.get("structure_image_path"):
             try:
@@ -369,8 +422,9 @@ class CreateAnalysisPlotsController:
                 else:
                     structure_img_gray = structure_img
                 
-                overlay_bytes = tools.create_structure_overlays(
-                    structure_img_gray, abundance_maps, self.logger
+                overlay_bytes = tools.create_multi_abundance_overlays(
+                    structure_img_gray, abundance_maps,
+                    threshold_percentile=85.0 # Use a high percentile for overlays
                 )
                 state["structure_overlay_bytes"] = overlay_bytes
                 
@@ -398,6 +452,7 @@ class BuildHyperspectralPromptController:
     """
     [📝 Prep Step]
     Assembles all results into the final prompt for interpretation.
+    THIS IS FOR A SINGLE ITERATION, NOT THE FINAL SYNTHESIS.
     """
     def __init__(self, logger: logging.Logger):
         self.logger = logger
@@ -428,7 +483,7 @@ class BuildHyperspectralPromptController:
             prompt_parts.append("\n\n**Structure-Abundance Correlation Analysis:**")
             prompt_parts.append("Overlays showing where NMF components (top 15%) are concentrated on the structural image.")
             prompt_parts.append({"mime_type": "image/jpeg", "data": state["structure_overlay_bytes"]})
-            # Add to analysis_images for feedback
+            # Add to analysis_images for this iteration
             state["analysis_images"].append({
                 "label": "Structure-Abundance Overlays",
                 "data": state["structure_overlay_bytes"]
@@ -440,8 +495,15 @@ class BuildHyperspectralPromptController:
             for plot in state["component_pair_plots"]:
                 prompt_parts.append(f"\n{plot['label']}:")
                 prompt_parts.append({"mime_type": "image/jpeg", "data": plot['bytes']})
-                # Add to analysis_images for feedback
-                state["analysis_images"].append(plot)
+                
+                # --- THIS IS THE FIX ---
+                # The plot object is {'label':..., 'bytes':...}
+                # We must add it to analysis_images as {'label':..., 'data':...}
+                state["analysis_images"].append({
+                    "label": plot['label'],
+                    "data": plot['bytes']
+                })
+                # --- END FIX ---
 
         # Add system info
         if state.get("system_info"):
@@ -452,4 +514,241 @@ class BuildHyperspectralPromptController:
         
         state["final_prompt_parts"] = prompt_parts
         self.logger.info("✅ Prep Step Complete: Final prompt is ready.")
+        return state
+
+# --- NEW CONTROLLERS FOR RECURSIVE ANALYSIS ---
+
+class SelectRefinementTargetController:
+    """
+    [🧠 LLM Step]
+    Asks the LLM if a refinement (zoom-in) is needed and where.
+    """
+    def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable):
+        self.model = model
+        self.logger = logger
+        self.generation_config = generation_config
+        self.safety_settings = safety_settings
+        self._parse_llm_response = parse_fn
+        self.instructions = SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS
+
+    def execute(self, state: dict) -> dict:
+        if state.get("error_dict"): return state
+        self.logger.info("\n\n🧠 --- LLM STEP: SELECT REFINEMENT TARGET --- 🧠\n")
+
+        prompt_parts = [self.instructions]
+        prompt_parts.append(f"\n\n--- Current Analysis: {state.get('iteration_title', 'Analysis')} ---")
+        
+        # Add system info
+        if state.get("system_info"):
+            sys_info_str = json.dumps(state["system_info"], indent=2)
+            prompt_parts.append(f"\n\n--- System Information ---\n{sys_info_str}")
+
+        # Add plots from the current iteration
+        prompt_parts.append("\n\n--- Analysis Results ---")
+        analysis_images = state.get("analysis_images", [])
+        if not analysis_images:
+            self.logger.warning("No analysis images found for refinement selection.")
+            prompt_parts.append("(No visual results available)")
+        
+        for img in analysis_images:
+            # This is the line that was failing
+            image_bytes = img.get('data') or img.get('bytes') # Robustly get bytes
+            if image_bytes:
+                prompt_parts.append(f"\n{img['label']}:")
+                prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
+            else:
+                self.logger.warning(f"Could not find image bytes for plot: {img.get('label')}")
+
+        prompt_parts.append("\n\nBased on these results, decide if a focused refinement is needed.")
+
+        param_gen_config = GenerationConfig(response_mime_type="application/json")
+        try:
+            response = self.model.generate_content(
+                contents=prompt_parts,
+                generation_config=param_gen_config,
+                safety_settings=self.safety_settings,
+            )
+            result_json, error_dict = self._parse_llm_response(response)
+            
+            if error_dict:
+                self.logger.error(f"LLM refinement selection failed: {error_dict}. Stopping loop.")
+                state["refinement_decision"] = {"refinement_needed": False, "reasoning": "LLM selection failed."}
+                return state
+
+            state["refinement_decision"] = result_json
+            self.logger.info(f"✅ LLM Step Complete: Refinement decision: {result_json.get('reasoning')}")
+            
+            # --- Pretty-print for user ---
+            print("\n" + "="*80)
+            print("🧠 LLM REASONING (SelectRefinementTargetController)")
+            print(f"  Refinement Needed: {result_json.get('refinement_needed', 'Error')}")
+            print(f"  Explanation: {result_json.get('reasoning', 'N/A')}")
+            if result_json.get('refinement_needed'):
+                print(f"  Target Type: {result_json.get('target_type')}")
+                print(f"  Target Details: {result_json.get('target_details', {}).get('description')}")
+            print("="*80 + "\n")
+            # --- End pretty-print ---
+
+        except Exception as e:
+            self.logger.error(f"❌ LLM Step Failed: Refinement selection: {e}", exc_info=True)
+            state["refinement_decision"] = {"refinement_needed": False, "reasoning": f"Exception: {e}"}
+            
+        return state
+
+class ApplyRefinementTargetController:
+    """
+    [🛠️ Tool Step]
+    Slices the data for the next iteration based on the LLM's decision.
+    """
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+
+    def execute(self, state: dict) -> dict:
+        if state.get("error_dict"): return state
+        self.logger.info("\n\n🛠️ --- CALLING TOOL: APPLY REFINEMENT TARGET --- 🛠️\n")
+        
+        decision = state.get("refinement_decision")
+        if not decision or not decision.get("refinement_needed"):
+            self.logger.info("No refinement needed. Setting 'continue_loop' to False.")
+            state["continue_loop"] = False
+            return state
+
+        try:
+            target_type = decision.get("target_type")
+            target_details = decision.get("target_details", {})
+            target_value = target_details.get("value")
+            
+            new_iteration_data = None
+            iteration_title = f"Focused Analysis on {target_details.get('description', 'target')}"
+            new_system_info = state["system_info"] # Default to old one
+
+            if target_type == "spatial":
+                self.logger.info(f"Applying SPATIAL refinement: {target_details.get('description')}")
+                component_index = int(target_value)
+                
+                # --- THIS IS THE FIX ---
+                # The LLM provides a 1-based index (e.g., "Component 3" -> 3)
+                # We must convert it to a 0-based index for Python.
+                if component_index > 0:
+                    component_index = component_index - 1 # Convert 1-based to 0-based
+                else:
+                    component_index = 0 # Safety check, use first component
+                self.logger.info(f"  (Tool Info: LLM 1-based index {target_value} converted to 0-based index {component_index})")
+                # --- END FIX ---
+                
+                # Use the *current* iteration's data, not the original
+                current_data = state.get("hspy_data") 
+                if current_data is None:
+                    raise ValueError("'hspy_data' (current iteration data) not found in state.")
+                
+                abundance_maps = state.get("final_abundance_maps")
+                if abundance_maps is None:
+                    raise ValueError("Cannot apply spatial mask: 'final_abundance_maps' not found.")
+                
+                # Check bounds *after* converting to 0-index
+                if not (0 <= component_index < abundance_maps.shape[2]):
+                    raise IndexError(f"LLM-provided component index {target_value} (corrected to {component_index}) is out of bounds for abundance maps with shape {abundance_maps.shape}")
+
+                # Call the *tool* function
+                new_iteration_data = tools.apply_spatial_mask(
+                    current_data, abundance_maps, component_index
+                )
+
+            elif target_type == "spectral":
+                self.logger.info(f"Applying SPECTRAL refinement: {target_details.get('description')}")
+                
+                # Use the *original* data for a spectral slice
+                original_data = state.get("original_hspy_data")
+                if original_data is None:
+                    raise ValueError("'original_hspy_data' not found in state.")
+
+                # Ensure target_value is a list, as expected by the tool
+                if not isinstance(target_value, list):
+                    raise ValueError(f"Spectral target value must be a list [start, end], but got: {target_value}")
+                
+                energy_range = list(target_value)
+                
+                # Call the *tool* function
+                new_iteration_data, new_system_info = tools.apply_spectral_slice(
+                    original_data, state["system_info"], energy_range
+                )
+
+            else:
+                raise ValueError(f"Unknown target_type: {target_type}")
+
+            self.logger.info(f"✅ Tool Complete: New data shape for next iteration: {new_iteration_data.shape}")
+            state["data_for_this_iteration"] = new_iteration_data
+            state["iteration_title"] = iteration_title
+            state["system_info"] = new_system_info # Update system info for the *next* loop
+            state["continue_loop"] = True # Explicitly continue
+
+        except Exception as e:
+            self.logger.error(f"❌ Tool Failed: Applying refinement failed: {e}", exc_info=True)
+            # Don't set error_dict, just stop the loop
+            state["continue_loop"] = False
+            state["refinement_decision"]["reasoning"] = f"Loop stopped. Error applying target: {e}"
+            
+        return state
+
+class BuildHolisticSynthesisPromptController:
+    """
+    [📝 Prep Step]
+    Assembles ALL iteration results into the final prompt for synthesis.
+    """
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+        self.instructions = SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS
+
+    def execute(self, state: dict) -> dict:
+        if state.get("error_dict"): return state
+        self.logger.info("\n\n📝 --- PREP STEP: BUILDING FINAL SYNTHESIS PROMPT --- 📝\n")
+        
+        prompt_parts = [self.instructions]
+        
+        all_results = state.get("all_iteration_results", [])
+        if not all_results:
+            self.logger.error("No iteration results found to synthesize.")
+            state["error_dict"] = {"error": "No iteration results found for synthesis."}
+            return state
+
+        # Add system info first
+        if state.get("system_info"):
+            sys_info_str = json.dumps(state["system_info"], indent=2)
+            prompt_parts.append(f"\n\n--- System Information ---\n{sys_info_str}")
+
+        # Loop through each iteration's results
+        for i, iter_result in enumerate(all_results):
+            title = iter_result.get('iteration_title', f'Iteration {i}')
+            prompt_parts.append(f"\n\n--- {title} ---")
+            
+            # Add text summary for this iteration
+            iter_analysis = iter_result.get('iteration_analysis_text', 'No text summary.')
+            prompt_parts.append(f"**Analysis Summary:**\n{iter_analysis}")
+            
+            # Add plots for this iteration
+            iter_images = iter_result.get('analysis_images', [])
+            if iter_images:
+                prompt_parts.append("\n**Analysis Plots:**")
+                for img in iter_images:
+                    # Robustly get bytes, as in the other controller
+                    image_bytes = img.get('data') or img.get('bytes') 
+                    if image_bytes:
+                        prompt_parts.append(f"\n{img['label']}:")
+                        prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
+            
+            # Add the refinement decision that *followed* this iteration
+            ref_decision = iter_result.get('refinement_decision', {})
+            if ref_decision:
+                prompt_parts.append(f"\n**Refinement Decision from this Step:**\n{ref_decision.get('reasoning')}")
+
+        prompt_parts.append("\n\nProvide your final, synthesized analysis in the requested JSON format.")
+        
+        state["final_prompt_parts"] = prompt_parts
+        # Store all iteration images for the final feedback step
+        all_images = []
+        for r in all_results:
+            all_images.extend(r.get('analysis_images', []))
+        state["analysis_images"] = all_images # Overwrite with the full list
+        
+        self.logger.info("✅ Prep Step Complete: Final synthesis prompt is ready.")
         return state

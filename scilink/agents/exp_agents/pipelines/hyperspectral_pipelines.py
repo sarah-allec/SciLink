@@ -8,7 +8,10 @@ from ..controllers.hyperspectral_controllers import (
     GetFinalComponentSelectionController,
     RunFinalSpectralUnmixingController,
     CreateAnalysisPlotsController,
-    BuildHyperspectralPromptController
+    BuildHyperspectralPromptController,
+    SelectRefinementTargetController,
+    ApplyRefinementTargetController,
+    BuildHolisticSynthesisPromptController
 )
 from ..controllers.base_controllers import (
     RunFinalInterpretationController,
@@ -16,29 +19,30 @@ from ..controllers.base_controllers import (
 )
 from ..preprocess import HyperspectralPreprocessingAgent
 
-def create_hyperspectral_pipeline(
-    model, 
-    logger: logging.Logger, 
-    generation_config, 
-    safety_settings, 
+def create_hyperspectral_iteration_pipeline(
+    model,
+    logger: logging.Logger,
+    generation_config,
+    safety_settings,
     settings: dict,
     preprocessor: HyperspectralPreprocessingAgent,
-    parse_fn: Callable,
-    store_fn: Callable
+    parse_fn: Callable
 ) -> List:
     """
-    Assembles the full, multi-step pipeline for the HyperspectralAnalysisAgent.
+    Assembles the pipeline that runs *per-iteration* of the recursive analysis.
+    This includes: NMF -> Plotting -> Refinement Decision -> Data Slicing.
     """
-    
+
     pipeline = []
-    
-    # --- 1. PREPROCESSING (Optional) ---
+
+    # --- 1. PREPROCESSING (Only on first iteration) ---
+    # The agent logic will handle only running this once
     if settings.get('run_preprocessing', True):
         pipeline.append(RunPreprocessingController(logger, preprocessor))
-    
-    # --- 2. SPECTRAL UNMIXING (Optional) ---
+
+    # --- 2. SPECTRAL UNMIXING ---
     if settings.get('enabled', True):
-        
+
         # 2a. Auto-component workflow
         if settings.get('auto_components', True):
             # [🧠 LLM] Get initial component guess
@@ -53,25 +57,62 @@ def create_hyperspectral_pipeline(
             pipeline.append(GetFinalComponentSelectionController(
                 model, logger, generation_config, safety_settings, parse_fn
             ))
-        
-        # 2b. [🛠️ Tool] Run final NMF (either with selected or fixed components)
+
+        # 2b. [🛠️ Tool] Run final NMF
         pipeline.append(RunFinalSpectralUnmixingController(logger, settings))
-        
+
         # 2c. [🛠️ Tool] Create all plots for analysis
         pipeline.append(CreateAnalysisPlotsController(logger, settings))
 
-    # --- 3. FINAL INTERPRETATION ---
-    
-    # 3a. [📝 Prep] Build the final prompt
+    # --- 3. ITERATION ANALYSIS & REFINEMENT DECISION ---
+
+    # 3a. [📝 Prep] Build the prompt for *this iteration*
     pipeline.append(BuildHyperspectralPromptController(logger))
 
-    # 3b. [🧠 LLM] Run final interpretation (from base_controllers)
+    # 3b. [🧠 LLM] Run interpretation for *this iteration*
+    # We use RunFinalInterpretationController, but the agent will store
+    # this intermediate result.
     pipeline.append(RunFinalInterpretationController(
         model, logger, generation_config, safety_settings, parse_fn
     ))
 
-    # 3c. [🛠️ Tool] Store images for feedback (from base_controllers)
+    # 3c. [🧠 LLM] Decide if we need to zoom
+    pipeline.append(SelectRefinementTargetController(
+        model, logger, generation_config, safety_settings, parse_fn
+    ))
+    
+    # 3d. [🛠️ Tool] Prepare data for next loop (if needed)
+    pipeline.append(ApplyRefinementTargetController(logger))
+
+    logger.info(f"Hyperspectral *iteration* pipeline created with {len(pipeline)} steps.")
+    return pipeline
+
+def create_hyperspectral_synthesis_pipeline(
+    model, 
+    logger: logging.Logger, 
+    generation_config, 
+    safety_settings, 
+    settings: dict,
+    parse_fn: Callable,
+    store_fn: Callable
+) -> List:
+    """
+    Assembles the final pipeline that runs *after* all recursive
+    iterations are complete.
+    This includes: Synthesis -> Final Interpretation -> Storage.
+    """
+    pipeline = []
+
+    # 1. [📝 Prep] Build the holistic synthesis prompt
+    pipeline.append(BuildHolisticSynthesisPromptController(logger))
+
+    # 2. [🧠 LLM] Run final synthesis interpretation
+    pipeline.append(RunFinalInterpretationController(
+        model, logger, generation_config, safety_settings, parse_fn
+    ))
+
+    # 3. [🛠️ Tool] Store all images from all iterations
     pipeline.append(StoreAnalysisResultsController(logger, store_fn))
     
-    logger.info(f"Hyperspectral pipeline created with {len(pipeline)} steps.")
+    logger.info(f"Hyperspectral *synthesis* pipeline created with {len(pipeline)} steps.")
     return pipeline

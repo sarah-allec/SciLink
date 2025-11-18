@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 from atomai.stat import SpectralUnmixer
 from .image_processor import create_multi_abundance_overlays
+import cv2 # Import cv2 for resizing
 
 def run_spectral_unmixing(
     hspy_data: np.ndarray,
@@ -223,3 +224,82 @@ def create_structure_overlays(
     except Exception as e:
         logger.warning(f"  (Tool Warning: Failed to create abundance overlays: {e})")
         return None
+
+# --- NEW FUNCTIONS TO BE ADDED ---
+
+def apply_spatial_mask(
+    current_hspy_data: np.ndarray, 
+    abundance_maps: np.ndarray, 
+    component_index: int, 
+    percentile: float = 85.0
+) -> np.ndarray:
+    """
+    Masks hyperspectral data based on an abundance map.
+    Uses the *current* iteration's data as the base.
+    """
+    if abundance_maps is None:
+        raise ValueError("Abundance maps are None, cannot apply spatial mask.")
+    
+    mask_map = abundance_maps[..., component_index]
+    
+    if mask_map.ndim != 2:
+        raise ValueError(f"Abundance map must be 2D, but got shape {mask_map.shape}")
+        
+    # Resize mask map to match data if needed
+    if mask_map.shape != current_hspy_data.shape[:2]:
+        # Use cv2.resize, ensuring cv2 is imported
+        mask_map = cv2.resize(mask_map, (current_hspy_data.shape[1], current_hspy_data.shape[0]),
+                              interpolation=cv2.INTER_NEAREST)
+
+    # Threshold non-zero pixels to find the mask
+    positive_pixels = mask_map[mask_map > 1e-6]
+    if positive_pixels.size == 0:
+        # No positive pixels found, return original data
+        return current_hspy_data 
+
+    threshold_val = np.percentile(positive_pixels, percentile)
+    mask_2d = mask_map >= threshold_val
+    
+    if np.sum(mask_2d) == 0:
+        # Mask is empty, return original data
+        return current_hspy_data 
+
+    # Apply mask
+    masked_data = current_hspy_data.copy()
+    masked_data[~mask_2d] = 0 # Zero out pixels *not* in the mask
+    return masked_data
+
+def apply_spectral_slice(
+    original_hspy_data: np.ndarray, 
+    system_info: dict, 
+    energy_range: list
+) -> tuple[np.ndarray, dict]:
+    """
+    Slices hyperspectral data based on an energy range.
+    Uses the *original* data as the base and returns an updated system_info.
+    """
+    energy_axis, _, has_info = create_energy_axis(original_hspy_data.shape[2], system_info)
+    if not has_info:
+        raise ValueError("Cannot apply spectral slice: No energy axis information found in metadata.")
+        
+    if energy_range is None or len(energy_range) != 2:
+        raise ValueError(f"Invalid energy_range: {energy_range}")
+        
+    start_e, end_e = min(energy_range), max(energy_range)
+    
+    slice_indices = np.where((energy_axis >= start_e) & (energy_axis <= end_e))[0]
+    
+    if len(slice_indices) == 0:
+        raise ValueError(f"No data found in energy range {energy_range}.")
+        
+    sliced_data = original_hspy_data[..., slice_indices]
+    
+    # We must also update the system_info to reflect this slice
+    new_system_info = system_info.copy()
+    new_system_info["energy_range"] = {
+        "start": float(energy_axis[slice_indices[0]]),
+        "end": float(energy_axis[slice_indices[-1]]),
+        "units": system_info.get("energy_range", {}).get("units", "unknown")
+    }
+    
+    return sliced_data, new_system_info
