@@ -205,10 +205,8 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                 current_state["continue_loop"] = iteration_state.get("continue_loop", False)
                 current_state["data_for_this_iteration"] = iteration_state.get("data_for_this_iteration")
                 current_state["iteration_title"] = iteration_state.get("iteration_title", f"Iteration {iteration_count+1}")
-                # --- THIS IS THE FIX ---
                 # Propagate the updated system_info (with sliced energy range) to the next loop
                 current_state["system_info"] = iteration_state.get("system_info", current_state["system_info"])
-                # --- END FIX ---
                 iteration_count += 1
             
             # --- 6. Run Final Synthesis ---

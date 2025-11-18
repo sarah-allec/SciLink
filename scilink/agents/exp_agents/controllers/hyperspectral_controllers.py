@@ -35,7 +35,6 @@ class RunPreprocessingController:
             state["data_quality"] = {"reasoning": "Preprocessing skipped: agent not initialized."}
             return state
 
-        # --- THIS IS THE NEW LOGIC ---
         # Check the runtime flag set by the agent
         if not state.get("settings", {}).get("run_preprocessing", True):
             self.logger.info("Preprocessing skipped for this refinement iteration (run_preprocessing=False).")
@@ -57,7 +56,6 @@ class RunPreprocessingController:
                 self.logger.error(f"❌ Tool Failed: Stat calculation on refinement data failed: {e}", exc_info=True)
                 state["error_dict"] = {"error": "Stat calculation on refinement data failed", "details": str(e)}
                 return state
-        # --- END OF NEW LOGIC ---
 
         # This code now only runs for the *first* iteration (Global Analysis)
         try:
@@ -391,7 +389,6 @@ class CreateAnalysisPlotsController:
         except Exception as e:
             self.logger.warning(f"Failed to save component pair plots: {e}")
         
-        # --- NEW BLOCK TO SAVE THE SUMMARY PLOT ---
         try:
             self.logger.info("  (Tool Info: Creating final NMF summary plot...)")
             n_comp = state.get("final_n_components", components.shape[0])
@@ -411,7 +408,6 @@ class CreateAnalysisPlotsController:
                 self.logger.info(f"📸 Saved final NMF summary plot to: {filepath}")
         except Exception as e:
             self.logger.warning(f"Failed to save final NMF summary plot: {e}")
-        # --- END NEW BLOCK ---
         
         # 2. Create structure overlays if structure image exists
         if state.get("structure_image_path"):
@@ -496,14 +492,10 @@ class BuildHyperspectralPromptController:
                 prompt_parts.append(f"\n{plot['label']}:")
                 prompt_parts.append({"mime_type": "image/jpeg", "data": plot['bytes']})
                 
-                # --- THIS IS THE FIX ---
-                # The plot object is {'label':..., 'bytes':...}
-                # We must add it to analysis_images as {'label':..., 'data':...}
                 state["analysis_images"].append({
                     "label": plot['label'],
                     "data": plot['bytes']
                 })
-                # --- END FIX ---
 
         # Add system info
         if state.get("system_info"):
@@ -516,7 +508,6 @@ class BuildHyperspectralPromptController:
         self.logger.info("✅ Prep Step Complete: Final prompt is ready.")
         return state
 
-# --- NEW CONTROLLERS FOR RECURSIVE ANALYSIS ---
 
 class SelectRefinementTargetController:
     """
@@ -578,7 +569,6 @@ class SelectRefinementTargetController:
             state["refinement_decision"] = result_json
             self.logger.info(f"✅ LLM Step Complete: Refinement decision: {result_json.get('reasoning')}")
             
-            # --- Pretty-print for user ---
             print("\n" + "="*80)
             print("🧠 LLM REASONING (SelectRefinementTargetController)")
             print(f"  Refinement Needed: {result_json.get('refinement_needed', 'Error')}")
@@ -587,7 +577,6 @@ class SelectRefinementTargetController:
                 print(f"  Target Type: {result_json.get('target_type')}")
                 print(f"  Target Details: {result_json.get('target_details', {}).get('description')}")
             print("="*80 + "\n")
-            # --- End pretty-print ---
 
         except Exception as e:
             self.logger.error(f"❌ LLM Step Failed: Refinement selection: {e}", exc_info=True)
@@ -626,7 +615,6 @@ class ApplyRefinementTargetController:
                 self.logger.info(f"Applying SPATIAL refinement: {target_details.get('description')}")
                 component_index = int(target_value)
                 
-                # --- THIS IS THE FIX ---
                 # The LLM provides a 1-based index (e.g., "Component 3" -> 3)
                 # We must convert it to a 0-based index for Python.
                 if component_index > 0:
@@ -634,7 +622,6 @@ class ApplyRefinementTargetController:
                 else:
                     component_index = 0 # Safety check, use first component
                 self.logger.info(f"  (Tool Info: LLM 1-based index {target_value} converted to 0-based index {component_index})")
-                # --- END FIX ---
                 
                 # Use the *current* iteration's data, not the original
                 current_data = state.get("hspy_data") 

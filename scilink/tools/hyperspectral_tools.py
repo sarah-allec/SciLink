@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 from atomai.stat import SpectralUnmixer
 from .image_processor import create_multi_abundance_overlays
-import cv2 # Import cv2 for resizing
+import cv2
 
 def run_spectral_unmixing(
     hspy_data: np.ndarray,
@@ -225,7 +225,6 @@ def create_structure_overlays(
         logger.warning(f"  (Tool Warning: Failed to create abundance overlays: {e})")
         return None
 
-# --- NEW FUNCTIONS TO BE ADDED ---
 
 def apply_spatial_mask(
     current_hspy_data: np.ndarray, 
