@@ -2,6 +2,7 @@ import os
 import numpy as np
 import cv2
 from typing import Dict, Any
+from collections import deque
 
 from .base_agent import BaseAnalysisAgent
 from .instruct import (
@@ -118,20 +119,22 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         structure_system_info: dict | None = None
     ) -> tuple[dict | None, dict | None]:
         """
-        The agent's main execution engine, now a recursive loop.
-        It prepares an initial state and runs the iteration pipeline,
-        storing results and re-running on a subset until told to stop.
-        It then runs a final synthesis pipeline on all collected results.
+        The agent's main execution engine using a Queue-Based Branching architecture.
+        
+        It starts with a Global Analysis task. If the LLM identifies distinct features 
+        (e.g., "Phase A" and "Phase B"), it generates new tasks for each, adding them 
+        to the queue. The agent processes tasks until the queue is empty or max depth is reached.
         """
         try:
             # --- 1. Initial State Initialization ---
-            self.logger.info(f"--- Starting RECURSIVE analysis pipeline for {data_path} ---")
+            self.logger.info(f"--- Starting BRANCHING analysis pipeline for {data_path} ---")
             self._clear_stored_images()
             system_info = self._handle_system_info(system_info)
             
+            # Load the raw hyperspectral data
             original_hspy_data = self._load_hyperspectral_data(data_path)
 
-            # Handle optional structure image
+            # Handle optional structure image (Loaded once, passed to all tasks)
             structure_image_blob = None
             if structure_image_path and os.path.exists(structure_image_path):
                 try:
@@ -145,83 +148,118 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                 except Exception as e:
                     self.logger.warning(f"Could not load structure image {structure_image_path}: {e}")
             
-            # --- 2. Recursive Loop Setup ---
-            all_iteration_results = []
-            iteration_count = 0
-            
-            # This is the base state shared by all iterations
-            base_state = {
-                "data_path": data_path,
-                "system_info": system_info,
-                "instruction_prompt": instruction_prompt, # Used by synthesis
-                "settings": self.spectral_settings,
-                "original_hspy_data": original_hspy_data, # Unmodified data
-                "structure_image_path": structure_image_path,
-                "structure_system_info": self._handle_system_info(structure_system_info),
-                "structure_image_blob": structure_image_blob,
-                "continue_loop": True,
-                "data_for_this_iteration": original_hspy_data, # Data to be sliced
-                "iteration_title": "Global Analysis",
-                "error_dict": None
+            # --- 2. Initialize the Task Queue ---
+            # Define the root task (Global Analysis)
+            initial_task = {
+                "data": original_hspy_data,           # The data chunk to analyze
+                "system_info": system_info,           # Metadata specific to this chunk
+                "title": "Global Analysis",           # Display title
+                "parent_reasoning": None,             # Context: Why are we looking at this?
+                "depth": 0                            # Recursion depth
             }
-
-            current_state = base_state.copy()
-
-            while iteration_count < self.MAX_REFINEMENT_ITERATIONS and current_state.get("continue_loop", False):
-                self.logger.info(f"\n--- STARTING HYPERSPECTRAL ITERATION {iteration_count} ({current_state.get('iteration_title', '')}) ---\n")
+            
+            # Use a deque for efficient popping from the left (Breadth-First)
+            task_queue = deque([initial_task])
+            
+            # Storage for the results of every completed task
+            all_completed_results = []
+            
+            # --- 3. The Processing Loop ---
+            task_counter = 0
+            
+            while task_queue:
+                # Get the next task
+                current_task = task_queue.popleft() 
+                task_counter += 1
                 
-                # Create a fresh state for this iteration
-                iteration_state = current_state.copy()
-                iteration_state["analysis_images"] = [] # Reset images for this iteration
-                iteration_state["hspy_data"] = iteration_state["data_for_this_iteration"]
-                
-                # Disable preprocessing after the first run
-                if iteration_count > 0:
-                    iteration_state["settings"] = iteration_state["settings"].copy()
+                # Guardrail: Max depth check
+                if current_task["depth"] > self.MAX_REFINEMENT_ITERATIONS:
+                    self.logger.info(f"Skipping task '{current_task['title']}': Max recursion depth ({self.MAX_REFINEMENT_ITERATIONS}) reached.")
+                    continue
+
+                self.logger.info(f"\n=== PROCESSING TASK {task_counter}: {current_task['title']} (Depth {current_task['depth']}) ===\n")
+
+                # Construct the State for this specific task
+                # This isolates the data/context for this specific iteration
+                iteration_state = {
+                    "data_path": data_path,
+                    "hspy_data": current_task["data"],               # The specific slice for this task
+                    "original_hspy_data": original_hspy_data,        # Reference for spectral slicing tools
+                    "system_info": current_task["system_info"],      # Specific metadata (e.g. sliced energy range)
+                    "instruction_prompt": instruction_prompt,        # Base instructions
+                    "settings": self.spectral_settings.copy(),       # Settings (copied to allow modification)
+                    "iteration_title": current_task["title"],
+                    "parent_refinement_reasoning": current_task["parent_reasoning"],
+                    "current_depth": current_task["depth"],
+                    
+                    # Structure image context (passed to all tasks)
+                    "structure_image_path": structure_image_path,
+                    "structure_system_info": self._handle_system_info(structure_system_info),
+                    "structure_image_blob": structure_image_blob,
+                    
+                    # Containers for results
+                    "analysis_images": [],
+                    "error_dict": None
+                }
+
+                # Optimization: Only run heavy preprocessing (despike/mask) on the Global task (Depth 0).
+                # Sub-tasks act on data that is already processed/sliced.
+                if current_task["depth"] > 0:
                     iteration_state["settings"]['run_preprocessing'] = False
-                
-                # --- 3. Run Iteration Pipeline ---
+
+                # --- Run the Iteration Pipeline ---
+                # This runs NMF, visualization, and the Refinement Decision Logic
                 for controller in self.iteration_pipeline:
                     iteration_state = controller.execute(iteration_state)
+                    
+                    # Critical Error Check
                     if iteration_state.get("error_dict"):
-                        self.logger.error(f"Pipeline failed at step {controller.__class__.__name__}. Stopping loop.")
-                        current_state["continue_loop"] = False
+                        self.logger.error(f"Pipeline failed at step {controller.__class__.__name__} for task '{current_task['title']}'.")
                         break
                 
+                # If the pipeline failed effectively, skip saving results (or save partial error results)
                 if iteration_state.get("error_dict"):
-                    break # Exit loop on error
-                
-                # --- 4. Store Iteration Results ---
-                all_iteration_results.append({
-                    "iteration_title": iteration_state.get('iteration_title', f'Iteration {iteration_count}'),
+                    continue
+
+                # --- Store Results ---
+                # Save the summary and images for the Final Synthesis
+                result_summary = {
+                    "iteration_title": iteration_state.get("iteration_title"),
                     "iteration_analysis_text": iteration_state.get("result_json", {}).get("detailed_analysis", "Analysis text not found."),
                     "analysis_images": iteration_state.get("analysis_images", []),
                     "refinement_decision": iteration_state.get("refinement_decision", {}),
-                    "final_components": iteration_state.get("final_components"),
-                    "final_abundance_maps": iteration_state.get("final_abundance_maps")
-                })
+                    "depth": current_task["depth"]
+                }
+                all_completed_results.append(result_summary)
 
-                # --- 5. Update Loop State for Next Iteration ---
-                current_state["continue_loop"] = iteration_state.get("continue_loop", False)
-                if current_state["continue_loop"]:
-                    # Prepare data for next loop
-                    current_state["data_for_this_iteration"] = iteration_state.get("data_for_this_iteration")
-                    current_state["iteration_title"] = iteration_state.get("iteration_title")
-                    current_state["system_info"] = iteration_state.get("system_info")
-                    # Extract reasoning from the decision that triggered this continuation
-                    decision = iteration_state.get("refinement_decision", {})
-                    if decision.get("refinement_needed"):
-                        current_state["parent_refinement_reasoning"] = decision.get("reasoning", "Refinement requested.")
-                    else:
-                        current_state["parent_refinement_reasoning"] = None
-                iteration_count += 1
+                # --- Process New Branches ---
+                # The `GenerateRefinementTasksController` populates `new_tasks` based on LLM targets
+                new_tasks = iteration_state.get("new_tasks", [])
+                
+                if new_tasks:
+                    self.logger.info(f"--> Task '{current_task['title']}' spawned {len(new_tasks)} new sub-tasks.")
+                    for t in new_tasks:
+                        # Map the controller output to our queue format
+                        queue_item = {
+                            "data": t["data"],
+                            "system_info": t["system_info"],
+                            "title": t["title"],
+                            "parent_reasoning": t["parent_reasoning"],
+                            "depth": t["source_depth"]
+                        }
+                        task_queue.append(queue_item)
+
+            # --- 4. Run Final Synthesis ---
+            self.logger.info(f"\n=== QUEUE EMPTY. Synthesizing {len(all_completed_results)} analyses ===\n")
             
-            # --- 6. Run Final Synthesis ---
-            self.logger.info(f"\n--- RECURSIVE LOOP FINISHED. RUNNING FINAL SYNTHESIS. ({len(all_iteration_results)} iterations) ---\n")
-
-            synthesis_state = base_state.copy()
-            synthesis_state["all_iteration_results"] = all_iteration_results
-            synthesis_state["instruction_prompt"] = instruction_prompt # Pass the *original* prompt
+            # Create state for the synthesis pipeline
+            synthesis_state = {
+                "all_iteration_results": all_completed_results,
+                "system_info": system_info,
+                "instruction_prompt": instruction_prompt,
+                "result_json": None,
+                "error_dict": None
+            }
 
             for controller in self.synthesis_pipeline:
                 synthesis_state = controller.execute(synthesis_state)
@@ -229,7 +267,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                     self.logger.error(f"Synthesis pipeline failed at step {controller.__class__.__name__}.")
                     break
 
-            # --- 7. Return Final Results ---
+            # --- 5. Return Final Results ---
             self.logger.info(f"--- Analysis pipeline finished. ---")
             return synthesis_state.get("result_json"), synthesis_state.get("error_dict")
 
@@ -242,7 +280,6 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             self.logger.exception(f"An unexpected error occurred during the analysis pipeline: {e}")
             return None, {"error": "An unexpected error occurred", "details": str(e)}
 
-    # --- Public API Methods ---
 
     def analyze_for_claims(self, data_path: str, metadata_path: Dict[str, Any] | str | None = None,
                            structure_image_path: str = None, structure_system_info: Dict[str, Any] = None

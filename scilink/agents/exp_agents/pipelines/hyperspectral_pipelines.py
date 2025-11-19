@@ -10,7 +10,7 @@ from ..controllers.hyperspectral_controllers import (
     CreateAnalysisPlotsController,
     BuildHyperspectralPromptController,
     SelectRefinementTargetController,
-    ApplyRefinementTargetController,
+    GenerateRefinementTasksController,
     BuildHolisticSynthesisPromptController
 )
 from ..controllers.base_controllers import (
@@ -82,7 +82,7 @@ def create_hyperspectral_iteration_pipeline(
     ))
     
     # 3d. [🛠️ Tool] Prepare data for next loop (if needed)
-    pipeline.append(ApplyRefinementTargetController(logger))
+    pipeline.append(GenerateRefinementTasksController(logger))
 
     logger.info(f"Hyperspectral *iteration* pipeline created with {len(pipeline)} steps.")
     return pipeline

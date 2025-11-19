@@ -571,16 +571,26 @@ class SelectRefinementTargetController:
                 state["refinement_decision"] = {"refinement_needed": False, "reasoning": "LLM selection failed."}
                 return state
 
-            state["refinement_decision"] = result_json
-            self.logger.info(f"✅ LLM Step Complete: Refinement decision: {result_json.get('reasoning')}")
+            targets = result_json.get("targets", [])
+            is_needed = result_json.get("refinement_needed", False)
+
+            # Store the final decision including the list of targets
+            state["refinement_decision"] = {
+                "refinement_needed": is_needed,
+                "reasoning": result_json.get("reasoning", "No reasoning provided."),
+                "targets": targets
+            }
+
+            self.logger.info(f"✅ LLM Step Complete: Refinement decision: {state['refinement_decision']['reasoning']}")
             
             print("\n" + "="*80)
             print("🧠 LLM REASONING (SelectRefinementTargetController)")
-            print(f"  Refinement Needed: {result_json.get('refinement_needed', 'Error')}")
-            print(f"  Explanation: {result_json.get('reasoning', 'N/A')}")
-            if result_json.get('refinement_needed'):
-                print(f"  Target Type: {result_json.get('target_type')}")
-                print(f"  Target Details: {result_json.get('target_details', {}).get('description')}")
+            print(f"  Refinement Needed: {is_needed}")
+            print(f"  Explanation: {state['refinement_decision']['reasoning']}")
+            print(f"  Targets Found: {len(targets)}")
+            if targets:
+                for i, t in enumerate(targets):
+                    print(f"    Target {i+1} ({t.get('type')}): {t.get('description')}")
             print("="*80 + "\n")
 
         except Exception as e:
@@ -589,91 +599,73 @@ class SelectRefinementTargetController:
             
         return state
 
-class ApplyRefinementTargetController:
+class GenerateRefinementTasksController:
     """
     [🛠️ Tool Step]
-    Slices the data for the next iteration based on the LLM's decision.
-    Includes guardrails for minimum data size.
+    Takes the list of targets from the LLM, slices the data for each,
+    and generates a list of 'New Task' dictionaries.
     """
-    MIN_SPECTRAL_CHANNELS = 10  # Guardrail: Minimum channels required for NMF
+    MIN_SPECTRAL_CHANNELS = 10 
 
     def __init__(self, logger: logging.Logger):
         self.logger = logger
 
     def execute(self, state: dict) -> dict:
-        if state.get("error_dict"): return state
-        self.logger.info("\n\n🛠️ --- CALLING TOOL: APPLY REFINEMENT TARGET --- 🛠️\n")
+        self.logger.info("\n\n🛠️ --- CALLING TOOL: GENERATE REFINEMENT TASKS --- 🛠️\n")
         
         decision = state.get("refinement_decision")
-        if not decision or not decision.get("refinement_needed"):
-            self.logger.info("No refinement needed. Setting 'continue_loop' to False.")
-            state["continue_loop"] = False
+        if not decision or not decision.get("refinement_needed") or not decision.get("targets"):
+            state["new_tasks"] = []
             return state
 
-        try:
-            target_type = decision.get("target_type")
-            target_details = decision.get("target_details", {})
-            target_value = target_details.get("value")
-            
-            new_iteration_data = None
-            iteration_title = f"Focused Analysis on {target_details.get('description', 'target')}"
-            new_system_info = state["system_info"] 
+        new_tasks = []
+        
+        # Iterate through ALL requested targets
+        for target in decision["targets"]:
+            try:
+                t_type = target.get("type")
+                t_value = target.get("value")
+                t_desc = target.get("description", "refinement")
+                
+                new_data = None
+                new_sys_info = state["system_info"]
 
-            if target_type == "spatial":
-                # ... (Keep existing spatial logic exactly as is) ...
-                self.logger.info(f"Applying SPATIAL refinement: {target_details.get('description')}")
-                component_index = int(target_value)
-                if component_index > 0: component_index -= 1
-                else: component_index = 0
-                
-                current_data = state.get("hspy_data")
-                abundance_maps = state.get("final_abundance_maps")
-                
-                new_iteration_data = tools.apply_spatial_mask(
-                    current_data, abundance_maps, component_index
-                )
-
-            elif target_type == "spectral":
-                self.logger.info(f"Applying SPECTRAL refinement: {target_details.get('description')}")
-                
-                original_data = state.get("original_hspy_data")
-                if not isinstance(target_value, list):
-                    raise ValueError(f"Spectral target value must be list, got: {target_value}")
-                
-                energy_range = list(target_value)
-                
-                # Call the tool
-                new_iteration_data, new_system_info = tools.apply_spectral_slice(
-                    original_data, state["system_info"], energy_range
-                )
-
-                #  Check Spectral Width
-                n_channels = new_iteration_data.shape[-1]
-                if n_channels < self.MIN_SPECTRAL_CHANNELS:
-                    warning_msg = (f"Refinement stopped: Targeted spectral range only has "
-                                   f"{n_channels} channels. Minimum required is {self.MIN_SPECTRAL_CHANNELS}.")
-                    self.logger.warning(warning_msg)
+                if t_type == "spatial":
+                    self.logger.info(f"Processing Spatial Task: {t_desc}")
+                    component_index = int(t_value)
+                    if component_index > 0: component_index -= 1 # 1-based to 0-based
+                    else: component_index = 0
                     
-                    # Gracefully stop the loop
-                    state["continue_loop"] = False
-                    # Update the reasoning so the user knows why it stopped
-                    state["refinement_decision"]["reasoning"] += f" [STOPPED: {warning_msg}]"
-                    return state
+                    new_data = tools.apply_spatial_mask(
+                        state["hspy_data"], state["final_abundance_maps"], component_index
+                    )
 
-            else:
-                raise ValueError(f"Unknown target_type: {target_type}")
+                elif t_type == "spectral":
+                    self.logger.info(f"Processing Spectral Task: {t_desc}")
+                    new_data, new_sys_info = tools.apply_spectral_slice(
+                        state["original_hspy_data"], state["system_info"], list(t_value)
+                    )
+                    
+                    if new_data.shape[-1] < self.MIN_SPECTRAL_CHANNELS:
+                        self.logger.warning(f"Skipping spectral task '{t_desc}': too few channels.")
+                        continue
 
-            self.logger.info(f"✅ Tool Complete: New data shape: {new_iteration_data.shape}")
-            state["data_for_this_iteration"] = new_iteration_data
-            state["iteration_title"] = iteration_title
-            state["system_info"] = new_system_info
-            state["continue_loop"] = True
+                if new_data is not None:
+                    # Create a Task Bundle
+                    task = {
+                        "data": new_data,
+                        "system_info": new_sys_info,
+                        "title": f"Focused Analysis: {t_desc}",
+                        "parent_reasoning": t_desc, # Why did we create this?
+                        "source_depth": state.get("current_depth", 0) + 1
+                    }
+                    new_tasks.append(task)
 
-        except Exception as e:
-            self.logger.error(f"❌ Tool Failed: Applying refinement failed: {e}", exc_info=True)
-            state["continue_loop"] = False
-            state["refinement_decision"]["reasoning"] = f"Loop stopped. Error applying target: {e}"
-            
+            except Exception as e:
+                self.logger.error(f"Failed to generate task for target {target}: {e}")
+
+        state["new_tasks"] = new_tasks
+        self.logger.info(f"✅ Generated {len(new_tasks)} new analysis tasks.")
         return state
 
 class BuildHolisticSynthesisPromptController:

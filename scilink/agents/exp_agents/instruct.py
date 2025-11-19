@@ -1370,46 +1370,47 @@ Output ONLY the JSON object.
 SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS = """
 You are an expert spectroscopist acting as a scientific director. You have just received the results of an NMF analysis (spectral unmixing) on a hyperspectral dataset.
 
-Your task is to analyze these results and decide if a more focused, higher-resolution "zoom-in" analysis is scientifically justified.
+Your task is to analyze these results and determine if **one or more** focused, higher-resolution "zoom-in" analyses are scientifically justified to resolve ambiguities.
 
 **Input You Will Receive:**
-1.  **Analysis Title**: (e.g., "Global Analysis" or "Focused Analysis on Region 2").
-2.  **System Information**: Metadata about the sample.
-3.  **NMF Results**: A set of plots showing component-abundance pairs.
-4.  **Structure Overlays**: (If available) Plots showing where components are located on a structural image.
+1.  **Analysis Title**: (e.g., "Global Analysis").
+2.  **NMF Results**: Component spectra and abundance maps.
 
 **Your Decision Process:**
-1.  **Assess Complexity**: Look at the NMF results. Do any components have very broad spectral peaks? Do any abundance maps show complex, overlapping regions that are poorly resolved? Does a component of interest (e.g., a defect-related peak) appear mixed with a strong background signal?
-2.  **Identify a Target**: If you see complexity, identify a single, clear target for the next analysis iteration. This can be:
-    * **"spatial"**: Zooming into a specific spatial region defined by one of the abundance maps (e.g., "re-analyze the pixels where component 3 is high"). This is good for separating overlapping spatial phases.
-    * **"spectral"**: Zooming into a specific energy/wavelength range (e.g., "re-analyze the data, but only using the 400-500 eV range"). This is good for separating broad, overlapping spectral peaks.
-3.  **Decide to Stop**: If the current analysis is clear, all peaks are sharp, and all spatial regions are well-defined, then no further refinement is needed.
+Look for complexity or ambiguity.
+* **Overlapping Phases?** If Map 1 and Map 2 overlap in a specific area, zoom in spatially on that area to separate them.
+* **Broad/Complex Peaks?** If Component 3 has a broad shoulder, zoom in spectrally on that energy range to resolve the doublet.
+* **Distinct Features?** If you see two completely different interesting regions (e.g., a grain boundary AND a precipitate), create TWO separate targets.
 
 **Output Format:**
-You MUST output a valid JSON object with the following structure.
+You MUST output a valid JSON object.
 
-**If you decide to stop:**
-```json
+**If NO refinement is needed:**
 {
   "refinement_needed": false,
-  "reasoning": "The current analysis is sufficient. All components are well-resolved spatially and spectrally."
+  "reasoning": "All components are well-resolved and chemically distinct."
 }
 
-If you decide to zoom in:
+**If refinement IS needed (You can propose multiple):**
 {
   "refinement_needed": true,
-  "reasoning": "[Your justification, e.g., 'Component 2 shows a broad peak that may be composed of multiple sub-peaks.']",
-  "target_type": "[spatial or spectral]",
-  "target_details": {
-    "description": "[A human-readable description, e.g., 'Focus on the region defined by component 2' or 'Focus on the 400-500 eV range']",
-    "value": "[The component index (as an integer) OR the [start, end] energy range (as a list of numbers)]"
-  }
+  "reasoning": "Component 2 contains a broad peak, and Map 4 shows a distinct precipitate that needs isolated analysis.",
+  "targets": [
+      {
+        "type": "spectral",
+        "description": "Focus on 400-500 eV range to resolve Component 2 shoulder",
+        "value": [400, 500]
+      },
+      {
+        "type": "spatial",
+        "description": "Isolate the precipitate region defined by Component 4",
+        "value": 4
+      }
+  ]
 }
-Example (Spatial): "target_type": "spatial", "target_details": {"description": "Focus on region from component 2", "value": 2}
 
-Example (Spectral): "target_type": "spectral", "target_details": {"description": "Focus on 400-500 eV range", "value": [400, 500]}
-
-Provide ONLY the JSON object. """
+Provide ONLY the JSON object.
+"""
 
 SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS = """ You are an expert materials scientist synthesizing a multi-scale hyperspectral analysis. You will be provided with a series of analysis results, starting from a "Global Analysis" and followed by one or more "Focused Analyses" (zooms).
 
