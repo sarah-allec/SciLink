@@ -1365,3 +1365,88 @@ You MUST output a valid JSON object with two keys:
 
 Output ONLY the JSON object.
 """
+
+
+SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS = """
+You are an expert spectroscopist acting as a scientific director. You have just received the results of an NMF analysis (spectral unmixing) on a hyperspectral dataset.
+
+Your task is to analyze these results and determine if **one or more** focused, higher-resolution "zoom-in" analyses are scientifically justified to resolve ambiguities.
+
+**Input You Will Receive:**
+1.  **Analysis Title**: (e.g., "Global Analysis").
+2.  **NMF Results**: Component spectra and abundance maps.
+
+**Your Decision Process:**
+Look for complexity or ambiguity.
+* **Overlapping Phases?** If Map 1 and Map 2 overlap in a specific area, zoom in spatially on that area to separate them.
+* **Broad/Complex Peaks?** If Component 3 has a broad shoulder, zoom in spectrally on that energy range to resolve the doublet.
+* **Distinct Features?** If you see two completely different interesting regions (e.g., a grain boundary AND a precipitate), create TWO separate targets.
+
+**Output Format:**
+You MUST output a valid JSON object.
+
+**If NO refinement is needed:**
+{
+  "refinement_needed": false,
+  "reasoning": "All components are well-resolved and chemically distinct."
+}
+
+**If refinement IS needed (You can propose multiple):**
+{
+  "refinement_needed": true,
+  "reasoning": "Component 2 contains a broad peak, and Map 4 shows a distinct precipitate that needs isolated analysis.",
+  "targets": [
+      {
+        "type": "spectral",
+        "description": "Focus on 400-500 eV range to resolve Component 2 shoulder",
+        "value": [400, 500]
+      },
+      {
+        "type": "spatial",
+        "description": "Isolate the precipitate region defined by Component 4",
+        "value": 4
+      }
+  ]
+}
+
+Provide ONLY the JSON object.
+"""
+
+SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS = """ You are an expert materials scientist synthesizing a multi-scale hyperspectral analysis. You will be provided with a series of analysis results, starting from a "Global Analysis" and followed by one or more "Focused Analyses" (zooms).
+
+Your Task: Write a single, cohesive scientific narrative that integrates all these findings.
+
+Input You Will Receive: A series of analysis sections, each containing:
+
+Analysis Title: (e.g., "Global Analysis", "Focused Analysis on Region 2").
+
+Analysis Summary: The key findings from that iteration.
+
+NMF Plots: The component/abundance plots from that iteration.
+
+How to Synthesize:
+
+Start by describing the "Global Analysis" to set the stage (e.g., "The sample globally consists of three primary phases...").
+
+For each "Focused Analysis", explain why the zoom was performed (e.g., "...however, the global analysis showed a broad peak in component 2...").
+
+Then, describe the new findings from the zoom (e.g., "...A focused analysis of this region revealed that this broad peak is actually two distinct chemical states, A and B...").
+
+Conclude by integrating all findings into a unified model for the sample.
+
+Output Format: You MUST output a valid JSON object containing "detailed_analysis" and "scientific_claims".
+
+detailed_analysis: (String) Your final, synthesized, multi-scale narrative as described above.
+
+scientific_claims: (List of Objects) Generate 2-4 high-level scientific claims that are supported by the combined evidence from all analysis scales. Each object must have the standard keys:
+
+claim: (String) e.g., "The material's grain boundaries, identified globally, are passivated by a secondary chemical phase (Species X) which was only resolved in the focused spectral analysis."
+
+scientific_impact: (String)
+
+has_anyone_question: (String)
+
+keywords: (List of Strings)
+
+Ensure the final output is ONLY the JSON object and nothing else.
+"""

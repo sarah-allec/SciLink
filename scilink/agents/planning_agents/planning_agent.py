@@ -166,6 +166,78 @@ class PlanningAgent:
              print("--- Using existing knowledge base. ---")
         return True
 
+    def _verify_plan_relevance(self, objective: str, result: Dict[str, Any]) -> bool:
+        """
+        Uses the LLM to strictly evaluate if the proposed experiments
+        actually address the user's objective.
+        Returns True if relevant, False if irrelevant/tangential.
+        """
+        experiments = result.get("proposed_experiments", [])
+        if not experiments:
+            # If the structure is wrong or empty, we can't verify it, but 
+            # usually this means generation failed anyway. 
+            return False
+
+        # Summarize the proposal for the evaluator to save tokens/complexity
+        plan_summary_lines = []
+        for i, exp in enumerate(experiments):
+            name = exp.get('experiment_name', 'N/A')
+            hyp = exp.get('hypothesis', 'N/A')
+            plan_summary_lines.append(f"{i+1}. {name}: {hyp}")
+        plan_summary = "\n".join(plan_summary_lines)
+
+        # Strict Evaluation Prompt
+        eval_prompt = f"""
+        You are a strict scientific research evaluator.
+        
+        1. User Objective: "{objective}"
+        2. Proposed Plan: 
+        {plan_summary}
+
+        **Task:**
+        Determine if the Proposed Plan *directly* addresses the User Objective using the specific context provided in the plan.
+        
+        **Criteria for NO (Irrelevant):**
+        - If the plan is about a completely different topic (e.g., User asks for Solar, Plan is about Batteries).
+        - If the plan is generic and ignores specific constraints in the objective.
+        - If the plan acknowledges it doesn't know the answer but guesses anyway.
+
+        **Output:**
+        Respond with a single JSON object: {{ "is_relevant": boolean, "reason": "string explanation" }}
+        """
+
+        try:
+            # Use the same model config
+            # Note: using a list for content to match generate_content signature if needed, or string.
+            response = self.model.generate_content([eval_prompt], generation_config=self.generation_config)
+            
+            # Simple parsing logic similar to main loop
+            if hasattr(response, 'text'):
+                json_text = response.text.strip()
+            elif hasattr(response, 'parts') and response.parts:
+                json_text = response.parts[0].text.strip()
+            else:
+                logging.warning("Verification response empty.")
+                return True # Default to trusting plan if verification fails technically
+
+            if json_text.startswith("```json"): json_text = json_text[len("```json"):].strip()
+            if json_text.endswith("```"): json_text = json_text[:-len("```")].strip()
+            
+            eval_result = json.loads(json_text)
+            
+            is_relevant = eval_result.get("is_relevant", False)
+            if not is_relevant:
+                print(f"    - ⚠️  Plan Verification Failed: {eval_result.get('reason', 'Unknown reason')}")
+            else:
+                 print(f"    - ✅ Plan Verification Passed.")
+                 
+            return is_relevant
+
+        except Exception as e:
+            logging.error(f"Verification step failed: {e}")
+            # If verification crashes, default to accepting the plan to be safe/non-blocking
+            return True
+
     def _perform_rag_query(self,
                            objective: str,
                            instructions: str,
@@ -307,17 +379,36 @@ class PlanningAgent:
                 logging.error(error_msg)
                 return {"error": error_msg, "raw_response": str(response)}
 
-            # --- FALLBACK LOGIC ---
+            # --- REFACTORED FALLBACK LOGIC ---
+            # We now combine the "Explicit Error" check with a "Relevance Verification" check.
+            trigger_fallback = False
+            fallback_reason = ""
+
+            # Check 1: Did the LLM explicitly return an error ("Insufficient context")?
             if (result.get("error") and 
                 "Insufficient context" in result.get("error") and 
                 instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS):
-                
-                print(f"    - ⚠️  Insufficient context. Attempting fallback with general knowledge...")
+                trigger_fallback = True
+                fallback_reason = "LLM reported insufficient context."
+
+            # Check 2: If no error, does the plan actually match the request? (Verification Step)
+            elif (instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS and 
+                  not result.get("error")):
+                print(f"    - 🔍 Verifying plan relevance against objective...")
+                # We use a lighter self-reflection call to check if the plan is relevant
+                is_relevant = self._verify_plan_relevance(objective, result)
+                if not is_relevant:
+                    trigger_fallback = True
+                    fallback_reason = "Plan verification failed (relevance check)."
+
+            # --- Execute Fallback if triggered ---
+            if trigger_fallback:
+                print(f"    - ⚠️  {fallback_reason} Attempting fallback with general knowledge...")
                 
                 fallback_prompt_parts = [HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK]
                 fallback_prompt_parts.append(f"## Objective:\n{objective}")
 
-                # Add images to fallback prompt as well
+                # Re-attach images/descriptions to fallback prompt as well
                 if loaded_images:
                     fallback_prompt_parts.append("\n## Provided Images:\n(See attached images for visual context)\n")
                     fallback_prompt_parts.extend(loaded_images)
