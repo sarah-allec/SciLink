@@ -474,8 +474,17 @@ class PlanningAgent:
                 describing images.
             output_json_path: (Optional) A file path to save the JSON results.
         """
-        if not self._ensure_kb_is_ready(document_paths, structured_data_sets):
-            return {"error": "Knowledge base preparation failed."}
+        # Check if KB is ready, but handle the "No Documents" case gracefully
+        kb_ready = self._ensure_kb_is_ready(document_paths, structured_data_sets)
+        
+        if not kb_ready:
+            # Case A: User provided documents, but they failed to process (e.g., corrupt PDF)
+            if (document_paths or structured_data_sets):
+                return {"error": "Knowledge base preparation failed for the provided documents."}
+            
+            # Case B: User provided NO documents (Fresh Install) -> Proceed to Fallback
+            else:
+                logging.warning("⚠️ No documents provided and KB not built. Proceeding to General Knowledge Fallback.")
 
         # Format the TEA summary for the prompt helper
         additional_context_for_prompt = None
