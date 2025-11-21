@@ -9,7 +9,7 @@ PIL_Image = PIL.Image
 
 
 from .knowledge_base import KnowledgeBase
-from .pdf_parser import extract_pdf_two_pass
+from .pdf_parser import extract_pdf_two_pass, chunk_text
 from .excel_parser import parse_adaptive_excel
 from .instruct import (
     HYPOTHESIS_GENERATION_INSTRUCTIONS,
@@ -101,10 +101,41 @@ class PlanningAgent:
 
         # --- 1. Process General Documents (PDFs) ---
         for doc_path in doc_paths:
-            if Path(doc_path).suffix.lower() == '.pdf':
+            path = Path(doc_path)
+            file_ext = path.suffix.lower()
+            if file_ext == '.pdf':
                 all_chunks.extend(extract_pdf_two_pass(doc_path))
+            elif file_ext in ['.txt', '.md', '.py', '.java', '.r']:
+                print(f"  - Processing Code/Text file: {path.name}")
+                try:
+                    with path.open('r', encoding='utf-8') as f:
+                        code_content = f.read()
+                    
+                    # Create one single chunk for the whole code file.
+                    # RAG can retrieve specific functions/classes if chunked, 
+                    # but for entire files, a single chunk with a descriptive
+                    # source title is often preferred to maintain context.
+                    # We will use the existing chunk_text from pdf_parser for consistency.
+
+                    # Chunk the code content if it's too large
+                    code_chunks = chunk_text(
+                        f"CODE FILE: {path.name}\n\n```\n{code_content}\n```", 
+                        page_num=1, 
+                        chunk_size=5000, # Use a size suitable for code blocks
+                        overlap=50
+                    )
+                    # Update metadata content type for code chunks
+                    for chunk in code_chunks:
+                        chunk['metadata']['content_type'] = 'code'
+                        chunk['metadata']['source'] = doc_path
+                        
+                    all_chunks.extend(code_chunks)
+                    print(f"  - ✅ Extracted {len(code_chunks)} code chunk(s) from {path.name}.")
+
+                except Exception as e:
+                    print(f"  - ❌ Error reading code file {doc_path}: {e}")
             else:
-                print(f"  - ⚠️  Skipping unsupported file type in document_paths: {doc_path}")
+                print(f"  - ⚠️ Skipping unsupported file type in document_paths: {doc_path}")
 
         # --- 2. Process Structured Data Sets (e.g., Excel + JSON) ---
         for data_set in struct_data:
