@@ -11,7 +11,11 @@ PIL_Image = PIL.Image
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass
 from .excel_parser import parse_adaptive_excel
-from .instruct import HYPOTHESIS_GENERATION_INSTRUCTIONS, TEA_INSTRUCTIONS, HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK
+from .instruct import (
+    HYPOTHESIS_GENERATION_INSTRUCTIONS,
+    TEA_INSTRUCTIONS, 
+    HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK, 
+    TEA_INSTRUCTIONS_FALLBACK)
 from ...auth import get_api_key, APIKeyNotFoundError
 from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
 
@@ -274,6 +278,7 @@ class PlanningAgent:
 
         # --- 2. Perform RAG Retrieval from the Knowledge Base ---
         print(f"\n--- Retrieving Relevant Context for {task_name} ---")
+        # This will return empty list [] gracefully if KB is not built
         context_chunks = self.knowledge_base.retrieve(objective, top_k=7) 
 
         # We use a dict with text as the key to auto-deduplicate
@@ -379,33 +384,43 @@ class PlanningAgent:
                 logging.error(error_msg)
                 return {"error": error_msg, "raw_response": str(response)}
 
-            # --- REFACTORED FALLBACK LOGIC ---
-            # We now combine the "Explicit Error" check with a "Relevance Verification" check.
+            # --- REFACTORED FALLBACK LOGIC START ---
             trigger_fallback = False
             fallback_reason = ""
+            fallback_instruction_set = None
 
-            # Check 1: Did the LLM explicitly return an error ("Insufficient context")?
+            # 1. Determine which fallback instruction set matches the current task
+            if instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS:
+                fallback_instruction_set = HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK
+            elif instructions == TEA_INSTRUCTIONS:
+                fallback_instruction_set = TEA_INSTRUCTIONS_FALLBACK
+
+            # 2. Check triggers
+            
+            # Check A: Did the LLM explicitly return an error ("Insufficient context")?
+            # We only trigger if we have a valid fallback instruction set available.
             if (result.get("error") and 
-                "Insufficient context" in result.get("error") and 
-                instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS):
+                "Insufficient context" in result.get("error") and
+                fallback_instruction_set is not None):
                 trigger_fallback = True
                 fallback_reason = "LLM reported insufficient context."
 
-            # Check 2: If no error, does the plan actually match the request? (Verification Step)
+            # Check B: Plan verification (Specific to Experiments only)
+            # We don't run verification on TEA as the verifier prompt is designed for experimental plans.
             elif (instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS and 
                   not result.get("error")):
                 print(f"    - 🔍 Verifying plan relevance against objective...")
-                # We use a lighter self-reflection call to check if the plan is relevant
                 is_relevant = self._verify_plan_relevance(objective, result)
                 if not is_relevant:
                     trigger_fallback = True
                     fallback_reason = "Plan verification failed (relevance check)."
 
             # --- Execute Fallback if triggered ---
-            if trigger_fallback:
+            if trigger_fallback and fallback_instruction_set:
                 print(f"    - ⚠️  {fallback_reason} Attempting fallback with general knowledge...")
                 
-                fallback_prompt_parts = [HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK]
+                # Reconstruct prompt with Fallback Instructions
+                fallback_prompt_parts = [fallback_instruction_set] # Use the dynamic fallback set
                 fallback_prompt_parts.append(f"## Objective:\n{objective}")
 
                 # Re-attach images/descriptions to fallback prompt as well
@@ -447,7 +462,7 @@ class PlanningAgent:
             elif 'response' in locals() and hasattr(response, 'parts') and response.parts: raw_response_text = response.parts[0].text if response.parts[0].text else str(response.parts)
             logging.error(f"Failed to generate LLM response: {e}")
             return {"error": f"Failed to generate LLM response: {str(e)}", "raw_response": raw_response_text}
-
+        
     def propose_experiments(self,
                             objective: str,
                             document_paths: Optional[List[str]] = None,
@@ -531,10 +546,19 @@ class PlanningAgent:
                 describing images.
             output_json_path: (Optional) A file path to save the JSON results.
         """
-        if not self._ensure_kb_is_ready(document_paths, structured_data_sets):
-            return {"error": "Knowledge base preparation failed."}
+        # Check if KB is ready, but handle the "No Documents" case gracefully
+        kb_ready = self._ensure_kb_is_ready(document_paths, structured_data_sets)
+        
+        if not kb_ready:
+            # Case A: User provided documents, but they failed to process
+            if (document_paths or structured_data_sets):
+                return {"error": "Knowledge base preparation failed for the provided documents."}
+            
+            # Case B: User provided NO documents (Fresh Install) -> Proceed to Fallback
+            else:
+                logging.warning("⚠️ No documents provided for TEA. Proceeding to General Knowledge Fallback.")
 
-        # Call the helper with specific instructions, no additional context needed here
+        # Call the helper with specific instructions
         results = self._perform_rag_query(
             objective=objective,
             instructions=TEA_INSTRUCTIONS,

@@ -91,3 +91,28 @@ You MUST respond with a single JSON object containing a key "proposed_experiment
 - "justification": (String) **MUST be 'Warning: This proposal is based on general scientific knowledge as the provided documents lacked specific context.'**
 - "source_documents": (List ofStrings) An empty list `[]`.
 """
+
+
+TEA_INSTRUCTIONS_FALLBACK = """
+You are an expert technoeconomic analyst.
+
+**Input:**
+1.  **Objective:** The specific technology, process, or material to be assessed.
+2.  **Retrieved Context:** (THIS IS EMPTY OR IRRELEVANT).
+
+**Conditional Logic:**
+The first attempt to find specific context in the knowledge base failed.
+- You **ARE NOW PERMITTED** to use your general knowledge of industrial standards, market trends, and engineering economics.
+- Your task is to provide a *preliminary, high-level* assessment based on general industry knowledge.
+
+**Output Format:**
+You MUST respond with a single JSON object containing a key "technoeconomic_assessment". 
+You MUST include the following fields, populated based on general knowledge:
+- "summary": (String) A qualitative summary of economic potential.
+- "key_cost_drivers": (List of Strings) Likely cost drivers (e.g., "High energy cost of electrolysis").
+- "potential_benefits_or_revenue": (List of Strings) Standard revenue streams.
+- "economic_risks": (List of Strings) Common risks for this technology.
+- "comparison_to_alternatives": (String) Comparison to standard industry benchmarks.
+- "data_gaps_for_quantitative_analysis": (List of Strings) What specific data would you need for a real TEA?
+- "source_documents": (List of Strings) An empty list [].
+"""
