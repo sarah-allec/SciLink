@@ -310,7 +310,7 @@ class PlanningAgent:
         # --- 2. Perform RAG Retrieval from the Knowledge Base ---
         print(f"\n--- Retrieving Relevant Context for {task_name} ---")
         # This will return empty list [] gracefully if KB is not built
-        context_chunks = self.knowledge_base.retrieve(objective, top_k=7) 
+        context_chunks = self.knowledge_base.retrieve(objective, top_k=14) 
 
         # We use a dict with text as the key to auto-deduplicate
         final_chunks = {chunk['text']: chunk for chunk in context_chunks}
