@@ -399,8 +399,9 @@ class PlanningAgent:
             
             # Check A: Did the LLM explicitly return an error ("Insufficient context")?
             # We only trigger if we have a valid fallback instruction set available.
-            if (result.get("error") and 
-                "Insufficient context" in result.get("error") and
+            error_msg = result.get("error", "")
+            if (error_msg and 
+                ("Insufficient" in error_msg or "context" in error_msg) and
                 fallback_instruction_set is not None):
                 trigger_fallback = True
                 fallback_reason = "LLM reported insufficient context."
