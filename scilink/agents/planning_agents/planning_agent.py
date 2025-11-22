@@ -1,12 +1,11 @@
 import google.generativeai as genai
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
 import PIL.Image
 PIL_Image = PIL.Image
-
 
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass, chunk_text
@@ -15,32 +14,29 @@ from .instruct import (
     HYPOTHESIS_GENERATION_INSTRUCTIONS,
     TEA_INSTRUCTIONS, 
     HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK, 
-    TEA_INSTRUCTIONS_FALLBACK)
+    TEA_INSTRUCTIONS_FALLBACK
+)
 from ...auth import get_api_key, APIKeyNotFoundError
 from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
 
 class PlanningAgent:
     """
-    Orchestrates RAG pipelines to generate experimental hypotheses
-    and perform preliminary technoeconomic analysis from documents.
+    Orchestrates RAG pipelines using explicitly separated Knowledge Bases
+    for Scientific Context and Implementation Code.
     """
     def __init__(self, google_api_key: str = None,
                  model_name: str = "gemini-2.5-pro-preview-06-05",
                  local_model: str = None,
                  embedding_model: str = "gemini-embedding-001",
-                 kb_base_path: str = "./kb_storage/default_kb"):
-        """
-        Initializes the agent, LLM backends, and loads the knowledge base
-        from the specified disk location if it exists.
-        """
-
-        # Need to replace it with scilink.auth
+                 kb_base_path: str = "./kb_storage/default_kb",
+                 code_chunk_size: int = 5000): 
+        
         if google_api_key is None:
             google_api_key = get_api_key('google')
             if not google_api_key:
                 raise APIKeyNotFoundError('google')
 
-        # LLM Backend Configuration
+        # --- LLM Backend Configuration ---
         if local_model and ('ai-incubator' in local_model or 'openai' in local_model):
             logging.info(f"🏛️  Using OpenAI-compatible model for generation: {model_name}")
             self.model = OpenAIAsGenerativeModel(model_name, api_key=google_api_key, base_url=local_model)
@@ -51,558 +47,441 @@ class PlanningAgent:
             self.model = genai.GenerativeModel(model_name)
             self.generation_config = genai.types.GenerationConfig(response_mime_type="application/json")
 
-        # KnowledgeBase Initialization
-        self.knowledge_base = KnowledgeBase(
-            google_api_key=google_api_key,
-            embedding_model=embedding_model,
-            local_model=local_model
-        )
+        self.code_chunk_size = code_chunk_size
 
-        # KnowledgeBase Persistence Paths
-        self.kb_path_prefix = Path(kb_base_path)
-        self.kb_path_prefix.parent.mkdir(parents=True, exist_ok=True)
-        self.index_file = str(self.kb_path_prefix.with_suffix(".faiss"))
-        self.chunks_file = str(self.kb_path_prefix.with_suffix(".json"))
+        # --- Dual KnowledgeBase Initialization ---
+        base_path = Path(kb_base_path)
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 1. Scientific/Docs KB
+        self.kb_docs = KnowledgeBase(google_api_key=google_api_key, embedding_model=embedding_model, local_model=local_model)
+        self.kb_docs_prefix = base_path.parent / f"{base_path.name}_docs"
+        self.kb_docs_index = str(self.kb_docs_prefix.with_suffix(".faiss"))
+        self.kb_docs_chunks = str(self.kb_docs_prefix.with_suffix(".json"))
 
-        print("--- Initializing Agent ---")
-        print(f"Attempting to load Knowledge Base from: {self.kb_path_prefix}.(faiss/json)")
-        self._kb_is_built = self.knowledge_base.load(self.index_file, self.chunks_file)
-        if self._kb_is_built:
-            print("✅ Knowledge base loaded successfully.")
-        else:
-            print("⚠️  No pre-built KB found. Provide documents on your first call to create one.")
+        # 2. Implementation/Code KB
+        self.kb_code = KnowledgeBase(google_api_key=google_api_key, embedding_model=embedding_model, local_model=local_model)
+        self.kb_code_prefix = base_path.parent / f"{base_path.name}_code"
+        self.kb_code_index = str(self.kb_code_prefix.with_suffix(".faiss"))
+        self.kb_code_chunks = str(self.kb_code_prefix.with_suffix(".json"))
+
+        print("--- Initializing Agent (Dual-KB System) ---")
+        self._load_knowledge_bases()
+
+    def _load_knowledge_bases(self):
+        """Attempts to load both KBs from disk."""
+        print(f"  - Docs KB: Loading from {self.kb_docs_prefix}...")
+        docs_loaded = self.kb_docs.load(self.kb_docs_index, self.kb_docs_chunks)
+        
+        print(f"  - Code KB: Loading from {self.kb_code_prefix}...")
+        code_loaded = self.kb_code.load(self.kb_code_index, self.kb_code_chunks)
+
+        self._kb_is_built = docs_loaded or code_loaded
+        
+        if docs_loaded: print("    - ✅ Docs KB loaded.")
+        if code_loaded: print("    - ✅ Code KB loaded.")
+        if not self._kb_is_built: print("    - ⚠️  No pre-built KBs found.")
+
+    def _parse_json_from_response(self, resp) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        if hasattr(resp, 'text'): json_text = resp.text.strip()
+        elif hasattr(resp, 'parts') and resp.parts: json_text = resp.parts[0].text.strip()
+        else: return None, f"LLM response format unexpected: {resp}"
+        
+        if json_text.startswith("```json"): json_text = json_text[len("```json"):].strip()
+        if json_text.endswith("```"): json_text = json_text[:-len("```")].strip()
+        try: return json.loads(json_text), None
+        except json.JSONDecodeError as e: return None, f"Failed to decode JSON: {str(e)}"
 
     def _save_results_to_json(self, results: Dict[str, Any], file_path: str):
-        """Helper to save dictionary results to a JSON file."""
         try:
             p = Path(file_path)
             p.parent.mkdir(parents=True, exist_ok=True)
-            with p.open('w', encoding='utf-8') as f:
-                json.dump(results, f, indent=2)
+            with p.open('w', encoding='utf-8') as f: json.dump(results, f, indent=2)
             print(f"    - ✅ Results successfully saved to: {file_path}")
-        except Exception as e:
-            logging.error(f"    - ❌ Failed to save results to {file_path}: {e}")
+        except Exception as e: logging.error(f"    - ❌ Failed to save results: {e}")
+
+    def _process_file_list(self, file_paths: List[str], is_code_mode: bool) -> List[Dict[str, Any]]:
+        """
+        Generic helper to process a list of files.
+        If is_code_mode=True, treats text files as code blocks and tags metadata as 'code'.
+        """
+        chunks = []
+        for f_path in file_paths:
+            path = Path(f_path)
+            if not path.exists():
+                print(f"  - ⚠️ File not found: {f_path}")
+                continue
+                
+            file_ext = path.suffix.lower()
+            
+            # PDF Processing (Used for both Science papers and PDF Manuals)
+            if file_ext == '.pdf':
+                pdf_chunks = extract_pdf_two_pass(f_path)
+                # If this PDF is being added to the Code KB, force the content_type to code
+                if is_code_mode:
+                    for c in pdf_chunks: c['metadata']['content_type'] = 'code'
+                chunks.extend(pdf_chunks)
+            
+            # Text/Code Processing
+            elif file_ext in ['.txt', '.md', '.py', '.java', '.r', '.cpp', '.h', '.js', '.json', '.csv']:
+                try:
+                    with path.open('r', encoding='utf-8') as f: content = f.read()
+                    
+                    # Format: if code mode, wrap in code blocks. If science mode, treat as text.
+                    if is_code_mode:
+                        formatted_text = f"CODE FILE: {path.name}\n\n```\n{content}\n```"
+                        chunk_sz = self.code_chunk_size
+                        ctype = 'code'
+                    else:
+                        formatted_text = f"DOCUMENT: {path.name}\n\n{content}"
+                        chunk_sz = 1000 # Standard text size
+                        ctype = 'text'
+
+                    new_chunks = chunk_text(formatted_text, page_num=1, chunk_size=chunk_sz, overlap=50)
+                    for c in new_chunks: 
+                        c['metadata']['content_type'] = ctype
+                        c['metadata']['source'] = f_path
+                    chunks.extend(new_chunks)
+                    print(f"  - Extracted {len(new_chunks)} chunks from {path.name} ({'Code' if is_code_mode else 'Docs'} Mode)")
+                except Exception as e:
+                    print(f"  - ❌ Error reading {f_path}: {e}")
+            else:
+                print(f"  - ⚠️ Unsupported file type: {f_path}")
+        return chunks
 
     def _build_and_save_kb(self,
-                           document_paths: Optional[List[str]] = None,
+                           science_paths: Optional[List[str]] = None,
+                           code_paths: Optional[List[str]] = None,
                            structured_data_sets: Optional[List[Dict[str, str]]] = None
                            ) -> bool:
         """
-        Internal method to parse documents, build the KB, and save it.
-        Uses document_paths for general documents (like PDFs) and
-        structured_data_sets for tabular data with context files.
-        Returns True on success, False on failure.
+        Builds TWO separate knowledge bases based on explicit input lists.
         """
-        doc_paths = document_paths or []
-        struct_data = structured_data_sets or []
-
-        print("\n--- Parsing all provided documents ---")
-        all_chunks = []
-
-        # --- 1. Process General Documents (PDFs) ---
-        for doc_path in doc_paths:
-            path = Path(doc_path)
-            file_ext = path.suffix.lower()
-            if file_ext == '.pdf':
-                all_chunks.extend(extract_pdf_two_pass(doc_path))
-            elif file_ext in ['.txt', '.md', '.py', '.java', '.r']:
-                print(f"  - Processing Code/Text file: {path.name}")
+        print("\n--- Rebuilding Knowledge Bases ---")
+        
+        # 1. Build Docs KB (Science)
+        doc_chunks = []
+        if science_paths:
+            print(f"Processing {len(science_paths)} Scientific Documents...")
+            doc_chunks.extend(self._process_file_list(science_paths, is_code_mode=False))
+        
+        if structured_data_sets:
+            print(f"Processing {len(structured_data_sets)} Structured Data Sets...")
+            for data_set in structured_data_sets:
                 try:
-                    with path.open('r', encoding='utf-8') as f:
-                        code_content = f.read()
-                    
-                    # Create one single chunk for the whole code file.
-                    # RAG can retrieve specific functions/classes if chunked, 
-                    # but for entire files, a single chunk with a descriptive
-                    # source title is often preferred to maintain context.
-                    # We will use the existing chunk_text from pdf_parser for consistency.
+                    if Path(data_set['file_path']).suffix.lower() in ['.xlsx', '.xls']:
+                        excel_chunks = parse_adaptive_excel(data_set['file_path'], data_set['metadata_path'])
+                        if excel_chunks: doc_chunks.extend(excel_chunks)
+                except Exception as e: print(f"  - ❌ Error processing Excel: {e}")
 
-                    # Chunk the code content if it's too large
-                    code_chunks = chunk_text(
-                        f"CODE FILE: {path.name}\n\n```\n{code_content}\n```", 
-                        page_num=1, 
-                        chunk_size=5000, # Use a size suitable for code blocks
-                        overlap=50
-                    )
-                    # Update metadata content type for code chunks
-                    for chunk in code_chunks:
-                        chunk['metadata']['content_type'] = 'code'
-                        chunk['metadata']['source'] = doc_path
-                        
-                    all_chunks.extend(code_chunks)
-                    print(f"  - ✅ Extracted {len(code_chunks)} code chunk(s) from {path.name}.")
-
-                except Exception as e:
-                    print(f"  - ❌ Error reading code file {doc_path}: {e}")
-            else:
-                print(f"  - ⚠️ Skipping unsupported file type in document_paths: {doc_path}")
-
-        # --- 2. Process Structured Data Sets (e.g., Excel + JSON) ---
-        for data_set in struct_data:
-            file_path = data_set.get('file_path')
-            metadata_path = data_set.get('metadata_path')
-
-            if not file_path or not metadata_path:
-                print(f"  - ⚠️  Skipping data set: Missing 'file_path' or 'metadata_path' in dictionary: {data_set}")
-                continue
-
-            file_ext = Path(file_path).suffix.lower()
-
-            try:
-                if file_ext in ['.xlsx', '.xls']:
-                    excel_chunks = parse_adaptive_excel(file_path, metadata_path)
-                    if excel_chunks:
-                        all_chunks.extend(excel_chunks)
-                else:
-                    print(f"  - ⚠️  Skipping unsupported file type in structured_data_sets: {file_path}")
-            except Exception as e:
-                print(f"  - ❌ Error processing data pair: file='{file_path}', metadata='{metadata_path}'. Error: {e}")
-                continue # Continue with the next file pair
-
-        # --- 3. Build and Save KB ---
-        if not all_chunks:
-            print("❌ Build failed: No content successfully extracted from any provided documents.")
-            self._kb_is_built = False
-            return False
-
-        print(f"\n--- Building Knowledge Base (Embedding & Indexing) from {len(all_chunks)} chunks ---")
-        try:
-            self.knowledge_base.build(all_chunks)
-        except Exception as e:
-            print(f"❌ Build failed: Error during embedding or indexing: {e}")
-            self._kb_is_built = False
-            return False
-
-        print("\n--- Saving Knowledge Base to Disk ---")
-        try:
-            self.knowledge_base.save(self.index_file, self.chunks_file)
-            self._kb_is_built = True
-            print(f"✅ KB built with {len(all_chunks)} chunks, saved to {self.kb_path_prefix}, ready.")
-            return True
-        except Exception as e:
-             print(f"❌ Build successful, but failed to save KB: {e}")
-             self._kb_is_built = True
-             return True
-
-    def _ensure_kb_is_ready(self, document_paths: Optional[List[str]] = None, structured_data_sets: Optional[List[Dict[str, str]]] = None) -> bool:
-        """Checks if KB is built or builds it if new documents are provided."""
-        new_documents_provided = (document_paths is not None and document_paths) or \
-                                 (structured_data_sets is not None and structured_data_sets)
-        if new_documents_provided:
-            print("--- New documents provided. Building/rebuilding knowledge base... ---")
-            build_success = self._build_and_save_kb(document_paths, structured_data_sets)
-            if not build_success:
-                logging.error("Failed to build knowledge base from provided documents.")
-                return False
-        elif not self._kb_is_built:
-            logging.error("Knowledge base is not built. Please provide documents.")
-            return False
+        if doc_chunks:
+            print(f"  - Building Scientific KB with {len(doc_chunks)} chunks...")
+            self.kb_docs.build(doc_chunks)
+            self.kb_docs.save(self.kb_docs_index, self.kb_docs_chunks)
         else:
-             print("--- Using existing knowledge base. ---")
+            print("  - ℹ️  No Scientific docs provided. Docs KB unchanged (or empty).")
+
+        # 2. Build Code KB (Implementation)
+        code_chunks = []
+        if code_paths:
+            print(f"Processing {len(code_paths)} Implementation/Code Documents...")
+            code_chunks.extend(self._process_file_list(code_paths, is_code_mode=True))
+        
+        if code_chunks:
+            print(f"  - Building Code KB with {len(code_chunks)} chunks...")
+            self.kb_code.build(code_chunks)
+            self.kb_code.save(self.kb_code_index, self.kb_code_chunks)
+        else:
+            print("  - ℹ️  No Code docs provided. Code KB unchanged (or empty).")
+
+        self._kb_is_built = True
+        print("✅ Dual-KB Build Complete.")
+        return True
+
+    def _ensure_kb_is_ready(self, science_paths, code_paths, structured_data_sets) -> bool:
+        new_inputs = (science_paths or []) or (code_paths or []) or (structured_data_sets or [])
+        if new_inputs:
+            return self._build_and_save_kb(science_paths, code_paths, structured_data_sets)
+        elif not self._kb_is_built:
+            logging.error("Knowledge base is not built.")
+            return False
         return True
 
     def _verify_plan_relevance(self, objective: str, result: Dict[str, Any]) -> bool:
-        """
-        Uses the LLM to strictly evaluate if the proposed experiments
-        actually address the user's objective.
-        Returns True if relevant, False if irrelevant/tangential.
-        """
         experiments = result.get("proposed_experiments", [])
-        if not experiments:
-            # If the structure is wrong or empty, we can't verify it, but 
-            # usually this means generation failed anyway. 
-            return False
+        if not experiments: return False
 
-        # Summarize the proposal for the evaluator to save tokens/complexity
         plan_summary_lines = []
         for i, exp in enumerate(experiments):
             name = exp.get('experiment_name', 'N/A')
             hyp = exp.get('hypothesis', 'N/A')
-            plan_summary_lines.append(f"{i+1}. {name}: {hyp}")
+            # Extract the justification so the verifier knows "WHY"
+            justification = exp.get('justification', 'No justification provided.')
+            
+            plan_summary_lines.append(f"Experiment {i+1}: {name}")
+            plan_summary_lines.append(f"  Hypothesis: {hyp}")
+            plan_summary_lines.append(f"  Justification: {justification}") 
+            plan_summary_lines.append("---")
+            
         plan_summary = "\n".join(plan_summary_lines)
 
-        # Strict Evaluation Prompt
         eval_prompt = f"""
-        You are a strict scientific research evaluator.
+        You are a scientific research evaluator.
         
         1. User Objective: "{objective}"
         2. Proposed Plan: 
         {plan_summary}
 
         **Task:**
-        Determine if the Proposed Plan *directly* addresses the User Objective using the specific context provided in the plan.
+        Review the "Hypothesis" and "Justification" for each experiment and determine if the Proposed Plan is directly relevant to the User Objective.
         
-        **Criteria for NO (Irrelevant):**
-        - If the plan is about a completely different topic (e.g., User asks for Solar, Plan is about Batteries).
-        - If the plan is generic and ignores specific constraints in the objective.
-        - If the plan acknowledges it doesn't know the answer but guesses anyway.
-
         **Output:**
         Respond with a single JSON object: {{ "is_relevant": boolean, "reason": "string explanation" }}
         """
 
         try:
-            # Use the same model config
-            # Note: using a list for content to match generate_content signature if needed, or string.
             response = self.model.generate_content([eval_prompt], generation_config=self.generation_config)
+            eval_result, _ = self._parse_json_from_response(response)
             
-            # Simple parsing logic similar to main loop
-            if hasattr(response, 'text'):
-                json_text = response.text.strip()
-            elif hasattr(response, 'parts') and response.parts:
-                json_text = response.parts[0].text.strip()
-            else:
-                logging.warning("Verification response empty.")
-                return True # Default to trusting plan if verification fails technically
-
-            if json_text.startswith("```json"): json_text = json_text[len("```json"):].strip()
-            if json_text.endswith("```"): json_text = json_text[:-len("```")].strip()
+            if eval_result and not eval_result.get("is_relevant"):
+                print(f"    - ⚠️  Plan Verification Failed: {eval_result.get('reason')}")
+                return False
+                
+            print(f"    - ✅ Plan Verification Passed.")
+            return True
             
-            eval_result = json.loads(json_text)
-            
-            is_relevant = eval_result.get("is_relevant", False)
-            if not is_relevant:
-                print(f"    - ⚠️  Plan Verification Failed: {eval_result.get('reason', 'Unknown reason')}")
-            else:
-                 print(f"    - ✅ Plan Verification Passed.")
-                 
-            return is_relevant
-
         except Exception as e:
             logging.error(f"Verification step failed: {e}")
-            # If verification crashes, default to accepting the plan to be safe/non-blocking
             return True
 
-    def _perform_rag_query(self,
-                           objective: str,
-                           instructions: str,
-                           task_name: str,
-                           additional_context: Optional[str] = None,
+    def _perform_rag_query(self, objective: str, instructions: str, task_name: str, 
                            primary_data_set: Optional[Dict[str, str]] = None,
                            image_paths: Optional[List[str]] = None,
-                           image_descriptions: Optional[List[str | Dict[str, Any]]] = None
-                           ) -> Dict[str, Any]:
-        """Internal helper for retrieval, prompt construction, and LLM generation."""
+                           image_descriptions: Optional[List[str]] = None,
+                           additional_context: Optional[str] = None) -> Dict[str, Any]:
         
-        # --- 1. Process the Primary Data Set ---
-        primary_data_context_str = None
+        # --- 1. Primary Data ---
+        primary_data_str = None
         if primary_data_set:
-            print(f"  - ℹ️  Parsing primary data set to force into context...")
             try:
-                file_path = primary_data_set['file_path']
-                meta_path = primary_data_set['metadata_path']
-                # Parse the file (this returns a list of chunks)
-                data_chunks = parse_adaptive_excel(file_path, meta_path)
-                
-                if data_chunks:
-                    # Find the summary/package chunk
-                    summary_chunk = next(
-                        (c for c in data_chunks if c['metadata'].get('content_type') in ('dataset_summary', 'dataset_package')),
-                        data_chunks[0] # Fallback to first chunk if no summary found
-                    )
-                    primary_data_context_str = summary_chunk['text']
-                    print(f"  - ✅ Successfully parsed and loaded primary data from '{Path(file_path).name}'.")
-                else:
-                    print(f"  - ⚠️  Primary data set '{Path(file_path).name}' was provided but parsing returned no chunks.")
-            except Exception as e:
-                print(f"  - ❌ Error parsing primary data set: {e}")
+                # Quick parse just for the summary
+                chunks = parse_adaptive_excel(primary_data_set['file_path'], primary_data_set['metadata_path'])
+                if chunks: 
+                    # Try to find a summary chunk, else use the first one
+                    summary = next((c for c in chunks if c['metadata'].get('content_type') in ('dataset_summary', 'dataset_package')), chunks[0])
+                    primary_data_str = summary['text']
+            except: pass
 
-        # --- 2. Perform RAG Retrieval from the Knowledge Base ---
-        print(f"\n--- Retrieving Relevant Context for {task_name} ---")
-        # This will return empty list [] gracefully if KB is not built
-        context_chunks = self.knowledge_base.retrieve(objective, top_k=14) 
-
-        # We use a dict with text as the key to auto-deduplicate
-        final_chunks = {chunk['text']: chunk for chunk in context_chunks}
+        # --- 2. Dual Retrieval ---
+        print(f"\n--- Retrieving Context for {task_name} ---")
         
-        # --- 3. Build the Final Context String ---
-        if not final_chunks and not primary_data_context_str:
-            logging.warning(f"Could not retrieve any relevant context for {task_name} objective: '{objective}'")
-            retrieved_context_str = "No relevant context found in the provided documents."
+        # A. Retrieve Scientific Context (Top 10)
+        doc_chunks = []
+        if self.kb_docs.index and self.kb_docs.index.ntotal > 0:
+            doc_chunks = self.kb_docs.retrieve(objective, top_k=10)
+        
+        # B. Retrieve Code Context (Top 5)
+        code_chunks = []
+        if self.kb_code.index and self.kb_code.index.ntotal > 0:
+            code_query = f"{objective} implementation code API python"
+            code_chunks = self.kb_code.retrieve(code_query, top_k=5)
+            print(f"  - Retrieved {len(code_chunks)} code chunks from Code KB.")
+
+        # Combine
+        combined_chunks = doc_chunks + code_chunks
+        unique_chunks = {c['text']: c for c in combined_chunks}.values()
+        
+        if not unique_chunks and not primary_data_str:
+            retrieved_context_str = "No relevant context found."
         else:
-            # Build the context string from RAG retrieval
-            rag_context_str = "\n\n---\n\n".join(
-                f"Source: {Path(chunk['metadata'].get('source', 'N/A')).name}\n\n{chunk['text']}"
-                for chunk in final_chunks.values()
+            rag_str = "\n\n---\n\n".join(
+                f"Source: {Path(c['metadata'].get('source', 'N/A')).name}\nType: {c['metadata'].get('content_type')}\n\n{c['text']}" 
+                for c in unique_chunks
             )
-            
-            # Combine primary data and RAG context
-            full_context_parts = []
-            if primary_data_context_str:
-                full_context_parts.append(f"## Primary Data Context (From User-Provided File)\n{primary_data_context_str}")
-            if rag_context_str:
-                full_context_parts.append(f"## Retrieved Context (From Knowledge Base)\n{rag_context_str}")
-            
-            retrieved_context_str = "\n\n".join(full_context_parts)
+            retrieved_context_str = ""
+            if primary_data_str: retrieved_context_str += f"## Primary Data\n{primary_data_str}\n\n"
+            if rag_str: retrieved_context_str += f"## Retrieved Context (Docs & Code)\n{rag_str}"
 
-        # --- 4. Load Images and Process Descriptions ---
+        # --- 3. Multimodal Prompt Construction ---
         loaded_images = []
-        image_descriptions_str_parts = []
-        
-        # 4.1 Load Images from paths
+        img_desc_str = ""
         if image_paths and PIL_Image:
-            print(f"  - ℹ️  Loading {len(image_paths)} image(s)...")
-            for img_path in image_paths:
-                try:
-                    image = PIL_Image.open(img_path)
-                    loaded_images.append(image)
-                    print(f"    - ✅ Loaded image: {img_path}")
-                except Exception as e:
-                    print(f"    - ❌ Failed to load image {img_path}: {e}")
-        elif image_paths:
-            print("  - ⚠️  Image paths provided, but PIL (Pillow) library is not installed. Images will be ignored.")
-
-        # 4.2 Process Image Descriptions
+            for p in image_paths:
+                try: loaded_images.append(PIL_Image.open(p))
+                except: pass
         if image_descriptions:
-            print(f"  - ℹ️  Processing {len(image_descriptions)} image description(s)...")
-            for i, desc in enumerate(image_descriptions):
-                if isinstance(desc, dict):
-                    # Assume it's a JSON/dict object, pretty-print it
-                    try:
-                        desc_str = json.dumps(desc, indent=2)
-                        image_descriptions_str_parts.append(f"Description for Image {i+1} (JSON):\n{desc_str}")
-                    except Exception as e:
-                        print(f"    - ❌ Failed to serialize description dict: {e}")
-                        image_descriptions_str_parts.append(f"Description for Image {i+1} (unserializable dict):\n{str(desc)}")
-                elif isinstance(desc, str):
-                    # It's a plain text string
-                    image_descriptions_str_parts.append(f"Description for Image {i+1} (Text):\n{desc}")
-                else:
-                    print(f"    - ⚠️  Skipping unknown description format: {type(desc)}")
-        
-        image_descriptions_context_str = "\n\n".join(image_descriptions_str_parts)
+            img_desc_str = json.dumps(image_descriptions, indent=2)
 
-        # --- 5. Construct Prompt (as a list for multimodal input) ---
-        prompt_parts = []
-        prompt_parts.append(instructions)
-        prompt_parts.append(f"## Objective:\n{objective}")
-
-        # Add images after the objective
+        prompt_parts = [instructions, f"## Objective:\n{objective}"]
         if loaded_images:
-            prompt_parts.append("\n## Provided Images:\n(See attached images for visual context)\n")
+            prompt_parts.append("\n## Provided Images: (See attached)")
             prompt_parts.extend(loaded_images)
-            
-            if image_descriptions_context_str:
-                prompt_parts.append(f"\n## Provided Image Descriptions:\n(See attached descriptions for additional context)\n{image_descriptions_context_str}\n")
-        
+            if img_desc_str: prompt_parts.append(f"\n## Image Descriptions:\n{img_desc_str}")
         if additional_context:
-            prompt_parts.append(f"\n## Additional Context/Findings:\n{additional_context}")
-            prompt_parts.append("\n**IMPORTANT:** Consider this additional context when generating your response.**")
+            prompt_parts.append(f"\n## Additional Context:\n{additional_context}")
+        prompt_parts.append(f"\n## Retrieved Context:\n{retrieved_context_str}")
 
-        prompt_parts.append(f"\n## Retrieved Context from Documents:\n{retrieved_context_str}")
-
-        print(f"\n--- Generating {task_name} with LLM ---")
+        print(f"\n--- Generating {task_name} ---")
         try:
-            # --- First Attempt ---
             response = self.model.generate_content(prompt_parts, generation_config=self.generation_config)
-            
-            # Helper function to parse JSON from response text
-            def parse_json_from_response(resp):
-                if hasattr(resp, 'text'):
-                    json_text = resp.text.strip()
-                elif hasattr(resp, 'parts') and resp.parts:
-                    json_text = resp.parts[0].text.strip()
-                else:
-                    return None, f"LLM response format unexpected: {resp}"
+            result, error_msg = self._parse_json_from_response(response)
+            if error_msg: return {"error": error_msg}
+
+            # --- Fallback Check ---
+            fallback_needed = False
+            if result.get("error") and "Insufficient" in result.get("error"): fallback_needed = True
+            elif instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS and not result.get("error"):
+                 if not self._verify_plan_relevance(objective, result): fallback_needed = True
+
+            if fallback_needed:
+                print("    - ⚠️  Entering Fallback Mode...")
+                # Use fallback instructions
+                fb_inst = HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK if instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS else TEA_INSTRUCTIONS_FALLBACK
+                prompt_parts[0] = fb_inst
+                fb_resp = self.model.generate_content(prompt_parts, generation_config=self.generation_config)
+                result, _ = self._parse_json_from_response(fb_resp)
                 
-                if json_text.startswith("```json"): json_text = json_text[len("```json"):].strip()
-                if json_text.endswith("```"): json_text = json_text[:-len("```")].strip()
-                
-                return json.loads(json_text), None
+                # If we have a Code KB, try to refine the fallback code
+                if result and result.get("proposed_experiments") and self.kb_code.index and self.kb_code.index.ntotal > 0:
+                     print("    - 🔍 Attempting code refinement on fallback plan...")
+                     plan_txt = " ".join([e.get('experiment_name') for e in result['proposed_experiments']])
+                     hits = self.kb_code.retrieve(f"implementation for {plan_txt}", top_k=5)
+                     if hits:
+                        print(f"    - ✅ Found {len(hits)} specific code chunks. Refining...")
+                        code_ctx = "\n\n".join([c['text'] for c in hits])
 
-            result, error_msg = parse_json_from_response(response)
-            if error_msg:
-                logging.error(error_msg)
-                return {"error": error_msg, "raw_response": str(response)}
+                        # 1. FIX: Define the variable before using it
+                        found_code_files = list(set([Path(c['metadata']['source']).name for c in hits]))
 
-            # --- REFACTORED FALLBACK LOGIC START ---
-            trigger_fallback = False
-            fallback_reason = ""
-            fallback_instruction_set = None
+                        # 2. FIX: Use the "Syntax Guide" prompt to prevent mismatch errors
+                        refine_prompt = f"""
+                        You are an expert Research Software Engineer.
+                        
+                        TASK: 
+                        Write an executable Python script to automate the "Experimental Steps" provided below.
+                        
+                        INPUTS:
+                        1. Experimental Logic: {json.dumps([e.get('experimental_steps') for e in result['proposed_experiments']])}
+                        2. Syntax Reference (Context): {code_ctx}
+                        
+                        INSTRUCTIONS:
+                        - The "Syntax Reference" contains valid API commands and coding patterns.
+                        - The "Experimental Logic" contains the specific scientific actions.
+                        - **CRITICAL:** Use the *coding patterns* from the Syntax Reference to implement the *actions* from the Experimental Logic. 
+                        - Do NOT expect the Syntax Reference to contain specific chemical names. It is a manual, not a recipe.
+                        - Remove any "Warning" strings about general knowledge; this code is now grounded.
+                        
+                        OUTPUT: 
+                        Respond with a SINGLE JSON object: {{ "final_implementation_code": "THE_CODE_HERE" }}
+                        """
+                        r_resp = self.model.generate_content([refine_prompt], generation_config=self.generation_config)
+                        r_json, _ = self._parse_json_from_response(r_resp)
+                        if r_json and r_json.get("final_implementation_code"):
+                            for exp in result["proposed_experiments"]:
+                                exp["implementation_code"] = r_json["final_implementation_code"]
+                                exp["code_source_files"] = found_code_files
+                                exp["source_documents"].extend([Path(c['metadata']['source']).name for c in hits])
+                            print("    - ✅ Code refined.")
+                        else:
+                            print(f"    - ❌ Refinement failed. Error: {error}")
 
-            # 1. Determine which fallback instruction set matches the current task
-            if instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS:
-                fallback_instruction_set = HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK
-            elif instructions == TEA_INSTRUCTIONS:
-                fallback_instruction_set = TEA_INSTRUCTIONS_FALLBACK
-
-            # 2. Check triggers
-            
-            # Check A: Did the LLM explicitly return an error ("Insufficient context")?
-            # We only trigger if we have a valid fallback instruction set available.
-            error_msg = result.get("error", "")
-            if (error_msg and 
-                ("Insufficient" in error_msg or "context" in error_msg) and
-                fallback_instruction_set is not None):
-                trigger_fallback = True
-                fallback_reason = "LLM reported insufficient context."
-
-            # Check B: Plan verification (Specific to Experiments only)
-            # We don't run verification on TEA as the verifier prompt is designed for experimental plans.
-            elif (instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS and 
-                  not result.get("error")):
-                print(f"    - 🔍 Verifying plan relevance against objective...")
-                is_relevant = self._verify_plan_relevance(objective, result)
-                if not is_relevant:
-                    trigger_fallback = True
-                    fallback_reason = "Plan verification failed (relevance check)."
-
-            # --- Execute Fallback if triggered ---
-            if trigger_fallback and fallback_instruction_set:
-                print(f"    - ⚠️  {fallback_reason} Attempting fallback with general knowledge...")
-                
-                # Reconstruct prompt with Fallback Instructions
-                fallback_prompt_parts = [fallback_instruction_set] # Use the dynamic fallback set
-                fallback_prompt_parts.append(f"## Objective:\n{objective}")
-
-                # Re-attach images/descriptions to fallback prompt as well
-                if loaded_images:
-                    fallback_prompt_parts.append("\n## Provided Images:\n(See attached images for visual context)\n")
-                    fallback_prompt_parts.extend(loaded_images)
-
-                    if image_descriptions_context_str:
-                        fallback_prompt_parts.append(f"\n## Provided Image Descriptions:\n(See attached descriptions for additional context)\n{image_descriptions_context_str}\n")
-                
-                if additional_context:
-                    fallback_prompt_parts.append(f"\n## Additional Context/Findings:\n{additional_context}")
-                    fallback_prompt_parts.append("\n**IMPORTANT:** Consider this additional context when generating your response.**")
-
-                fallback_prompt_parts.append(f"\n## Retrieved Context from Documents:\n{retrieved_context_str}")
-                
-                fallback_response = self.model.generate_content(fallback_prompt_parts, generation_config=self.generation_config)
-                
-                result, error_msg = parse_json_from_response(fallback_response)
-                if error_msg:
-                    logging.error(f"Fallback attempt failed to parse: {error_msg}")
-                    return {"error": f"Fallback attempt failed: {error_msg}", "raw_response": str(fallback_response)}
-                
-                print(f"    - ✅ Successfully generated fallback {task_name}.")
-                return result
-
-            print(f"    - ✅ Successfully generated and parsed {task_name}.")
             return result
-
-        except json.JSONDecodeError as json_e:
-            raw_response_text = "N/A"
-            if 'response' in locals() and hasattr(response, 'text'): raw_response_text = response.text
-            elif 'response' in locals() and hasattr(response, 'parts') and response.parts: raw_response_text = response.parts[0].text if response.parts[0].text else str(response.parts)
-            logging.error(f"Failed to parse LLM JSON response: {json_e}")
-            return {"error": f"Failed to parse LLM JSON response: {str(json_e)}", "raw_response": raw_response_text}
         except Exception as e:
-            raw_response_text = "N/A"
-            if 'response' in locals() and hasattr(response, 'text'): raw_response_text = response.text
-            elif 'response' in locals() and hasattr(response, 'parts') and response.parts: raw_response_text = response.parts[0].text if response.parts[0].text else str(response.parts)
-            logging.error(f"Failed to generate LLM response: {e}")
-            return {"error": f"Failed to generate LLM response: {str(e)}", "raw_response": raw_response_text}
-        
-    def propose_experiments(self,
-                            objective: str,
-                            document_paths: Optional[List[str]] = None,
+            return {"error": str(e)}
+
+    def propose_experiments(self, objective: str, 
+                            science_paths: Optional[List[str]] = None, 
+                            code_paths: Optional[List[str]] = None,
                             structured_data_sets: Optional[List[Dict[str, str]]] = None,
                             tea_summary: Optional[str] = None,
                             primary_data_set: Optional[Dict[str, str]] = None,
                             image_paths: Optional[List[str]] = None,
-                            image_descriptions: Optional[List[str | Dict[str, Any]]] = None,
-                            output_json_path: Optional[str] = None
-                            ) -> Dict[str, Any]:
-        """
-        Generates experimental proposals. Builds/rebuilds KB if new documents provided.
-        Optionally incorporates findings from a previous TEA via tea_summary.
+                            image_descriptions: Optional[List[str]] = None,
+                            output_json_path: Optional[str] = None):
+        """Generates experimental plans using Dual-KB retrieval."""
         
-        Args:
-            objective: The main objective for the proposals (used for RAG retrieval).
-            document_paths: List of PDFs (to build the Knowledge Base).
-            structured_data_sets: List of Excel/JSON pairs (to build the Knowledge Base).
-            tea_summary: (Optional) A summary from a previous TEA to add as context.
-            primary_data_set: (Recommended) A single Excel/JSON pair to be
-                force-fed into the prompt as the primary context.
-            image_paths: (Optional) A list of file paths to images for visual context.
-            image_descriptions: (Optional) A list of text strings or JSON/dicts
-                describing images.
-            output_json_path: (Optional) A file path to save the JSON results.
-        """
-        # Check if KB is ready, but handle the "No Documents" case gracefully
-        kb_ready = self._ensure_kb_is_ready(document_paths, structured_data_sets)
-        
-        if not kb_ready:
-            # Case A: User provided documents, but they failed to process (e.g., corrupt PDF)
-            if (document_paths or structured_data_sets):
-                return {"error": "Knowledge base preparation failed for the provided documents."}
-            
-            # Case B: User provided NO documents (Fresh Install) -> Proceed to Fallback
-            else:
-                logging.warning("⚠️ No documents provided and KB not built. Proceeding to General Knowledge Fallback.")
+        if not self._ensure_kb_is_ready(science_paths, code_paths, structured_data_sets):
+            return {"error": "KB Init Failed"}
 
-        # Format the TEA summary for the prompt helper
-        additional_context_for_prompt = None
-        if tea_summary:
-            additional_context_for_prompt = f"Key Findings from Prior Technoeconomic Analysis:\n{tea_summary}"
+        ctx = f"TEA Findings:\n{tea_summary}" if tea_summary else None
+        res = self._perform_rag_query(objective, HYPOTHESIS_GENERATION_INSTRUCTIONS, "Experimental Plan", 
+                                      primary_data_set, image_paths, image_descriptions, ctx)
+        if output_json_path: self._save_results_to_json(res, output_json_path)
+        return res
 
-        # Call the helper with specific instructions and optional TEA context
-        results = self._perform_rag_query(
-            objective=objective,
-            instructions=HYPOTHESIS_GENERATION_INSTRUCTIONS,
-            task_name="Experimental Plan",
-            additional_context=additional_context_for_prompt,
-            primary_data_set=primary_data_set,
-            image_paths=image_paths,
-            image_descriptions=image_descriptions
-        )
-
-        if output_json_path:
-            print(f"\n--- Saving Experimental Plan Results ---")
-            self._save_results_to_json(results, output_json_path)
-
-        return results
-
-    def perform_technoeconomic_analysis(self,
-                                        objective: str,
-                                        document_paths: Optional[List[str]] = None,
+    def perform_technoeconomic_analysis(self, objective: str,
+                                        science_paths: Optional[List[str]] = None,
+                                        code_paths: Optional[List[str]] = None, 
                                         structured_data_sets: Optional[List[Dict[str, str]]] = None,
                                         primary_data_set: Optional[Dict[str, str]] = None,
                                         image_paths: Optional[List[str]] = None,
-                                        image_descriptions: Optional[List[str | Dict[str, Any]]] = None,
-                                        output_json_path: Optional[str] = None
-                                        ) -> Dict[str, Any]:
-        """
-        Performs preliminary TEA. Builds/rebuilds KB if new documents provided.
+                                        image_descriptions: Optional[List[str]] = None,
+                                        output_json_path: Optional[str] = None):
+        """Performs TEA using Dual-KB retrieval."""
         
-        Args:
-            objective: The main objective for the TEA (used for RAG retrieval).
-            document_paths: List of PDFs (to build the Knowledge Base).
-            structured_data_sets: List of Excel/JSON pairs (to build the Knowledge Base).
-            primary_data_set: (Recommended) A single Excel/JSON pair to be
-                force-fed into the prompt as the primary context.
-            image_paths: (Optional) A list of file paths to images for visual context.
-            image_descriptions: (Optional) A list of text strings or JSON/dicts
-                describing images.
-            output_json_path: (Optional) A file path to save the JSON results.
+        if not self._ensure_kb_is_ready(science_paths, code_paths, structured_data_sets):
+            return {"error": "KB Init Failed"}
+
+        res = self._perform_rag_query(objective, TEA_INSTRUCTIONS, "Technoeconomic Analysis",
+                                      primary_data_set, image_paths, image_descriptions)
+        if output_json_path: self._save_results_to_json(res, output_json_path)
+        return res
+    
+    def save_implementation_scripts(self, result_json: Dict[str, Any], base_output_dir: str):
         """
-        # Check if KB is ready, but handle the "No Documents" case gracefully
-        kb_ready = self._ensure_kb_is_ready(document_paths, structured_data_sets)
-        
-        if not kb_ready:
-            # Case A: User provided documents, but they failed to process
-            if (document_paths or structured_data_sets):
-                return {"error": "Knowledge base preparation failed for the provided documents."}
+        Reads the LLM's structured JSON output and saves any generated 
+        'implementation_code' strings as separate .py files.
+        """
+        if result_json.get("error"):
+            print("  - ⚠️ Skipping code script saving: LLM output contained an error.")
+            return
+
+        experiments = result_json.get("proposed_experiments", [])
+        if not experiments:
+            print("  - ⚠️ Skipping code script saving: No experiments found in JSON output.")
+            return
+
+        base_path = Path(base_output_dir)
+        base_path.mkdir(parents=True, exist_ok=True)
+        num_saved = 0
+
+        print(f"\n--- Saving Generated Code Scripts to: {base_output_dir} ---")
+
+        for i, exp in enumerate(experiments):
+            code_content = exp.get("implementation_code")
+            exp_name = exp.get("experiment_name", f"Experiment_{i+1}")
             
-            # Case B: User provided NO documents (Fresh Install) -> Proceed to Fallback
+            # Clean filename
+            safe_name = "".join(c for c in exp_name if c.isalnum() or c in (' ', '_')).rstrip()
+            safe_name = safe_name.replace(' ', '_')
+            if not safe_name: safe_name = f"experiment_code_{i+1}"
+            
+            filename = f"{safe_name}.py"
+            file_path = base_path / filename
+
+            if code_content and "No relevant code found" not in code_content:
+                try:
+                    # Strip markdown ```
+                    code_lines = code_content.splitlines()
+                    start_index = next((j for j, line in enumerate(code_lines) if line.strip().startswith('```')), -1)
+                    end_index = next((j for j, line in enumerate(code_lines[start_index+1:]) if line.strip().endswith('```')), -1)
+                    
+                    if start_index != -1 and end_index != -1:
+                        extracted_code = "\n".join(code_lines[start_index + 1 : end_index + start_index + 1]).strip()
+                    else:
+                        extracted_code = code_content.strip()
+
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(extracted_code)
+                    
+                    print(f"  - ✅ Saved script for '{exp_name}' to: {file_path.name}")
+                    num_saved += 1
+                except Exception as e:
+                    logging.error(f"  - ❌ Failed to save code script {filename}: {e}")
             else:
-                logging.warning("⚠️ No documents provided for TEA. Proceeding to General Knowledge Fallback.")
+                 print(f"  - ℹ️ Experiment {i+1} has no executable code content. Skipping save.")
 
-        # Call the helper with specific instructions
-        results = self._perform_rag_query(
-            objective=objective,
-            instructions=TEA_INSTRUCTIONS,
-            task_name="Technoeconomic Analysis",
-            additional_context=None,
-            primary_data_set=primary_data_set,
-            image_paths=image_paths,
-            image_descriptions=image_descriptions
-        )
-
-        if output_json_path:
-            print(f"\n--- Saving TEA Results ---")
-            self._save_results_to_json(results, output_json_path)
-
-        return results
+        if num_saved > 0:
+            print(f"--- Successfully saved {num_saved} executable script(s). ---")
+        else:
+             print("--- No executable scripts were generated or saved. ---")
