@@ -4,20 +4,26 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
-import PIL.Image
-PIL_Image = PIL.Image
-
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass, chunk_text
 from .excel_parser import parse_adaptive_excel
+
 from .instruct import (
     HYPOTHESIS_GENERATION_INSTRUCTIONS,
-    TEA_INSTRUCTIONS, 
-    HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK, 
-    TEA_INSTRUCTIONS_FALLBACK
+    TEA_INSTRUCTIONS
 )
+
 from ...auth import get_api_key, APIKeyNotFoundError
 from ...wrappers.openai_wrapper import OpenAIAsGenerativeModel
+
+from .rag_engine import (
+    perform_science_rag, 
+    perform_code_rag, 
+    refine_plan_with_feedback,
+    verify_plan_relevance
+)
+from .user_interface import display_plan_summary, get_user_feedback
+
 
 class PlanningAgent:
     """
@@ -81,16 +87,6 @@ class PlanningAgent:
         if docs_loaded: print("    - ✅ Docs KB loaded.")
         if code_loaded: print("    - ✅ Code KB loaded.")
         if not self._kb_is_built: print("    - ⚠️  No pre-built KBs found.")
-
-    def _parse_json_from_response(self, resp) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        if hasattr(resp, 'text'): json_text = resp.text.strip()
-        elif hasattr(resp, 'parts') and resp.parts: json_text = resp.parts[0].text.strip()
-        else: return None, f"LLM response format unexpected: {resp}"
-        
-        if json_text.startswith("```json"): json_text = json_text[len("```json"):].strip()
-        if json_text.endswith("```"): json_text = json_text[:-len("```")].strip()
-        try: return json.loads(json_text), None
-        except json.JSONDecodeError as e: return None, f"Failed to decode JSON: {str(e)}"
 
     def _save_results_to_json(self, results: Dict[str, Any], file_path: str):
         try:
@@ -207,181 +203,6 @@ class PlanningAgent:
             return False
         return True
 
-    def _verify_plan_relevance(self, objective: str, result: Dict[str, Any]) -> bool:
-        experiments = result.get("proposed_experiments", [])
-        if not experiments: return False
-
-        plan_summary_lines = []
-        for i, exp in enumerate(experiments):
-            name = exp.get('experiment_name', 'N/A')
-            hyp = exp.get('hypothesis', 'N/A')
-            # Extract the justification so the verifier knows "WHY"
-            justification = exp.get('justification', 'No justification provided.')
-            
-            plan_summary_lines.append(f"Experiment {i+1}: {name}")
-            plan_summary_lines.append(f"  Hypothesis: {hyp}")
-            plan_summary_lines.append(f"  Justification: {justification}") 
-            plan_summary_lines.append("---")
-            
-        plan_summary = "\n".join(plan_summary_lines)
-
-        eval_prompt = f"""
-        You are a scientific research evaluator.
-        
-        1. User Objective: "{objective}"
-        2. Proposed Plan: 
-        {plan_summary}
-
-        **Task:**
-        Review the "Hypothesis" and "Justification" for each experiment and determine if the Proposed Plan is directly relevant to the User Objective.
-        
-        **Output:**
-        Respond with a single JSON object: {{ "is_relevant": boolean, "reason": "string explanation" }}
-        """
-
-        try:
-            response = self.model.generate_content([eval_prompt], generation_config=self.generation_config)
-            eval_result, _ = self._parse_json_from_response(response)
-            
-            if eval_result and not eval_result.get("is_relevant"):
-                print(f"    - ⚠️  Plan Verification Failed: {eval_result.get('reason')}")
-                return False
-                
-            print(f"    - ✅ Plan Verification Passed.")
-            return True
-            
-        except Exception as e:
-            logging.error(f"Verification step failed: {e}")
-            return True
-
-    def _perform_science_rag(self, objective: str, instructions: str, task_name: str, 
-                           primary_data_set: Optional[Dict[str, str]] = None,
-                           image_paths: Optional[List[str]] = None,
-                           image_descriptions: Optional[List[str]] = None,
-                           additional_context: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Executes the RAG loop for Scientific Planning or TEA.
-        
-        Logic Flow:
-        1. Parse Primary Data (Excel) if available.
-        2. Retrieve Scientific Context (Docs KB only).
-        3. Generate Response.
-        4. IF response indicates "Insufficient Context":
-           - Switch to Fallback Instructions (General Knowledge).
-           - Re-generate.
-        """
-        
-        # --- 1. Process Primary Data (e.g., Excel) ---
-        primary_data_str = None
-        if primary_data_set:
-            try:
-                # We use the adaptive parser to get a summary of the dataset
-                chunks = parse_adaptive_excel(primary_data_set['file_path'], primary_data_set['metadata_path'])
-                if chunks: 
-                    # Prefer the summary chunk, fallback to the first chunk
-                    summary = next((c for c in chunks if c['metadata'].get('content_type') in ('dataset_summary', 'dataset_package')), chunks[0])
-                    primary_data_str = summary['text']
-            except Exception as e:
-                print(f"  - ⚠️ Warning: Failed to parse primary data set: {e}")
-
-        # --- 2. Retrieve Scientific Context (Docs KB Only) ---
-        print(f"\n--- Retrieving Scientific Context for {task_name} ---")
-        
-        doc_chunks = []
-        if self.kb_docs.index and self.kb_docs.index.ntotal > 0:
-            # We specifically DO NOT query kb_code here. 
-            # We want pure scientific context to form the hypothesis first.
-            doc_chunks = self.kb_docs.retrieve(objective, top_k=10)
-        
-        unique_chunks = {c['text']: c for c in doc_chunks}.values()
-        
-        if not unique_chunks and not primary_data_str:
-            retrieved_context_str = "No specific documents found in Knowledge Base."
-        else:
-            rag_str = "\n\n---\n\n".join(
-                f"Source: {Path(c['metadata'].get('source', 'N/A')).name}\nType: {c['metadata'].get('content_type')}\n\n{c['text']}" 
-                for c in unique_chunks
-            )
-            retrieved_context_str = ""
-            if primary_data_str: retrieved_context_str += f"## Primary Data Summary\n{primary_data_str}\n\n"
-            if rag_str: retrieved_context_str += f"## Retrieved Scientific Literature\n{rag_str}"
-
-        # --- 3. Construct Multimodal Prompt ---
-        loaded_images = []
-        img_desc_str = ""
-        
-        # Load Images if PIL is available
-        if image_paths and PIL_Image:
-            for p in image_paths:
-                try: 
-                    loaded_images.append(PIL_Image.open(p))
-                except Exception as e:
-                    print(f"  - ⚠️ Could not load image {p}: {e}")
-
-        if image_descriptions:
-            img_desc_str = json.dumps(image_descriptions, indent=2)
-
-        # Build the Prompt List (Text + Images)
-        prompt_parts = [instructions, f"## User Objective:\n{objective}"]
-        
-        if loaded_images:
-            prompt_parts.append("\n## Provided Images: (See attached)")
-            prompt_parts.extend(loaded_images)
-            if img_desc_str: prompt_parts.append(f"\n## Image Descriptions:\n{img_desc_str}")
-        
-        if additional_context:
-            prompt_parts.append(f"\n## Additional Context:\n{additional_context}")
-            
-        prompt_parts.append(f"\n## Retrieved Context:\n{retrieved_context_str}")
-
-        # --- 4. Generation & Fallback Logic ---
-        print(f"--- Generating {task_name} ---")
-        try:
-            # Attempt 1: Strict RAG Generation
-            response = self.model.generate_content(prompt_parts, generation_config=self.generation_config)
-            result, error_msg = self._parse_json_from_response(response)
-            
-            if error_msg: 
-                return {"error": f"JSON Parsing Error: {error_msg}"}
-
-            # Check if the LLM refused due to lack of context
-            # (The strict instructions tell it to return an "error" key if context is missing)
-            needs_fallback = False
-            if result.get("error") and "Insufficient" in str(result.get("error")):
-                needs_fallback = True
-                print(f"    - ⚠️ Strict generation failed: {result.get('error')}")
-            
-            # --- 5. Execution of Fallback ---
-            if needs_fallback:
-                print("    - 🔄 Entering Fallback Mode (General Knowledge)...")
-                
-                # Determine which fallback instruction set to use
-                if instructions == HYPOTHESIS_GENERATION_INSTRUCTIONS:
-                    fallback_inst = HYPOTHESIS_GENERATION_INSTRUCTIONS_FALLBACK
-                elif instructions == TEA_INSTRUCTIONS:
-                    fallback_inst = TEA_INSTRUCTIONS_FALLBACK
-                else:
-                    # If we don't have a specific fallback, return the error
-                    return result
-
-                # Update the instructions in the prompt (Index 0)
-                prompt_parts[0] = fallback_inst
-                
-                # Attempt 2: General Knowledge Generation
-                fallback_response = self.model.generate_content(prompt_parts, generation_config=self.generation_config)
-                result, error_msg_fb = self._parse_json_from_response(fallback_response)
-                
-                if error_msg_fb:
-                    return {"error": f"Fallback JSON Parsing Error: {error_msg_fb}"}
-                
-                print("    - ✅ Fallback generation successful.")
-
-            return result
-
-        except Exception as e:
-            logging.error(f"Error in _perform_science_rag: {e}")
-            return {"error": str(e)}
-
     def propose_experiments(self, objective: str, 
                             science_paths: Optional[List[str]] = None, 
                             code_paths: Optional[List[str]] = None,
@@ -411,9 +232,36 @@ class PlanningAgent:
         ctx = f"TEA Findings:\n{tea_summary}" if tea_summary else None
         
         # This generates the Plan, Steps, and Hypothesis (No Code)
-        res = self._perform_science_rag(
-            objective, HYPOTHESIS_GENERATION_INSTRUCTIONS, "Experimental Plan", 
-            primary_data_set, image_paths, image_descriptions, ctx)
+        res = perform_science_rag(
+            objective=objective,
+            instructions=HYPOTHESIS_GENERATION_INSTRUCTIONS,
+            task_name="Experimental Plan",
+            kb_docs=self.kb_docs,             
+            model=self.model,                 
+            generation_config=self.generation_config,
+            primary_data_set=primary_data_set,
+            image_paths=image_paths,
+            image_descriptions=image_descriptions,
+            additional_context=ctx
+        )
+
+        # Self-reflection and correction
+        if not res.get("error"):
+            # Check relevance
+            is_relevant, critique = verify_plan_relevance(objective, res, self.model, self.generation_config)
+            
+            if not is_relevant:
+                print(f"\n🔄 Self-Reflection triggered: {critique}")
+                print("    - Attempting autonomous plan correction...")
+  
+                res = refine_plan_with_feedback(
+                    original_result=res,
+                    feedback=f"CRITICAL CORRECTION NEEDED: {critique}. Ensure the plan directly addresses the objective: {objective}",
+                    objective=objective,
+                    model=self.model,
+                    generation_config=self.generation_config
+                )
+                print("    - ✅ Plan auto-corrected.")
                 
         # =====================================================
         # PHASE 2: HUMAN FEEDBACK LOOP
@@ -421,15 +269,20 @@ class PlanningAgent:
         if enable_human_feedback and res.get("proposed_experiments") and not res.get("error"):
             
             # Show the Science Plan
-            self._display_plan_summary(res)
-            
+            display_plan_summary(res)
             # Capture user input
-            user_feedback = self._get_user_feedback()
+            user_feedback = get_user_feedback()
             
             if user_feedback:
                 print(f"\n📝 Feedback received. Refining Scientific Plan...")
-                res = self._refine_plan_with_feedback(res, user_feedback, objective)
-                self._display_plan_summary(res)
+                res = refine_plan_with_feedback(
+                    original_result=res,
+                    feedback=user_feedback,
+                    objective=objective,
+                    model=self.model,
+                    generation_config=self.generation_config
+                )
+                display_plan_summary(res)
                 print("✅ Scientific plan updated.")
             else:
                 print("✅ Scientific plan accepted.")
@@ -440,7 +293,12 @@ class PlanningAgent:
         # Now we generate code for the *Finalized* steps
         if self.kb_code.index and self.kb_code.index.ntotal > 0 and not res.get("error"):
              print(f"\n--- Phase 3: Mapping to Implementation Code ---")
-             res = self._perform_code_rag(res)
+             res = perform_code_rag(
+                 result=res,
+                 kb_code=self.kb_code,
+                 model=self.model,
+                 generation_config=self.generation_config
+             )
 
         # --- Save & Return ---
         if output_json_path: self._save_results_to_json(res, output_json_path)
@@ -459,8 +317,18 @@ class PlanningAgent:
         if not self._ensure_kb_is_ready(science_paths, code_paths, structured_data_sets):
             return {"error": "KB Init Failed"}
 
-        res = self._perform_science_rag(objective, TEA_INSTRUCTIONS, "Technoeconomic Analysis",
-                                        primary_data_set, image_paths, image_descriptions)
+        res = perform_science_rag(
+            objective=objective, 
+            instructions=TEA_INSTRUCTIONS, 
+            task_name="Technoeconomic Analysis",
+            kb_docs=self.kb_docs,
+            model=self.model,
+            generation_config=self.generation_config,
+            primary_data_set=primary_data_set, 
+            image_paths=image_paths, 
+            image_descriptions=image_descriptions
+        )
+
         if output_json_path: self._save_results_to_json(res, output_json_path)
         return res
     
@@ -522,210 +390,3 @@ class PlanningAgent:
             print(f"--- Successfully saved {num_saved} executable script(s). ---")
         else:
              print("--- No executable scripts were generated or saved. ---")
-
-    def _perform_code_rag(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Unified method to generate code. 
-        Used for Initial, Fallback, and Refined plans.
-        """
-        experiments = result.get("proposed_experiments", [])
-        if not experiments: return result
-        
-        # 1. Smart Retrieval: Use the *steps* as the query
-        all_steps_text = " ".join([" ".join(e.get('experimental_steps', [])) for e in experiments])
-        
-        print(f"  - 🔍 Retrieving API syntax for: {all_steps_text[:100]}...")
-        hits = self.kb_code.retrieve(f"python implementation for {all_steps_text}", top_k=5)
-        
-        if not hits:
-            print("    - ℹ️ No relevant code chunks found. Skipping code gen.")
-            return result
-            
-        code_ctx = "\n\n".join([c['text'] for c in hits])
-        code_files = list(set([Path(c['metadata']['source']).name for c in hits]))
-
-        # 2. Generate Code
-        for exp in experiments:
-            steps = exp.get("experimental_steps", [])
-            exp_name = exp.get("experiment_name", "Experiment")
-            
-            prompt = f"""
-            You are a Research Software Engineer.
-            
-            **TASK:** Write a Python script to implement the experimental steps below.
-            
-            **INPUTS:**
-            1. Experimental Steps: {json.dumps(steps)}
-            2. API Syntax Reference:
-            {code_ctx}
-            
-            **INSTRUCTIONS:**
-            - Use the "API Syntax Reference" to find the correct functions.
-            - Map the scientific intent of the Steps to the code.
-            - Return ONLY valid JSON.
-            
-            **OUTPUT:** A JSON object: {{ "implementation_code": "YOUR_PYTHON_CODE_HERE" }}
-            """
-            
-            try:
-                # We use a fresh generation call so the context isn't polluted
-                resp = self.model.generate_content([prompt], generation_config=self.generation_config)
-                code_res, _ = self._parse_json_from_response(resp)
-                
-                if code_res and "implementation_code" in code_res:
-                    exp["implementation_code"] = code_res["implementation_code"]
-                    exp["code_source_files"] = code_files
-                    print(f"    - ✅ Generated code for '{exp_name}'")
-                else:
-                    print(f"    - ⚠️ Code generation returned no code for '{exp_name}'")
-            except Exception as e:
-                print(f"    - ❌ Failed to generate code for '{exp_name}': {e}")
-                
-        return result
-
-    # -------------------------------------------------------------------------
-    # 4. New Helper: User Feedback Input
-    # -------------------------------------------------------------------------
-    def _get_user_feedback(self) -> Optional[str]:
-        """
-        Pauses execution to get user input. 
-        Returns None if the user just presses ENTER.
-        """
-        print("\n" + "-"*60)
-        
-        print("👤 HUMAN FEEDBACK STEP")
-        print("-" * 60)
-        print("Review the plan above.")
-        print("• To APPROVE: Press [ENTER] directly.")
-        print("• To REQUEST CHANGES: Type your feedback/instructions and press [ENTER].")
-        
-        feedback = input("\n> Instruction: ").strip()
-        
-        if not feedback:
-            return None # User accepted the plan
-        return feedback
-    
-
-    def _refine_plan_with_feedback(self, original_result: Dict[str, Any], 
-                               feedback: str, objective: str) -> Dict[str, Any]:
-        """
-        Refines the experimental plan using the LLM based on user input.
-        Strictly enforces JSON structure preservation.
-        """
-        
-        refinement_prompt = f"""
-        You are an expert Research Strategist acting as an editor.
-        
-        **Original Objective:** {objective}
-        
-        **Current Plan (JSON):**
-        {json.dumps(original_result, indent=2)}
-        
-        **User Feedback/Correction:** "{feedback}"
-        
-        **Task:**
-        Update the "Current Plan" to strictly address the "User Feedback".
-        
-        **Constraints:**
-        - You MUST return the exact same JSON structure (keys: "proposed_experiments", etc.).
-        - Update "experimental_steps", "hypothesis", or "required_equipment" as requested.
-        - Do NOT add explanations outside the JSON.
-        
-        **Output:**
-        A single valid JSON object containing the updated plan.
-        """
-
-        try:
-            response = self.model.generate_content([refinement_prompt], generation_config=self.generation_config)
-            refined_result, error_msg = self._parse_json_from_response(response)
-            
-            if error_msg:
-                print(f"    - ⚠️ Could not parse refined plan: {error_msg}. Reverting.")
-                return original_result
-            
-            # Safety check
-            if "proposed_experiments" not in refined_result:
-                print("    - ⚠️ Refined plan invalid structure. Reverting.")
-                return original_result
-                
-            return refined_result
-            
-        except Exception as e:
-            print(f"    - ⚠️ Error during refinement: {e}")
-            return original_result
-        
-
-    def _display_plan_summary(self, result: Dict[str, Any]) -> None:
-        """
-        Parses the agent's results and prints a structured, pretty-printed 
-        summary to the console for human review.
-        """
-        # 1. Error Handling
-        if result.get("error"):
-            print(f"\n❌ Agent finished with an error: {result['error']}\n")
-            return
-
-        # 2. structure Validation
-        experiments = result.get("proposed_experiments")
-        if not experiments or not isinstance(experiments, list):
-            print("\n⚠️  The agent returned a result, but no experiments were found.")
-            # Optional: Print raw if debugging needed
-            # print(json.dumps(result, indent=2))
-            return
-
-        # 3. Header
-        print("\n" + "="*80)
-        print("✅ PROPOSED EXPERIMENTAL PLAN")
-        print("="*80)
-
-        # 4. Loop through Experiments
-        for i, exp in enumerate(experiments, 1):
-            
-            # --- Name & Hypothesis ---
-            print(f"\n🔬 EXPERIMENT {i}: {exp.get('experiment_name', 'Unnamed Experiment')}")
-            print("-" * 80)
-            print(f"\n> 🎯 Hypothesis:\n> {exp.get('hypothesis', 'N/A')}")
-
-            # --- Experimental Steps (Numbered) ---
-            print("\n--- 🧪 Experimental Steps ---")
-            steps = exp.get('experimental_steps', [])
-            if steps:
-                for j, step in enumerate(steps, 1):
-                    print(f" {j}. {step}")
-            else:
-                print("  (No steps provided)")
-            
-            # --- Equipment ---
-            print("\n--- 🛠️  Required Equipment ---")
-            equipment = exp.get('required_equipment', [])
-            if equipment:
-                # Print as a clean comma-separated list if short, or bullets if long
-                if len(equipment) > 5:
-                    for item in equipment: print(f"  * {item}")
-                else:
-                    print(f"  {', '.join(equipment)}")
-            else:
-                print("  (No equipment specified)")
-
-            # --- Outcome & Justification (Critical for Review) ---
-            print("\n--- 📈 Expected Outcome ---")
-            print(f"  {exp.get('expected_outcome', 'N/A')}")
-
-            print("\n--- 💡 Justification ---")
-            print(f"  {exp.get('justification', 'N/A')}")
-            
-            # --- Source Documents ---
-            print("\n--- 📄 Source Documents ---")
-            sources = exp.get('source_documents', [])
-            if sources:
-                for src in sources:
-                    print(f"  - {src}")
-            else:
-                print("  (No sources listed)")
-
-            # --- Code Indicator (If generated) ---
-            if "implementation_code" in exp:
-                print("\n--- 💻 Implementation Code ---")
-                print("  ✅ Python script generated (saved to file).")
-
-            print("\n" + "="*80)
