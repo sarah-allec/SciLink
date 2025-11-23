@@ -28,8 +28,6 @@ You MUST respond with a single JSON object containing a key "proposed_experiment
 - "expected_outcome": (String) A description of what results would support or refute the hypothesis.
 - "justification": (String) A brief explanation of why this experiment is a logical step, citing information from the retrieved context.
 - "source_documents": (List of Strings) A list of the unique source filenames that informed this experimental plan.
-- "implementation_code": (String) A self-contained code snippet (e.g., Python script) that implements the experimental steps. If code was retrieved from the knowledge base, use that style and reference the functions/classes. The entire code block must be enclosed in triple backticks and the language name (e.g., \`\`\`python). If no relevant code was found, output 'No relevant code found in the knowledge base.'
-- "code_source_files": (List of Strings) A list of the specific filenames (e.g., 'api_docs.txt', 'example_script.py') from the Knowledge Base that were used to generate this code.
 """
 
 TEA_INSTRUCTIONS = """
