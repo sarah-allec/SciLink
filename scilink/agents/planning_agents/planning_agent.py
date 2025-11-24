@@ -98,7 +98,7 @@ class PlanningAgent:
             print(f"    - ✅ Results successfully saved to: {file_path}")
         except Exception as e: logging.error(f"    - ❌ Failed to save results: {e}")
 
-    def _process_file_list(self, file_paths: List[str], is_code_mode: bool) -> List[Dict[str, Any]]:
+    def _process_file_list(self, file_paths: List[str], is_code_mode: bool, repo_name: str = None) -> List[Dict[str, Any]]:
         """
         Generic helper to process a list of files OR directories.
         If is_code_mode=True, treats text files as code blocks and tags metadata as 'code'.
