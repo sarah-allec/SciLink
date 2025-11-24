@@ -8,6 +8,7 @@ from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass, chunk_text
 from .excel_parser import parse_adaptive_excel
 from .parser_utils import get_files_from_directory, generate_repo_map
+from .repo_loader import clone_git_repository
 
 from .instruct import (
     HYPOTHESIS_GENERATION_INSTRUCTIONS,
@@ -254,14 +255,61 @@ class PlanningAgent:
                             output_json_path: Optional[str] = None,
                             enable_human_feedback: bool = True):
         """
-        Generates experimental plans using a Phased Architecture:
-        Phase 1: Science (Logic & Steps) - Uses Docs KB
-        Phase 2: Feedback (Human Loop) - Refines Logic
-        Phase 3: Engineering (Code) - Uses Code KB
+        Orchestrates the full end-to-end generation of experimental plans, from scientific 
+        theory to executable code implementation.
+
+        This method employs a Phased RAG Architecture:
+        1. **Phase 1 (Science):** Uses the `science_paths` KB to generate hypotheses and logical steps.
+           Includes autonomous self-reflection to verify plan relevance.
+        2. **Phase 2 (Feedback):** (Optional) Pauses for human review via CLI to refine the strategy.
+        3. **Phase 3 (Engineering):** Uses the `code_paths` KB to map approved steps to Python code.
+
+        Args:
+            objective (str): The high-level research goal or question (e.g., "Synthesize X using Y").
+            science_paths (List[str], optional): List of local file paths (PDFs, TXT, MD) containing 
+                scientific literature, manuals, or reports.
+            code_paths (List[str], optional): List of sources for implementation context. 
+                **Supports Polymorphic Inputs:**
+                - Local file paths (e.g., `"./scripts/utils.py"`)
+                - Local directory paths (e.g., `"./legacy_codebase/"`)
+                - **Git URLs** (e.g., `"https://github.com/org/repo.git"`). Remote repos are 
+                  automatically cloned/updated and ingested.
+            structured_data_sets (List[Dict], optional): List of Excel/CSV metadata for general context. 
+                Format: `[{'file_path': '...', 'metadata_path': '...'}]`.
+            tea_summary (str, optional): A text summary of a Technoeconomic Analysis to constrain 
+                the plan (e.g., "Avoid platinum catalysts due to cost").
+            primary_data_set (Dict, optional): A specific dataset that is the focus of this experiment.
+            image_paths (List[str], optional): Paths to relevant images (charts, diagrams) for multimodal analysis.
+            image_descriptions (List[str], optional): Contextual text descriptions for the provided images.
+            output_json_path (str, optional): If provided, saves the final result dictionary to this JSON file.
+            enable_human_feedback (bool): If True, pauses execution after Phase 1 to allow the user to 
+                critique or approve the plan via the console. Defaults to True.
+
+        Returns:
+            Dict[str, Any]: A structured dictionary containing:
+                - "proposed_experiments": List of experimental plans.
+                - "implementation_code": Python scripts for the experiments (if Phase 3 succeeds).
+                - "error": Error message if the pipeline failed.
         """
+
+        effective_code_paths = []
         
+        if code_paths:
+            print("\n--- Resolving Code Paths ---")
+            for path in code_paths:
+                # Check if the string looks like a Git URL
+                if path.strip().startswith(('http://', 'https://', 'git@')):
+                    print(f"  - 🔗 Detected URL: {path}")
+                    local_path = clone_git_repository(path)
+                    if local_path:
+                        effective_code_paths.append(local_path)
+                        print(f"    -> Resolved to local: {Path(local_path).name}")
+                else:
+                    # It's a normal local file/folder
+                    effective_code_paths.append(path)
+
         # --- Init Knowledge Bases ---
-        if not self._ensure_kb_is_ready(science_paths, code_paths, structured_data_sets):
+        if not self._ensure_kb_is_ready(science_paths, effective_code_paths, structured_data_sets):
             return {"error": "KB Init Failed"}
 
         # =====================================================
