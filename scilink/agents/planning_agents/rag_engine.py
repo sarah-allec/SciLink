@@ -34,20 +34,32 @@ def _parse_json_from_response(resp) -> Tuple[Optional[Dict[str, Any]], Optional[
         return None, f"Failed to decode JSON: {str(e)}"
 
 
-
-# planning_agents/rag_engine.py
-
 def verify_plan_relevance(objective: str, 
                           result: Dict[str, Any], 
                           model: Any, 
-                          generation_config: Any) -> Tuple[bool, str]: # <--- Changed Return Type
+                          generation_config: Any) -> Tuple[bool, str]: 
     """
     Self-reflection step. Returns (True, "") if relevant, or (False, "Reason") if not.
+    
+    Logic:
+    1. Checks if the plan was generated via Fallback (General Knowledge).
+    2. If Fallback: Verifies only scientific soundness (Relaxed).
+    3. If Strict: Verifies document grounding and specific constraint adherence (Strict).
     """
     experiments = result.get("proposed_experiments", [])
     if not experiments: 
         return False, "No experiments generated."
 
+    # 1. Detect Fallback Mode
+    # We check if ANY experiment contains the mandatory fallback warning defined in instruct.py
+    is_fallback = False
+    for exp in experiments:
+        justification = exp.get('justification', '').lower()
+        if "general scientific knowledge" in justification or "documents lacked specific context" in justification:
+            is_fallback = True
+            break
+
+    # 2. Build Plan Summary for the Verifier
     plan_summary_lines = []
     for i, exp in enumerate(experiments):
         name = exp.get('experiment_name', 'N/A')
@@ -61,20 +73,53 @@ def verify_plan_relevance(objective: str,
         
     plan_summary = "\n".join(plan_summary_lines)
 
-    eval_prompt = f"""
-    You are a scientific research evaluator.
-    
-    1. User Objective: "{objective}"
-    2. Proposed Plan: 
-    {plan_summary}
+    # 3. Construct Context-Aware Prompt
+    if is_fallback:
+        print("    - ℹ️  Verifying Fallback Plan (Relaxed Constraints)...")
+        eval_prompt = f"""
+        You are a scientific research evaluator.
+        
+        **CONTEXT:** The system failed to find specific documents for the User Objective in the Knowledge Base.
+        Therefore, it generated a plan based on **General Scientific Knowledge**.
+        
+        1. User Objective: "{objective}"
+        2. Proposed Plan (General Knowledge): 
+        {plan_summary}
 
-    **Task:**
-    Review the "Hypothesis" and "Justification" for each experiment and determine if the Proposed Plan is directly relevant to the User Objective.
-    
-    **Output:**
-    Respond with a single JSON object: {{ "is_relevant": boolean, "reason": "string explanation" }}
-    """
+        **TASK:**
+        Determine if the Proposed Plan makes scientific sense for the Objective, acknowledging that it CANNOT cite specific documents.
+        
+        **CRITERIA FOR PASS:**
+        - The plan addresses the objective using standard, correct scientific principles.
+        - The logic is sound and actionable.
+        - **DO NOT FAIL** the plan simply because it uses general knowledge or lacks specific context (this is expected in fallback mode).
+        
+        **Output:**
+        Respond with a single JSON object: {{ "is_relevant": boolean, "reason": "string explanation" }}
+        """
+    else:
+        print("    - ℹ️  Verifying Strict Plan (Document Constraints)...")
+        eval_prompt = f"""
+        You are a scientific research evaluator.
+        
+        1. User Objective: "{objective}"
+        2. Proposed Plan: 
+        {plan_summary}
 
+        **TASK:**
+        Review the "Hypothesis" and "Justification" for each experiment.
+        Determine if the Proposed Plan is directly relevant to the User Objective AND supported by the cited context.
+        
+        **CRITERIA FOR FAIL:**
+        - The plan ignores specific constraints in the objective (e.g., "Use X method" but the plan uses "Y").
+        - The justification contradicts the hypothesis.
+        - The plan is logically incoherent.
+        
+        **Output:**
+        Respond with a single JSON object: {{ "is_relevant": boolean, "reason": "string explanation" }}
+        """
+
+    # 4. Execute Verification
     try:
         response = model.generate_content([eval_prompt], generation_config=generation_config)
         eval_result, _ = _parse_json_from_response(response)
@@ -89,7 +134,8 @@ def verify_plan_relevance(objective: str,
         
     except Exception as e:
         logging.error(f"Verification step failed: {e}")
-        return True, "" # Fail open
+        # Fail open: If the verifier crashes, we assume the plan is okay to avoid blocking the user.
+        return True, ""
 
 
 def perform_science_rag(objective: str, 
