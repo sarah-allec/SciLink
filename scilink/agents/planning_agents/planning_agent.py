@@ -1,12 +1,13 @@
 import google.generativeai as genai
 import json
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass, chunk_text
 from .excel_parser import parse_adaptive_excel
+from .parser_utils import get_files_from_directory 
 
 from .instruct import (
     HYPOTHESIS_GENERATION_INSTRUCTIONS,
@@ -98,11 +99,23 @@ class PlanningAgent:
 
     def _process_file_list(self, file_paths: List[str], is_code_mode: bool) -> List[Dict[str, Any]]:
         """
-        Generic helper to process a list of files.
+        Generic helper to process a list of files OR directories.
         If is_code_mode=True, treats text files as code blocks and tags metadata as 'code'.
         """
         chunks = []
-        for f_path in file_paths:
+
+        expanded_paths = []
+        if file_paths:
+            for f_path in file_paths:
+                path_obj = Path(f_path)
+                if path_obj.is_dir():
+                    # If user provided a folder (e.g., "./neurobayes"), get all files inside
+                    expanded_paths.extend(get_files_from_directory(f_path))
+                else:
+                    # If user provided a specific file (e.g., "neurobayes_dump.txt"), keep it
+                    expanded_paths.append(f_path)
+
+        for f_path in expanded_paths:
             path = Path(f_path)
             if not path.exists():
                 print(f"  - ⚠️ File not found: {f_path}")
@@ -138,11 +151,13 @@ class PlanningAgent:
                         c['metadata']['content_type'] = ctype
                         c['metadata']['source'] = f_path
                     chunks.extend(new_chunks)
+                    # See every file processed
                     print(f"  - Extracted {len(new_chunks)} chunks from {path.name} ({'Code' if is_code_mode else 'Docs'} Mode)")
                 except Exception as e:
                     print(f"  - ❌ Error reading {f_path}: {e}")
             else:
                 print(f"  - ⚠️ Unsupported file type: {f_path}")
+        
         return chunks
 
     def _build_and_save_kb(self,
