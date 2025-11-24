@@ -252,6 +252,7 @@ def perform_code_rag(result: Dict[str, Any],
         **INSTRUCTIONS:**
         - Use the "API Syntax Reference" to find the correct functions.
         - Map the scientific intent of the Steps to the code.
+        - You must prioritize using classes and functions from the API Reference over generic external libraries.
         - Return ONLY valid JSON.
         
         **OUTPUT:** A JSON object: {{ "implementation_code": "YOUR_PYTHON_CODE_HERE" }}
