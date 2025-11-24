@@ -36,7 +36,7 @@ class PlanningAgent:
                  local_model: str = None,
                  embedding_model: str = "gemini-embedding-001",
                  kb_base_path: str = "./kb_storage/default_kb",
-                 code_chunk_size: int = 5000): 
+                 code_chunk_size: int = 20000): 
         
         if google_api_key is None:
             google_api_key = get_api_key('google')
