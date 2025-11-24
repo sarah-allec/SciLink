@@ -37,6 +37,28 @@ def get_files_from_directory(directory_path: str) -> List[str]:
     print(f"    -> Found {len(found_files)} files in directory.")
     return found_files
 
+def generate_repo_map(root_dir: str) -> str:
+    """
+    Generates a visual tree structure of the repository.
+    Useful for giving the LLM context on where files live for imports.
+    """
+    root = Path(root_dir)
+    if not root.exists(): return ""
+
+    tree_lines = [f"{root.name}/"]
+    
+    for path in sorted(root.rglob('*')):
+        # Skip hidden files/dirs
+        if any(part.startswith('.') or part in ('__pycache__', 'venv', 'env') for part in path.parts):
+            continue
+        
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            rel_path = path.relative_to(root)
+            depth = len(rel_path.parts)
+            indent = '    ' * (depth - 1)
+            tree_lines.append(f"{indent}├── {path.name}")
+            
+    return "\n".join(tree_lines)
 
 def table_to_markdown(table: List[List[str]]) -> str:
     """Converts a 2D list representation of a table into Markdown format."""

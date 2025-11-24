@@ -7,7 +7,7 @@ from pathlib import Path
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass, chunk_text
 from .excel_parser import parse_adaptive_excel
-from .parser_utils import get_files_from_directory 
+from .parser_utils import get_files_from_directory, generate_repo_map
 
 from .instruct import (
     HYPOTHESIS_GENERATION_INSTRUCTIONS,
@@ -71,6 +71,7 @@ class PlanningAgent:
         self.kb_code_prefix = base_path.parent / f"{base_path.name}_code"
         self.kb_code_index = str(self.kb_code_prefix.with_suffix(".faiss"))
         self.kb_code_chunks = str(self.kb_code_prefix.with_suffix(".json"))
+        self.kb_code_map_path = str(self.kb_code_prefix.with_suffix(".maps.json"))
 
         print("--- Initializing Agent (Dual-KB System) ---")
         self._load_knowledge_bases()
@@ -81,7 +82,7 @@ class PlanningAgent:
         docs_loaded = self.kb_docs.load(self.kb_docs_index, self.kb_docs_chunks)
         
         print(f"  - Code KB: Loading from {self.kb_code_prefix}...")
-        code_loaded = self.kb_code.load(self.kb_code_index, self.kb_code_chunks)
+        code_loaded = self.kb_code.load(self.kb_code_index, self.kb_code_chunks, self.kb_code_map_path)
 
         self._kb_is_built = docs_loaded or code_loaded
         
@@ -196,12 +197,36 @@ class PlanningAgent:
         code_chunks = []
         if code_paths:
             print(f"Processing {len(code_paths)} Implementation/Code Documents...")
-            code_chunks.extend(self._process_file_list(code_paths, is_code_mode=True))
-        
+            
+            for p in code_paths:
+                path_obj = Path(p)
+                
+                # Case A: Directory (Repo) - Generate Map & Tag Chunks
+                if path_obj.is_dir():
+                    repo_name = path_obj.name
+                    print(f"  - 📦 Processing Repo: {repo_name}")
+                    
+                    # Store map in KB registry
+                    self.kb_code.repo_maps[repo_name] = generate_repo_map(str(path_obj))
+                    
+                    # Process chunks with repo_name tag
+                    # Note: We pass [p] so helper expands this specific folder
+                    repo_chunks = self._process_file_list([p], is_code_mode=True, repo_name=repo_name)
+                    code_chunks.extend(repo_chunks)
+                
+                # Case B: Individual File
+                else:
+                    file_chunks = self._process_file_list([p], is_code_mode=True)
+                    code_chunks.extend(file_chunks)
+            
         if code_chunks:
             print(f"  - Building Code KB with {len(code_chunks)} chunks...")
             self.kb_code.build(code_chunks)
-            self.kb_code.save(self.kb_code_index, self.kb_code_chunks)
+            self.kb_code.save(
+                self.kb_code_index, 
+                self.kb_code_chunks, 
+                self.kb_code_map_path
+            )
         else:
             print("  - ℹ️  No Code docs provided. Code KB unchanged (or empty).")
 

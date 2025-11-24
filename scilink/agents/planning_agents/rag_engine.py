@@ -276,8 +276,10 @@ def perform_code_rag(result: Dict[str, Any],
     if not hits:
         print("    - ℹ️ No relevant code chunks found. Skipping code gen.")
         return result
-        
-    code_ctx = "\n\n".join([c['text'] for c in hits])
+    
+    repo_map_context = kb_code.get_relevant_maps(hits)
+
+    code_ctx = "\n\n".join([f"FILE: {c['metadata']['source']}\n{c['text']}" for c in hits])
     code_files = list(set([Path(c['metadata']['source']).name for c in hits]))
 
     # 2. Generate Code
@@ -292,7 +294,9 @@ def perform_code_rag(result: Dict[str, Any],
         
         **INPUTS:**
         1. Experimental Steps: {json.dumps(steps)}
-        2. API Syntax Reference:
+        2. **REPOSITORY STRUCTURES (Use this to determine correct import paths):**
+        {repo_map_context}
+        3. API Syntax Reference:
         {code_ctx}
         
         **INSTRUCTIONS:**
@@ -300,7 +304,10 @@ def perform_code_rag(result: Dict[str, Any],
         - Map the scientific intent of the Steps to the code.
         - You must prioritize using classes and functions from the API Reference over generic external libraries.
         - Return ONLY valid JSON.
-        
+
+        **ENVIRONMENT CONTEXT:**
+        - You are writing a script for a server where **the custom library found in the 'API Reference' is ALREADY INSTALLED.**
+
         **OUTPUT:** A JSON object: {{ "implementation_code": "YOUR_PYTHON_CODE_HERE" }}
         """
         

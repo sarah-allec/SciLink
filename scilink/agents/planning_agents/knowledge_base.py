@@ -15,8 +15,8 @@ from openai import RateLimitError
 
 class KnowledgeBase:
     """
-    Handles embedding and retrieval. Supports both Google and 
-    OpenAI-compatible (e.g., incubator) embedding models.
+    Handles embedding, retrieval, and repository structure mapping.
+    Supports both Google and OpenAI-compatible (e.g., incubator) embedding models.
     """
     def __init__(self, google_api_key: str = None, 
                  embedding_model: str = "gemini-embedding-001", 
@@ -45,6 +45,10 @@ class KnowledgeBase:
             
         self.index = None
         self.chunks = []
+        
+        # Registry for Repo Maps: {'repo_name': 'tree_structure_string'}
+        # This stores the visual directory trees for any repo you ingest.
+        self.repo_maps: Dict[str, str] = {}
 
     def build(self, chunks: List[Dict[str, any]], batch_size: int = 100):
         """
@@ -84,7 +88,7 @@ class KnowledgeBase:
                         delay *= 2 # Exponential backoff
                     else:
                         print(f"    - ❌ Rate limit hit on final attempt. Build failed.")
-                        raise e # Re-raise the exception if all retries fail
+                        raise e 
                 except Exception as e:
                     print(f"    - ❌ Error embedding batch {i//batch_size + 1}: {e}")
                     raise e
@@ -97,8 +101,8 @@ class KnowledgeBase:
         self.index.add(embeddings_np)
         print("  - ✅ Knowledge base built successfully.")
 
-    def save(self, index_path: str, chunks_path: str):
-        """Saves the FAISS index and the text chunks to disk."""
+    def save(self, index_path: str, chunks_path: str, repo_map_path: str = None):
+        """Saves the FAISS index, text chunks, and optionally the repo maps to disk."""
         if self.index:
             faiss.write_index(self.index, index_path)
             print(f"  - FAISS index saved to {index_path}")
@@ -107,8 +111,17 @@ class KnowledgeBase:
             json.dump(self.chunks, f, indent=2)
             print(f"  - Chunks saved to {chunks_path}")
 
-    def load(self, index_path: str, chunks_path: str) -> bool:
-        """Loads a pre-built FAISS index and chunks from disk."""
+        # Save Repo Maps Registry
+        if repo_map_path and self.repo_maps:
+            try:
+                with open(repo_map_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.repo_maps, f, indent=2)
+                print(f"  - Repo maps registry saved to {repo_map_path}")
+            except Exception as e:
+                print(f"  - ❌ Error saving repo maps: {e}")
+
+    def load(self, index_path: str, chunks_path: str, repo_map_path: str = None) -> bool:
+        """Loads a pre-built FAISS index, chunks, and repo maps from disk."""
         index_file = Path(index_path)
         chunks_file = Path(chunks_path)
 
@@ -120,6 +133,15 @@ class KnowledgeBase:
             self.index = faiss.read_index(index_path)
             with open(chunks_file, 'r', encoding='utf-8') as f:
                 self.chunks = json.load(f)
+            
+            # Load Repo Maps if path provided and file exists
+            if repo_map_path and Path(repo_map_path).exists():
+                try:
+                    with open(repo_map_path, 'r', encoding='utf-8') as f:
+                        self.repo_maps = json.load(f)
+                    print(f"    - Loaded maps for repos: {list(self.repo_maps.keys())}")
+                except Exception as e:
+                    print(f"    - ⚠️ Error loading repo maps file: {e}")
             
             print(f"  - ✅ Successfully loaded {len(self.chunks)} chunks and index with {self.index.ntotal} vectors.")
             return True
@@ -144,7 +166,6 @@ class KnowledgeBase:
         response = None
         for attempt in range(max_retries):
             try:
-                # This call is also polymorphic
                 response = self.embedding_client.embed_content(
                     model=self.embedding_model_name,
                     content=query,
@@ -173,6 +194,32 @@ class KnowledgeBase:
             query_embedding = np.squeeze(query_embedding, axis=0)
 
         distances, indices = self.index.search(query_embedding, top_k)
-        retrieved_chunks = [self.chunks[i] for i in indices[0]]
+        
+        # Retrieve valid chunks (filtering out potential index errors)
+        retrieved_chunks = [self.chunks[i] for i in indices[0] if i < len(self.chunks)]
         print(f"  - ✅ Retrieved {len(retrieved_chunks)} chunks.")
         return retrieved_chunks
+
+    def get_relevant_maps(self, retrieved_chunks: List[Dict]) -> str:
+        """
+        Dynamic Context Injection:
+        Looks at the retrieved chunks, finds which repos they belong to (via 'repo_name' metadata),
+        and returns a combined string of ONLY the relevant repo maps.
+        """
+        relevant_repos = set()
+        for chunk in retrieved_chunks:
+            # We ensure chunks have this metadata field in planning_agent.py
+            repo_name = chunk['metadata'].get('repo_name')
+            if repo_name and repo_name in self.repo_maps:
+                relevant_repos.add(repo_name)
+        
+        if not relevant_repos:
+            return ""
+
+        combined_map = ""
+        for repo in relevant_repos:
+            combined_map += f"\n--- DIRECTORY STRUCTURE FOR REPO: {repo} ---\n"
+            combined_map += self.repo_maps[repo]
+            combined_map += "\n"
+            
+        return combined_map
