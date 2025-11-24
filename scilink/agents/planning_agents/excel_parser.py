@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 # If a file has this many rows or fewer, we embed it all in one chunk.
 SMALL_FILE_THRESHOLD = 150
 
-def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int = 500) -> List[Dict[str, Any]]:
+def parse_adaptive_excel(excel_path: str, context_path: str, row_chunk_size: int = 200) -> List[Dict[str, Any]]:
     """
     Reads an Excel file and a JSON context file with an adaptive strategy.    
     - If rows <= SMALL_FILE_THRESHOLD:
