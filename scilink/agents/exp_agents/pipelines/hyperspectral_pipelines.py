@@ -16,7 +16,6 @@ from ..controllers.hyperspectral_controllers import (
 from ..controllers.base_controllers import (
     RunFinalInterpretationController,
     StoreAnalysisResultsController,
-    # Import the new controller
     IterativeFeedbackController
 )
 from ..preprocess import HyperspectralPreprocessingAgent

@@ -197,113 +197,87 @@ class SimpleFeedbackMixin:
         raise NotImplementedError("Each agent must implement _get_claims_instruction_prompt()")
 
 
-class IterativeFeedbackController:
-    """
-    [🧠 LLM/User Step] Facilitates human-in-the-loop validation and refinement 
-    of LLM-generated analysis plans (e.g., refinement targets).
+class IterationFeedbackMixin:
+    """Mixin to add intermediate feedback capabilities to iterative agents."""
     
-    It requests LLM refinement based on human feedback on a structured decision JSON.
-    """
-    def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable):
-        self.model = model
-        self.logger = logger
-        self.generation_config = generation_config
-        self.safety_settings = safety_settings
-        self._parse_llm_response = parse_fn
-        self.refinement_instruction = ITERATION_REFINEMENT_INSTRUCTIONS 
+    def __init__(self, *args, enable_human_feedback: bool = False, **kwargs):
+        self.enable_human_feedback = enable_human_feedback
+        self._feedback_collector = None
 
-    def execute(self, state: dict) -> dict:
-        # Check if human feedback is globally enabled (via agent settings)
-        # Note: 'enable_human_feedback' must be passed into the 'settings' key in state.
-        if not state.get('settings', {}).get('enable_human_feedback', False):
-             self.logger.info("Feedback skipped: Human feedback not enabled for this agent.")
-             return state
-
-        decision = state.get("refinement_decision")
-        if not decision:
-            self.logger.warning("Feedback skipped: 'refinement_decision' missing from state.")
+    def _collect_and_apply_iteration_feedback(
+        self, state: dict, iteration_title: str
+    ) -> dict:
+        """Collect and apply human feedback specifically for iteration analysis and targets."""
+        if not self.enable_human_feedback:
             return state
 
-        self.logger.info("\n\n👤 --- USER STEP: REVIEW ANALYSIS PLAN --- 👤\n")
+        collector = SimpleFeedbackCollector(self.logger) # Reuse existing collector functionality
+
+        print("\n" + "="*80)
+        print(f"🎯 ITERATION RESULT: {iteration_title}")
+        print("="*80)
         
-        # --- 1. Display Current Decision to User and Collect Feedback ---
-        iteration_title = state.get("iteration_title", "Current Analysis")
-        analysis_text = state.get("result_json", {}).get("detailed_analysis", "No analysis text provided.")
+        # Display the LLM's automated decision for the user
+        decision = state.get("refinement_decision", {})
+        is_needed = decision.get("refinement_needed", False)
         targets = decision.get("targets", [])
         
-        print("\n" + "="*80)
-        print(f"🎯 ANALYSIS STEP REVIEW: {iteration_title}")
-        print("="*80)
-        print("\n**SUMMARY OF CURRENT ANALYSIS:**")
-        print(analysis_text)
-        print("-" * 80)
-        
-        print(f"🧠 LLM's Proposed Plan: Refinement Needed = **{decision.get('refinement_needed', False)}**")
+        print(f"\n🧠 LLM Decision: Refinement Needed = {is_needed}")
         print(f"Reasoning: {decision.get('reasoning', 'N/A')}")
-        print(f"\nTargeted Actions ({len(targets)} found):")
-        
+        print(f"Targeted Actions ({len(targets)} found):")
         for i, t in enumerate(targets, 1):
             value_str = str(t.get('value', 'N/A'))
-            print(f"  {i}. Type: {t.get('type'):<15} | Value: {value_str:<15} | Description: {t.get('description', 'N/A')}")
+            print(f"  {i}. Type: {t.get('type'):<8} | Value: {value_str:<15} | Description: {t.get('description', 'N/A')}")
         
         print("-" * 80)
         
-        try:
-            user_feedback = input("\n🤔 Your feedback to adjust the targets/plan (or press Enter to accept): ").strip()
-        except KeyboardInterrupt:
-            self.logger.warning("User interrupted feedback. Accepting original decision.")
-            return state
-
+        # Prompt for feedback
+        user_feedback = input("\n🤔 Your feedback to adjust the targets/refinement (or press Enter to continue as-is): ").strip()
+        
         if not user_feedback:
-            self.logger.info("✅ User accepted original refinement decision.")
+            print("✅ No feedback provided. Continuing with current targets.")
             return state
-        
-        # --- 3. Run LLM Refinement with Full Context ---
-        self.logger.info("🔄 Refining decision using full scientific context...")
-        
-        # Prepare context for the LLM
-        system_info_json = json.dumps(state.get("system_info", {}), indent=2)
 
+        self.logger.info("🔄 Refining targets based on user feedback...")
+        
+        # Build prompt for refinement (reusing the logic in BaseAnalysisAgent/Controller design)
         prompt_parts = [
-            f"You are an expert reviewer. Use the HUMAN EXPERT FEEDBACK to produce a **REVISED** and definitive version of the analysis plan JSON object. The human input overrides the initial automated logic.",
-            
-            f"\n\n--- LLM'S ORIGINAL DECISION JSON ---\n{json.dumps(decision, indent=2)}",
-            f"\n\n--- CURRENT ITERATION'S DETAILED ANALYSIS ---\n{analysis_text}",
-            f"\n\n--- CURRENT SYSTEM METADATA ---\n{system_info_json}",
-            f"\n\n--- HUMAN EXPERT FEEDBACK ---\n\"{user_feedback}\"",
-            "\n\n--- VISUAL CONTEXT (Plots from Current Analysis) ---\n"
+            # A new instruction to be created in instruct.py: HYPERSPECTRAL_REFINEMENT_FEEDBACK_INSTRUCTIONS
+            # For now, we'll use a placeholder string
+            "You are an expert reviewer. The current analysis found the following targets for the next step. A human expert provided feedback. Re-analyze the targets and modify the list (or keep it as is) based on the feedback. You must output the full JSON object (refinement_needed, reasoning, targets).",
+            f"\n\n--- CURRENT ITERATION ANALYSIS ---\n{state.get('result_json', {}).get('detailed_analysis', 'N/A')}",
+            f"\n\n--- LLM'S ORIGINAL TARGETS ---\n{json.dumps(decision, indent=2)}",
+            f"\n\n--- HUMAN FEEDBACK ---\n\"{user_feedback}\"",
+            "\n\nProduce the *refined* target selection JSON object (with keys: refinement_needed, reasoning, targets)."
         ]
-
-        # Add all analysis images for visual context
+        
+        # Add visual plots for LLM context
         for img in state.get("analysis_images", []):
-            image_bytes = img.get('data') or img.get('bytes') 
-            if image_bytes:
+            if img.get('data'): # Check if image bytes exist
                 prompt_parts.append(f"\n{img['label']}:")
-                prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
-        
-        # Append the refinement instruction (which defines the output JSON structure)
-        prompt_parts.append(f"\n\nProvide your final, REVISED plan strictly adhering to the format defined in the instruction below. {self.refinement_instruction}")
-        
-        # Call LLM for structured revision
-        param_gen_config = GenerationConfig(response_mime_type="application/json")
+                prompt_parts.append({"mime_type": "image/jpeg", "data": img['data']})
+
         try:
             response = self.model.generate_content(
                 contents=prompt_parts,
-                generation_config=param_gen_config,
+                generation_config=self.generation_config,
                 safety_settings=self.safety_settings,
             )
-            refined_json, error_dict = self._parse_llm_response(response)
-
+            refined_json, error_dict = self._parse_llm_response(response) # Assuming BaseAgent's parser is available
+            
             if refined_json and not error_dict:
-                state["refinement_decision"] = refined_json
-                self.logger.info(f"✅ Refinement success. Final decision: {refined_json.get('reasoning', 'No reasoning').strip()}")
-                print(f"\n✅ REFINED: New plan established based on feedback.")
+                # Validate and apply refined decision
+                state["refinement_decision"] = {
+                    "refinement_needed": refined_json.get("refinement_needed", is_needed),
+                    "reasoning": refined_json.get("reasoning", "Refined based on human feedback."),
+                    "targets": refined_json.get("targets", targets)
+                }
+                print("✅ Targets refined successfully.")
             else:
-                self.logger.error("❌ LLM failed to produce a valid refinement JSON. Retaining original decision.")
-                print("\n❌ Refinement failed due to bad LLM output. Retaining original plan.")
+                self.logger.error("LLM failed to refine targets. Using original decision.")
 
         except Exception as e:
-            self.logger.error(f"❌ Error during LLM refinement call: {e}")
-            print("\n❌ Critical error during refinement. Retaining original plan.")
+            self.logger.error(f"Error during feedback application: {e}")
+            print("❌ Error processing feedback. Using original targets.")
             
         return state
