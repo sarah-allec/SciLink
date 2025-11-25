@@ -15,7 +15,9 @@ from ..controllers.hyperspectral_controllers import (
 )
 from ..controllers.base_controllers import (
     RunFinalInterpretationController,
-    StoreAnalysisResultsController
+    StoreAnalysisResultsController,
+    # Import the new controller
+    IterativeFeedbackController
 )
 from ..preprocess import HyperspectralPreprocessingAgent
 
@@ -36,7 +38,6 @@ def create_hyperspectral_iteration_pipeline(
     pipeline = []
 
     # --- 1. PREPROCESSING (Only on first iteration) ---
-    # The agent logic will handle only running this once
     if settings.get('run_preprocessing', True):
         pipeline.append(RunPreprocessingController(logger, preprocessor))
 
@@ -70,8 +71,6 @@ def create_hyperspectral_iteration_pipeline(
     pipeline.append(BuildHyperspectralPromptController(logger))
 
     # 3b. [🧠 LLM] Run interpretation for *this iteration*
-    # We use RunFinalInterpretationController, but the agent will store
-    # this intermediate result.
     pipeline.append(RunFinalInterpretationController(
         model, logger, generation_config, safety_settings, parse_fn
     ))
@@ -81,26 +80,27 @@ def create_hyperspectral_iteration_pipeline(
         model, logger, generation_config, safety_settings, parse_fn
     ))
     
-    # 3d. [🛠️ Tool] Prepare data for next loop (if needed)
+    # 3d. [🧠/👤 User] Immediate Feedback step
+    pipeline.append(IterativeFeedbackController(
+        model, logger, generation_config, safety_settings, parse_fn
+    ))
+    
+    # 3e. [🛠️ Tool] Prepare data for next loop (if needed)
     pipeline.append(GenerateRefinementTasksController(logger))
 
     logger.info(f"Hyperspectral *iteration* pipeline created with {len(pipeline)} steps.")
     return pipeline
 
 def create_hyperspectral_synthesis_pipeline(
-    model, 
-    logger: logging.Logger, 
-    generation_config, 
-    safety_settings, 
+    model,  
+    logger: logging.Logger,  
+    generation_config,  
+    safety_settings,  
     settings: dict,
     parse_fn: Callable,
     store_fn: Callable
 ) -> List:
-    """
-    Assembles the final pipeline that runs *after* all recursive
-    iterations are complete.
-    This includes: Synthesis -> Final Interpretation -> Storage.
-    """
+    # ... (Implementation of synthesis pipeline remains unchanged)
     pipeline = []
 
     # 1. [📝 Prep] Build the holistic synthesis prompt

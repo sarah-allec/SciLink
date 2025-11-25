@@ -50,7 +50,8 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             'enabled': True,
             'auto_components': True,
             'min_auto_components': 2,
-            'max_auto_components': 8
+            'max_auto_components': 8,
+            'enable_human_feedback': enable_human_feedback
         }
         self.spectral_settings = spectral_unmixing_settings if spectral_unmixing_settings else default_settings
         self.spectral_settings['run_preprocessing'] = run_preprocessing
