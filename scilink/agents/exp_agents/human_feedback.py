@@ -1,11 +1,9 @@
 import json
 import logging
-from typing import Dict, Callable, Any, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime
 
-from google.generativeai.types import GenerationConfig
 
-from .instruct import ITERATION_REFINEMENT_INSTRUCTIONS 
 
 
 class SimpleFeedbackCollector:

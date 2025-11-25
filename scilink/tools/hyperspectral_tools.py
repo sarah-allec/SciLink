@@ -22,15 +22,16 @@ def run_spectral_unmixing(
     try:
         logger.info(f"  (Tool Info: Running SpectralUnmixer with n_components={n_components})")
         
+        tool_kwargs = settings.copy()
+        method = tool_kwargs.pop('method', 'nmf')
+        normalize = tool_kwargs.pop('normalize', True)
+
         unmixer = SpectralUnmixer(
-            method=settings.get('method', 'nmf'),
+            method=method,
             n_components=n_components,
-            normalize=settings.get('normalize', True),
+            normalize=normalize,
             random_state=42, # for reproducibility
-            **{k: v for k, v in settings.items()
-               if k not in ['method', 'n_components', 'normalize', 'enabled', 
-                            'auto_components', 'min_auto_components', 'max_auto_components',
-                            'run_preprocessing', 'output_dir']}
+            **tool_kwargs
         )
         
         components, abundance_maps = unmixer.fit(hspy_data)
