@@ -91,13 +91,16 @@ class IterativeFeedbackController:
     
     It requests LLM refinement based on human feedback on a structured decision JSON.
     """
-    def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable):
+    def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable, settings: dict):
         self.model = model
         self.logger = logger
         self.generation_config = generation_config
         self.safety_settings = safety_settings
         self._parse_llm_response = parse_fn
         self.refinement_instruction = ITERATION_REFINEMENT_INSTRUCTIONS 
+        # Default is [0] (Global Analysis only)
+        self.feedback_depths = settings.get('feedback_depths', [0])
+        # If a future agent needs feedback EVERY time, it sets feedback_depths = [0, 1, 2, 3, ...] or just a list containing all integers.
 
     def execute(self, state: dict) -> dict:
         # Check if human feedback is globally enabled (via agent settings)
@@ -105,6 +108,12 @@ class IterativeFeedbackController:
         if not state.get('settings', {}).get('enable_human_feedback', False):
              self.logger.info("Feedback skipped: Human feedback not enabled for this agent.")
              return state
+        
+        current_depth = state.get("current_depth", -1) 
+        
+        if current_depth not in self.feedback_depths:
+            self.logger.info(f"Feedback skipped: Current depth ({current_depth}) is not in allowed list {self.feedback_depths}.")
+            return state
 
         decision = state.get("refinement_decision")
         if not decision:
@@ -129,9 +138,16 @@ class IterativeFeedbackController:
         print(f"Reasoning: {decision.get('reasoning', 'N/A')}")
         print(f"\nTargeted Actions ({len(targets)} found):")
         
+        if not targets:
+            print("  (No specific targets were generated.)")
+        
         for i, t in enumerate(targets, 1):
-            value_str = str(t.get('value', 'N/A'))
-            print(f"  {i}. Type: {t.get('type'):<15} | Value: {value_str:<15} | Description: {t.get('description', 'N/A')}")
+            t_type = t.get('type', 'N/A')
+            t_value = t.get('value', 'N/A')
+            t_desc = t.get('description', 'No description provided.')
+            
+            print(f"  {i}. Type: {t_type:<15} | Value: {str(t_value):<15}")            
+            print(f"     Description: {t_desc}")
         
         print("-" * 80)
         

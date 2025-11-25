@@ -55,6 +55,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         self.spectral_settings = spectral_unmixing_settings if spectral_unmixing_settings else default_settings
         self.spectral_settings['run_preprocessing'] = run_preprocessing
         self.spectral_settings['output_dir'] = output_dir
+        self.spectral_settings['feedback_depths'] = [0]
         
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)

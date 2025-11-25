@@ -81,7 +81,7 @@ def create_hyperspectral_iteration_pipeline(
     
     # 3d. [🧠/👤 User] Immediate Feedback step
     pipeline.append(IterativeFeedbackController(
-        model, logger, generation_config, safety_settings, parse_fn
+        model, logger, generation_config, safety_settings, parse_fn, settings
     ))
     
     # 3e. [🛠️ Tool] Prepare data for next loop (if needed)
