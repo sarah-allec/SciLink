@@ -23,14 +23,15 @@ def run_spectral_unmixing(
         logger.info(f"  (Tool Info: Running SpectralUnmixer with n_components={n_components})")
         
         tool_kwargs = settings.copy()
-        method = tool_kwargs.pop('method', 'nmf')
-        normalize = tool_kwargs.pop('normalize', True)
+        tool_kwargs.pop('n_components', None)
+        tool_kwargs.pop('method', None)
+        tool_kwargs.pop('normalize', None)
 
         unmixer = SpectralUnmixer(
-            method=method,
+            method=tool_kwargs.pop('method', 'nmf'),
             n_components=n_components,
-            normalize=normalize,
-            random_state=42, # for reproducibility
+            normalize=tool_kwargs.pop('normalize', True),
+            random_state=42 if 'random_state' not in tool_kwargs else tool_kwargs['random_state']
             **tool_kwargs
         )
         
