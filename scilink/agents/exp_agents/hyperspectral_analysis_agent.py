@@ -10,7 +10,7 @@ from .instruct import (
     SPECTROSCOPY_CLAIMS_INSTRUCTIONS,
     SPECTROSCOPY_MEASUREMENT_RECOMMENDATIONS_INSTRUCTIONS
 )
-from .human_feedback import SimpleFeedbackMixin
+from .human_feedback import SimpleFeedbackMixin, IterationFeedbackMixin
 from .preprocess import HyperspectralPreprocessingAgent
 from .pipelines.hyperspectral_pipelines import (
     create_hyperspectral_iteration_pipeline, 
@@ -38,7 +38,9 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                  output_dir: str = "spectroscopy_output",
                  enable_human_feedback: bool = False):
         
-        super().__init__(google_api_key, model_name, local_model, enable_human_feedback=enable_human_feedback)
+        BaseAnalysisAgent.__init__(self, google_api_key, model_name, local_model)
+        SimpleFeedbackMixin.__init__(self, enable_human_feedback=enable_human_feedback)
+        IterationFeedbackMixin.__init__(self, enable_human_feedback=enable_human_feedback)
         
         # --- Settings ---
         default_settings = {
@@ -220,6 +222,10 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                 # If the pipeline failed effectively, skip saving results (or save partial error results)
                 if iteration_state.get("error_dict"):
                     continue
+
+                iteration_state = self._collect_and_apply_iteration_feedback(
+                iteration_state, current_task["title"]
+                )
 
                 # --- Store Results ---
                 # Save the summary and images for the Final Synthesis
