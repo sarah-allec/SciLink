@@ -185,7 +185,30 @@ class IterativeFeedbackController:
                 prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
         
         # Append the refinement instruction (which defines the output JSON structure)
-        prompt_parts.append(f"\n\nProvide your final, REVISED plan strictly adhering to the format defined in the instruction below. {self.refinement_instruction}")
+        #prompt_parts.append(f"\n\nProvide your final, REVISED plan strictly adhering to the format defined in the instruction below. {self.refinement_instruction}")
+        prompt_parts.append("""
+
+### REVISED OUTPUT REQUIREMENT
+You MUST re-analyze the original targets and the human feedback, then generate a single, complete, and definitive JSON object.
+
+Your task is to provide the FINAL list of executable tasks. Do NOT embed descriptions or reasonings outside of the specified keys.
+
+Output must strictly adhere to the original JSON format:
+
+```json
+{
+  "refinement_needed": [true/false],
+  "reasoning": "[String explaining how you integrated the human feedback.]",
+  "targets": [
+    {
+      "type": "[spatial/spectral/data_subset/...]",
+      "description": "[A concise description of the task]",
+      "value": "[The specific technical parameter, e.g., component index (integer) or energy range ([65, 100])]"
+    }
+    // ... all other executable targets
+  ]
+}
+""")
         
         # Call LLM for structured revision
         param_gen_config = GenerationConfig(response_mime_type="application/json")
