@@ -814,6 +814,16 @@ class BuildHolisticSynthesisPromptController:
             if ref_decision:
                 prompt_parts.append(f"\n**Refinement Decision from this Step:**\n{ref_decision.get('reasoning')}")
 
+        prompt_parts.append("\n\n### 📝 CRITICAL REPORTING INSTRUCTIONS")
+        prompt_parts.append("1. Write a cohesive narrative synthesizing the findings from all iterations.")
+        prompt_parts.append("2. **AT THE END of your 'detailed_analysis' text**, you MUST append a section titled **'### Key Figures'**.")
+        prompt_parts.append("3. In that section, list the specific figures provided above that support your main conclusions.")
+        
+        prompt_parts.append("\n**Format for the Evidence Section:**")
+        prompt_parts.append("### Key Visual Evidence")
+        prompt_parts.append("- **[Figure Name]**: Briefly explain what this specific plot proves (e.g., 'Confirms the core-shell structure', 'Shows the defect signature at 8eV').")
+        prompt_parts.append("- **[Figure Name]**: ...")
+        
         prompt_parts.append("\n\nProvide your final, synthesized analysis in the requested JSON format.")
         
         state["final_prompt_parts"] = prompt_parts
