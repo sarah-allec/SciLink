@@ -2,6 +2,7 @@ import logging
 import numpy as np
 import json
 import os
+import re
 from datetime import datetime
 import cv2
 from typing import Callable
@@ -30,6 +31,12 @@ AGENT_METADATA_KEYS_TO_STRIP = [
     
     # Other potential non-tool keys
 ]
+
+def _sanitize_filename(text: str) -> str:
+    """Helper to create safe filenames from labels."""
+    # Replace spaces with underscores, remove non-alphanumeric chars except _ and -
+    safe_text = re.sub(r'[^\w\-\_]', '', text.replace(" ", "_"))
+    return safe_text
 
 class RunPreprocessingController:
     """
@@ -206,8 +213,12 @@ class RunComponentTestLoopController:
                             output_dir = self.settings.get('output_dir', 'spectroscopy_output')
                             os.makedirs(output_dir, exist_ok=True)
                             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            filename = f"component_test_summary_{n_comp}comp_{timestamp}.jpeg"
+                            
+                            # UPDATED NAMING: Include Iteration Title
+                            iter_title = _sanitize_filename(state.get('iteration_title', 'iter'))
+                            filename = f"{iter_title}_TestLoop_{n_comp}comp_{timestamp}.jpeg"
                             filepath = os.path.join(output_dir, filename)
+                            
                             with open(filepath, 'wb') as f:
                                 f.write(summary_bytes)
                             self.logger.info(f"📸 Saved component test plot to: {filepath}")
@@ -248,8 +259,12 @@ class CreateElbowPlotController:
                 output_dir = self.settings.get('output_dir', 'spectroscopy_output')
                 os.makedirs(output_dir, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"elbow_plot_{timestamp}.jpeg"
+                
+                # UPDATED NAMING: Include Iteration Title
+                iter_title = _sanitize_filename(state.get('iteration_title', 'iter'))
+                filename = f"{iter_title}_Elbow_Plot_{timestamp}.jpeg"
                 filepath = os.path.join(output_dir, filename)
+                
                 with open(filepath, 'wb') as f:
                     f.write(plot_bytes)
                 self.logger.info(f"📸 Saved elbow plot to: {filepath}")
@@ -379,9 +394,9 @@ class CreateAnalysisPlotsController:
     [🛠️ Tool Step]
     Generates all final visualizations for the LLM.
     
-    Updates:
-    1. Adds the 'NMF Summary Grid' to the final report (analysis_images).
-    2. Generates 'Validated Pairs' (Map + Weighted Spectrum) if depth > 0.
+    UPDATED FIX:
+    1. Uses strict naming convention: "{Iteration_Title}_{Label}.jpeg"
+    2. Ensures file on disk matches the "label" in the state 1:1 (after sanitization).
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -395,9 +410,18 @@ class CreateAnalysisPlotsController:
         abundance_maps = state.get("final_abundance_maps")
         current_depth = state.get("current_depth", 0)
         
+        # Retrieve the stable iteration title (e.g., "Global_Analysis", "Focused_Analysis_D1_T1")
+        iter_title_raw = state.get("iteration_title", "Global_Analysis")
+        iter_prefix = _sanitize_filename(iter_title_raw)
+
         if components is None or abundance_maps is None:
             self.logger.warning("Skipping plot creation: final components/maps not found.")
             return state
+
+        # Output directory setup
+        output_dir = self.settings.get('output_dir', 'spectroscopy_output')
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # --- 1. Generate Component Pairs (Standard vs Validated) ---
         final_plots = []
@@ -411,7 +435,6 @@ class CreateAnalysisPlotsController:
         else:
             # REFINEMENT ANALYSIS: Validated Pairs
             self.logger.info(f"Refinement (Depth {current_depth}): Generating Validated Pairs.")
-            # Use the sliced data for this specific task
             for i in range(components.shape[0]):
                 plot_bytes = tools.create_validated_component_pair(
                     state["hspy_data"], 
@@ -426,24 +449,22 @@ class CreateAnalysisPlotsController:
                         'bytes': plot_bytes
                     })
 
-        # Store in state
         state["component_pair_plots"] = final_plots
         
-        # Save individual component plots to disk
+        # Save individual component plots to disk using SEMANTIC names
         try:
-            output_dir = self.settings.get('output_dir', 'spectroscopy_output')
-            os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
             for i, plot in enumerate(final_plots):
-                ptype = "validated" if current_depth > 0 else "standard"
-                filename = f"comp_{i+1}_{ptype}_depth_{current_depth}_{timestamp}.jpeg"
+                # Label: "Component 1 Analysis (Validated)" -> "Component_1_Analysis_Validated"
+                label_safe = _sanitize_filename(plot['label'])
+                
+                # Final Name: "Global_Analysis_Component_1_Analysis_Validated.jpeg"
+                filename = f"{iter_prefix}_{label_safe}.jpeg"
                 filepath = os.path.join(output_dir, filename)
+                
                 with open(filepath, 'wb') as f:
                     f.write(plot['bytes'])
             
-            # Add to analysis_images so they appear in the final report
-            for plot in final_plots:
+                # Add to analysis_images with the RAW label (Final synthesis controller handles the referencing)
                 state["analysis_images"].append({
                     "label": plot['label'],
                     "data": plot['bytes']
@@ -461,23 +482,18 @@ class CreateAnalysisPlotsController:
             )
             
             if summary_bytes:
-                # 1. Save to Disk
-                output_dir = self.settings.get('output_dir', 'spectroscopy_output')
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                iter_title = state.get('iteration_title', 'iter').replace(" ", "_")
-                filename = f"nmf_summary_{iter_title}_{n_comp}comp_{timestamp}.jpeg"
+                label = "NMF Summary Grid"
+                label_safe = _sanitize_filename(label)
+                filename = f"{iter_prefix}_{label_safe}.jpeg"
                 filepath = os.path.join(output_dir, filename)
                 
                 with open(filepath, 'wb') as f:
                     f.write(summary_bytes)
-                self.logger.info(f"📸 Saved final NMF summary plot to: {filepath}")
+                self.logger.info(f"📸 Saved NMF summary plot to: {filepath}")
 
-                # 2. Add to Final Report State (CRITICAL CHANGE)
-                # This ensures the summary grid appears in the final synthesis context
-                # Note: We use the structured title here (e.g., Focused_Analysis_D1_T1)
-                label = f"NMF Summary Grid ({state.get('iteration_title', 'Global')})"
+                # Add to Final Report State
                 state["analysis_images"].append({
-                    "label": label,
+                    "label": label, 
                     "data": summary_bytes
                 })
 
@@ -500,19 +516,19 @@ class CreateAnalysisPlotsController:
                 state["structure_overlay_bytes"] = overlay_bytes
                 
                 if overlay_bytes:
-                    # Save to disk
+                    label = "Structure-Abundance Overlays"
+                    label_safe = _sanitize_filename(label)
+                    filename = f"{iter_prefix}_{label_safe}.jpeg"
+                    filepath = os.path.join(output_dir, filename)
+
                     try:
-                        output_dir = self.settings.get('output_dir', 'spectroscopy_output')
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"structure_overlays_{timestamp}.jpeg"
-                        filepath = os.path.join(output_dir, filename)
                         with open(filepath, 'wb') as f:
                             f.write(overlay_bytes)
                         self.logger.info(f"📸 Saved structure overlay plot to: {filepath}")
                         
                         # Add to final report state
                         state["analysis_images"].append({
-                            "label": "Structure-Abundance Overlays",
+                            "label": label,
                             "data": overlay_bytes
                         })
                     except Exception as e:
@@ -522,7 +538,7 @@ class CreateAnalysisPlotsController:
                 self.logger.warning(f"Failed to create structure overlays: {e}")
                 state["structure_overlay_bytes"] = None
 
-        self.logger.info("✅ Tool Complete: Final analysis plots created.")
+        self.logger.info("✅ Tool Complete: Final analysis plots created and saved.")
         return state
     
 
@@ -644,8 +660,8 @@ class SelectRefinementTargetController:
             prompt_parts.append("(No visual results available)")
         
         for img in analysis_images:
-            # This is the line that was failing
-            image_bytes = img.get('data') or img.get('bytes') # Robustly get bytes
+            # Robustly get bytes
+            image_bytes = img.get('data') or img.get('bytes') 
             if image_bytes:
                 prompt_parts.append(f"\n{img['label']}:")
                 prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
@@ -780,10 +796,10 @@ class BuildHolisticSynthesisPromptController:
     [📝 Prep Step]
     Assembles ALL iteration results into the final prompt for synthesis.
     
-    Updated:
-    1. Assigns strict numbering (Figure 1, Figure 2...) to all images.
-    2. Re-injects descriptive context for 'Focused_Analysis' codes.
-    3. Forces the LLM to use exact figure IDs in the final report.
+    Updated Fix:
+    1. Removes dynamic "Figure X" counting which caused inconsistency.
+    2. Uses stable, semantic labels: "[Iteration_Name] Plot_Name".
+    3. Instructions updated to force the LLM to cite these semantic labels.
     """
     def __init__(self, logger: logging.Logger):
         self.logger = logger
@@ -808,13 +824,16 @@ class BuildHolisticSynthesisPromptController:
 
         # 2. Build Context for Each Iteration
         all_images = []
-        fig_counter = 0  # Global counter for figures
 
         for i, iter_result in enumerate(all_results):
-            title = iter_result.get('iteration_title', f'Iteration {i}')
-            prompt_parts.append(f"\n\n### SECTION {i+1}: {title}")
+            # Get the semantic title (e.g., "Global_Analysis", "Focused_Analysis_D1_T1")
+            raw_title = iter_result.get('iteration_title', f'Iteration_{i}')
+            # Sanitize title for cleaner references (remove spaces if any)
+            iter_ref_id = _sanitize_filename(raw_title)
             
-            # Re-inject Context: "What does Focused_Analysis_D1_T1 mean?"
+            prompt_parts.append(f"\n\n### SECTION {i+1}: {raw_title}")
+            
+            # Re-inject Context
             context_desc = iter_result.get('parent_refinement_reasoning') 
             if context_desc:
                 prompt_parts.append(f"**Target Description:** \"{context_desc}\"")
@@ -831,36 +850,37 @@ class BuildHolisticSynthesisPromptController:
             # Visual Evidence
             iter_images = iter_result.get('analysis_images', [])
             if iter_images:
-                prompt_parts.append(f"\n**Visual Evidence for {title}:**")
+                prompt_parts.append(f"\n**Visual Evidence for {raw_title}:**")
                 for img in iter_images:
                     # Robustly get bytes
                     image_bytes = img.get('data') or img.get('bytes')
-                    raw_label = img.get('label', 'Unknown Plot')
+                    raw_label = img.get('label', 'Unknown_Plot')
                     
                     if image_bytes:
-                        fig_counter += 1
-                        # Create a strict Reference ID
-                        # e.g., "Figure 1: NMF Summary Grid (Global_Analysis)"
-                        unique_ref = f"Figure {fig_counter}: {raw_label}"
+                        # --- FIXED REFERENCE LOGIC ---
+                        # Create a stable semantic ID instead of "Figure X"
+                        # Format: [Context] Content
+                        # Example: "[Global_Analysis] NMF Summary Grid"
+                        unique_ref = f"[{iter_ref_id}] {raw_label}"
                         
                         prompt_parts.append(f"\n**{unique_ref}**")
                         prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
                         
-                        # Update the label in the list we return, so the UI/Filename matches the Text
+                        # Update the label in the list we return, so the final report matches
                         img['label'] = unique_ref 
                         all_images.append(img)
 
         # 3. EXPLICIT REPORTING INSTRUCTIONS
         prompt_parts.append("\n\n### 📝 CRITICAL REPORTING INSTRUCTIONS")
         prompt_parts.append("1. Write a cohesive narrative synthesizing the findings from all iterations.")
-        prompt_parts.append("2. **AT THE END of your 'detailed_analysis' text**, you MUST append a section titled **'### Key Figures'**.")
-        prompt_parts.append("3. In that section, you MUST list the supporting figures using their **EXACT bolded titles** provided above.")
+        prompt_parts.append("2. **AT THE END of your 'detailed_analysis' text**, you MUST append a section titled **'### Key Evidence'**.")
+        prompt_parts.append("3. In that section, you MUST list the supporting figures using their **EXACT bolded titles** provided above (the strings inside brackets).")
         
         prompt_parts.append("\n**Required Format for Evidence Section:**")
-        prompt_parts.append("### Key Figures")
-        prompt_parts.append("- **Figure 1: [Exact Label from above]**: Explain what this specific plot proves.")
-        prompt_parts.append("- **Figure 2: [Exact Label from above]**: ...")
-        prompt_parts.append("\n(Do NOT paraphrase the Figure titles. Use the exact strings 'Figure X: ...' so the user can find the files.)")
+        prompt_parts.append("### Key Evidence")
+        prompt_parts.append("- **[Global_Analysis] NMF Summary Grid**: Explain what this specific plot proves.")
+        prompt_parts.append("- **[Focused_Analysis_D1_T1] Component 1 Analysis**: ...")
+        prompt_parts.append("\n(Use the exact reference strings provided above. Do not invent figure numbers like 'Figure 1' unless they are part of the name.)")
 
         prompt_parts.append("\n\nProvide your final, synthesized analysis in the requested JSON format.")
         
