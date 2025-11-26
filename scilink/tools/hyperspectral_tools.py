@@ -359,3 +359,80 @@ def compare_component_with_weighted_raw(
     except Exception as e:
         logger.error(f"Failed to create weighted comparison plot: {e}")
         return None
+    
+
+def create_validated_component_pair(
+    hspy_data: np.ndarray, 
+    component_spectrum: np.ndarray, 
+    abundance_map: np.ndarray, 
+    component_idx: int,
+    logger
+) -> bytes:
+    """
+    Generates a combined visualization for Refinement Steps:
+    [Left]: Abundance Map (Spatial distribution)
+    [Right]: Validation Plot (Abundance-Weighted Raw Data vs. NMF Model)
+    """
+    try:
+        h, w, e = hspy_data.shape
+        
+        # --- 1. Calculate Weighted Average (Validation Logic) ---
+        # Reshape for dot product: (N_pixels, n_channels)
+        flat_data = hspy_data.reshape(-1, e)
+        # Weights: (N_pixels,)
+        flat_abundance = abundance_map.ravel()
+        
+        total_weight = np.sum(flat_abundance)
+        
+        # Safety check: if component is empty/dead
+        if total_weight < 1e-10:
+            logger.warning(f"Component {component_idx}: Abundance map empty, skipping plot.")
+            return None
+
+        # Weighted Mean: (Weights @ Data) / Sum(Weights)
+        weighted_raw_spectrum = np.dot(flat_abundance, flat_data) / total_weight
+        
+        # --- 2. Scaling for Visual Comparison ---
+        # NMF intensity is arbitrary. We scale the NMF curve (Model) to match 
+        # the max intensity of the Raw Data (Ground Truth).
+        scale_factor = np.max(weighted_raw_spectrum) / (np.max(component_spectrum) + 1e-6)
+        scaled_nmf = component_spectrum * scale_factor
+
+        # --- 3. Setup Plot (1 Row, 2 Cols) ---
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # --- Left Plot: Spatial Abundance Map ---
+        im = ax1.imshow(abundance_map, cmap='viridis')
+        ax1.set_title(f"Component {component_idx+1} Distribution", fontsize=12, fontweight='bold')
+        ax1.axis('off')
+        # Add colorbar specifically to this axis
+        plt.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
+
+        # --- Right Plot: Spectral Validation ---
+        # Ground Truth (Black)
+        ax2.plot(weighted_raw_spectrum, color='black', linewidth=2, alpha=0.8, label='Raw Data (Weighted Avg)')
+        # Model (Red Dashed)
+        ax2.plot(scaled_nmf, color='red', linestyle='--', linewidth=1.5, label='NMF Model')
+        
+        # Residual (Gray Fill) - Shows artifacts
+        residual = weighted_raw_spectrum - scaled_nmf
+        ax2.fill_between(range(len(residual)), residual, 0, color='gray', alpha=0.2, label='Residual')
+
+        ax2.set_title("Validation: Model vs Ground Truth", fontsize=12, fontweight='bold')
+        ax2.legend(loc='upper right')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xlabel("Spectral Channel")
+        ax2.set_ylabel("Intensity")
+        
+        plt.tight_layout()
+        
+        # Save to memory
+        buf = BytesIO()
+        plt.savefig(buf, format='jpeg', dpi=150, bbox_inches='tight')
+        plt.close()
+        buf.seek(0)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to create validated pair for component {component_idx}: {e}")
+        return None
