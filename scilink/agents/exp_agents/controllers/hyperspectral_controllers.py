@@ -377,7 +377,7 @@ class RunFinalSpectralUnmixingController:
 class CreateAnalysisPlotsController:
     """
     [🛠️ Tool Step]
-    Generates final visualizations.
+    Generates all final visualizations for the LLM.
     
     Updates:
     1. Adds the 'NMF Summary Grid' to the final report (analysis_images).
@@ -472,10 +472,12 @@ class CreateAnalysisPlotsController:
                     f.write(summary_bytes)
                 self.logger.info(f"📸 Saved final NMF summary plot to: {filepath}")
 
-                # 2. Add to Final Report State
+                # 2. Add to Final Report State (CRITICAL CHANGE)
                 # This ensures the summary grid appears in the final synthesis context
+                # Note: We use the structured title here (e.g., Focused_Analysis_D1_T1)
+                label = f"NMF Summary Grid ({state.get('iteration_title', 'Global')})"
                 state["analysis_images"].append({
-                    "label": f"NMF Summary Grid ({state.get('iteration_title', 'Global')})",
+                    "label": label,
                     "data": summary_bytes
                 })
 
@@ -697,8 +699,10 @@ class SelectRefinementTargetController:
 class GenerateRefinementTasksController:
     """
     [🛠️ Tool Step]
-    Takes the list of targets from the LLM, slices the data for each,
-    and generates a list of 'New Task' dictionaries.
+    Takes the list of targets from the LLM and generates new tasks.
+    
+    Updated: Generates structured, short IDs for task titles
+    (e.g., Focused_Analysis_D1_T1) instead of long descriptions.
     """
     MIN_SPECTRAL_CHANNELS = 10 
 
@@ -714,21 +718,27 @@ class GenerateRefinementTasksController:
             return state
 
         new_tasks = []
+        current_depth = state.get("current_depth", 0)
+        next_depth = current_depth + 1
         
-        # Iterate through ALL requested targets
-        for target in decision["targets"]:
+        # Iterate through targets with an index (1-based for humans)
+        for i, target in enumerate(decision["targets"], 1):
             try:
                 t_type = target.get("type")
                 t_value = target.get("value")
                 t_desc = target.get("description", "refinement")
                 
+                # Create the Structured ID
+                # D = Depth, T = Target Number
+                short_title = f"Focused_Analysis_D{next_depth}_T{i}"
+                
                 new_data = None
                 new_sys_info = state["system_info"]
 
                 if t_type == "spatial":
-                    self.logger.info(f"Processing Spatial Task: {t_desc}")
+                    self.logger.info(f"Processing Spatial Task {i}: {t_desc}")
                     component_index = int(t_value)
-                    if component_index > 0: component_index -= 1 # 1-based to 0-based
+                    if component_index > 0: component_index -= 1 
                     else: component_index = 0
                     
                     new_data = tools.apply_spatial_mask(
@@ -736,23 +746,24 @@ class GenerateRefinementTasksController:
                     )
 
                 elif t_type == "spectral":
-                    self.logger.info(f"Processing Spectral Task: {t_desc}")
+                    self.logger.info(f"Processing Spectral Task {i}: {t_desc}")
                     new_data, new_sys_info = tools.apply_spectral_slice(
                         state["original_hspy_data"], state["system_info"], list(t_value)
                     )
                     
                     if new_data.shape[-1] < self.MIN_SPECTRAL_CHANNELS:
-                        self.logger.warning(f"Skipping spectral task '{t_desc}': too few channels.")
+                        self.logger.warning(f"Skipping spectral task '{short_title}': too few channels.")
                         continue
 
                 if new_data is not None:
-                    # Create a Task Bundle
                     task = {
                         "data": new_data,
                         "system_info": new_sys_info,
-                        "title": f"Focused Analysis: {t_desc}",
-                        "parent_reasoning": t_desc, # Why did we create this?
-                        "source_depth": state.get("current_depth", 0) + 1
+                        # SHORT TITLE for Reports/Files
+                        "title": short_title, 
+                        # LONG DESCRIPTION for LLM Context (Re-injected later)
+                        "parent_reasoning": t_desc, 
+                        "source_depth": next_depth
                     }
                     new_tasks.append(task)
 
@@ -762,11 +773,17 @@ class GenerateRefinementTasksController:
         state["new_tasks"] = new_tasks
         self.logger.info(f"✅ Generated {len(new_tasks)} new analysis tasks.")
         return state
+    
 
 class BuildHolisticSynthesisPromptController:
     """
     [📝 Prep Step]
     Assembles ALL iteration results into the final prompt for synthesis.
+    
+    Updated:
+    1. Assigns strict numbering (Figure 1, Figure 2...) to all images.
+    2. Re-injects descriptive context for 'Focused_Analysis' codes.
+    3. Forces the LLM to use exact figure IDs in the final report.
     """
     def __init__(self, logger: logging.Logger):
         self.logger = logger
@@ -784,54 +801,71 @@ class BuildHolisticSynthesisPromptController:
             state["error_dict"] = {"error": "No iteration results found for synthesis."}
             return state
 
-        # Add system info first
+        # 1. System Info
         if state.get("system_info"):
             sys_info_str = json.dumps(state["system_info"], indent=2)
             prompt_parts.append(f"\n\n--- System Information ---\n{sys_info_str}")
 
-        # Loop through each iteration's results
+        # 2. Build Context for Each Iteration
+        all_images = []
+        fig_counter = 0  # Global counter for figures
+
         for i, iter_result in enumerate(all_results):
             title = iter_result.get('iteration_title', f'Iteration {i}')
-            prompt_parts.append(f"\n\n--- {title} ---")
+            prompt_parts.append(f"\n\n### SECTION {i+1}: {title}")
             
-            # Add text summary for this iteration
+            # Re-inject Context: "What does Focused_Analysis_D1_T1 mean?"
+            context_desc = iter_result.get('parent_refinement_reasoning') 
+            if context_desc:
+                prompt_parts.append(f"**Target Description:** \"{context_desc}\"")
+            
+            # Text Summary
             iter_analysis = iter_result.get('iteration_analysis_text', 'No text summary.')
-            prompt_parts.append(f"**Analysis Summary:**\n{iter_analysis}")
+            prompt_parts.append(f"**Previous Analysis Summary:**\n{iter_analysis}")
             
-            # Add plots for this iteration
-            iter_images = iter_result.get('analysis_images', [])
-            if iter_images:
-                prompt_parts.append("\n**Analysis Plots:**")
-                for img in iter_images:
-                    # Robustly get bytes, as in the other controller
-                    image_bytes = img.get('data') or img.get('bytes') 
-                    if image_bytes:
-                        prompt_parts.append(f"\n{img['label']}:")
-                        prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
-            
-            # Add the refinement decision that *followed* this iteration
+            # Refinement Decision
             ref_decision = iter_result.get('refinement_decision', {})
             if ref_decision:
-                prompt_parts.append(f"\n**Refinement Decision from this Step:**\n{ref_decision.get('reasoning')}")
+                prompt_parts.append(f"\n**Reason for Next Step:** {ref_decision.get('reasoning')}")
 
+            # Visual Evidence
+            iter_images = iter_result.get('analysis_images', [])
+            if iter_images:
+                prompt_parts.append(f"\n**Visual Evidence for {title}:**")
+                for img in iter_images:
+                    # Robustly get bytes
+                    image_bytes = img.get('data') or img.get('bytes')
+                    raw_label = img.get('label', 'Unknown Plot')
+                    
+                    if image_bytes:
+                        fig_counter += 1
+                        # Create a strict Reference ID
+                        # e.g., "Figure 1: NMF Summary Grid (Global_Analysis)"
+                        unique_ref = f"Figure {fig_counter}: {raw_label}"
+                        
+                        prompt_parts.append(f"\n**{unique_ref}**")
+                        prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
+                        
+                        # Update the label in the list we return, so the UI/Filename matches the Text
+                        img['label'] = unique_ref 
+                        all_images.append(img)
+
+        # 3. EXPLICIT REPORTING INSTRUCTIONS
         prompt_parts.append("\n\n### 📝 CRITICAL REPORTING INSTRUCTIONS")
         prompt_parts.append("1. Write a cohesive narrative synthesizing the findings from all iterations.")
         prompt_parts.append("2. **AT THE END of your 'detailed_analysis' text**, you MUST append a section titled **'### Key Figures'**.")
-        prompt_parts.append("3. In that section, list the specific figures provided above that support your main conclusions.")
+        prompt_parts.append("3. In that section, you MUST list the supporting figures using their **EXACT bolded titles** provided above.")
         
-        prompt_parts.append("\n**Format for the Evidence Section:**")
-        prompt_parts.append("### Key Visual Evidence")
-        prompt_parts.append("- **[Figure Name]**: Briefly explain what this specific plot proves (e.g., 'Confirms the core-shell structure', 'Shows the defect signature at 8eV').")
-        prompt_parts.append("- **[Figure Name]**: ...")
-        
+        prompt_parts.append("\n**Required Format for Evidence Section:**")
+        prompt_parts.append("### Key Figures")
+        prompt_parts.append("- **Figure 1: [Exact Label from above]**: Explain what this specific plot proves.")
+        prompt_parts.append("- **Figure 2: [Exact Label from above]**: ...")
+        prompt_parts.append("\n(Do NOT paraphrase the Figure titles. Use the exact strings 'Figure X: ...' so the user can find the files.)")
+
         prompt_parts.append("\n\nProvide your final, synthesized analysis in the requested JSON format.")
         
         state["final_prompt_parts"] = prompt_parts
-        # Store all iteration images for the final feedback step
-        all_images = []
-        for r in all_results:
-            all_images.extend(r.get('analysis_images', []))
-        state["analysis_images"] = all_images # Overwrite with the full list
+        state["analysis_images"] = all_images 
         
         self.logger.info("✅ Prep Step Complete: Final synthesis prompt is ready.")
         return state

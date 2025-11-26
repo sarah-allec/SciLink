@@ -156,7 +156,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             initial_task = {
                 "data": original_hspy_data,           # The data chunk to analyze
                 "system_info": system_info,           # Metadata specific to this chunk
-                "title": "Global Analysis",           # Display title
+                "title": "Global_Analysis",           # Display title
                 "parent_reasoning": None,             # Context: Why are we looking at this?
                 "depth": 0                            # Recursion depth
             }
