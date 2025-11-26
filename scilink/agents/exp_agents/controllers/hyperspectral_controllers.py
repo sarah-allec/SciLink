@@ -14,8 +14,22 @@ from ..instruct import (
     COMPONENT_INITIAL_ESTIMATION_INSTRUCTIONS,
     COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS,
     SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS,
-    SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS
+    SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS,
 )
+
+AGENT_METADATA_KEYS_TO_STRIP = [
+    'enable_human_feedback', 
+    'run_preprocessing', 
+    'output_dir', 
+    'visualization_dir', 
+    
+    'enabled', 
+    'auto_components', 
+    'min_auto_components', 
+    'max_auto_components',
+    
+    # Other potential non-tool keys
+]
 
 class RunPreprocessingController:
     """
@@ -154,6 +168,11 @@ class RunComponentTestLoopController:
     def execute(self, state: dict) -> dict:
         if state.get("error_dict"): return state
         self.logger.info("\n\n🛠️ --- CALLING TOOL: COMPONENT TEST LOOP --- 🛠️\n")
+
+        # Strip all non-tool metadata
+        tool_settings = self.settings.copy()
+        for key in AGENT_METADATA_KEYS_TO_STRIP:
+            tool_settings.pop(key, None)
         
         initial_estimate = state.get("initial_n_components", 4)
         min_c = self.settings.get('min_auto_components', 2)
@@ -166,7 +185,7 @@ class RunComponentTestLoopController:
         for n_comp in component_range:
             try:
                 components, abundance_maps, error = tools.run_spectral_unmixing(
-                    state["hspy_data"], n_comp, self.settings, self.logger
+                    state["hspy_data"], n_comp, tool_settings, self.logger
                 )
                 errors.append(error)
                 self.logger.info(f"  (Loop {n_comp}/{max_c}): Error = {error:.4f}")
@@ -336,10 +355,15 @@ class RunFinalSpectralUnmixingController:
             final_n_components = self.settings.get('n_components', 4)
             self.logger.warning(f"Auto-selection failed. Using fixed component count: {final_n_components}")
             state["final_n_components"] = final_n_components
+
+        # Strip all non-tool metadata
+        tool_settings = self.settings.copy()
+        for key in AGENT_METADATA_KEYS_TO_STRIP:
+            tool_settings.pop(key, None)
             
         try:
             components, abundance_maps, error = tools.run_spectral_unmixing(
-                state["hspy_data"], final_n_components, self.settings, self.logger
+                state["hspy_data"], final_n_components, tool_settings, self.logger
             )
             state["final_components"] = components
             state["final_abundance_maps"] = abundance_maps
