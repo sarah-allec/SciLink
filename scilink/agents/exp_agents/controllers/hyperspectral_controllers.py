@@ -379,8 +379,9 @@ class CreateAnalysisPlotsController:
     [🛠️ Tool Step]
     Generates final visualizations.
     
-    - Depth 0 (Global): Generates Standard NMF Pairs.
-    - Depth > 0 (Refinement): Generates Validated Pairs (Map + Validation Plot).
+    Updates:
+    1. Adds the 'NMF Summary Grid' to the final report (analysis_images).
+    2. Generates 'Validated Pairs' (Map + Weighted Spectrum) if depth > 0.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -402,16 +403,15 @@ class CreateAnalysisPlotsController:
         final_plots = []
         
         if current_depth == 0:
-            # GLOBAL ANALYSIS: Use standard NMF plots (faster, standard view)
+            # GLOBAL ANALYSIS: Standard NMF Pairs
             self.logger.info("Global Analysis (Depth 0): Generating Standard NMF Pairs.")
             final_plots = tools.create_component_abundance_pairs(
                 components, abundance_maps, state["system_info"], self.logger
             )
         else:
-            # REFINEMENT ANALYSIS: Use Validated Pairs (Map + Quantitative Validation)
+            # REFINEMENT ANALYSIS: Validated Pairs
             self.logger.info(f"Refinement (Depth {current_depth}): Generating Validated Pairs.")
-            
-            # Use state["hspy_data"] which is the sliced data for this specific task
+            # Use the sliced data for this specific task
             for i in range(components.shape[0]):
                 plot_bytes = tools.create_validated_component_pair(
                     state["hspy_data"], 
@@ -426,26 +426,23 @@ class CreateAnalysisPlotsController:
                         'bytes': plot_bytes
                     })
 
-        # Store in state (reusing the standard key simplifies downstream logic)
+        # Store in state
         state["component_pair_plots"] = final_plots
         
-        # --- 2. Save Plots to Disk (History) ---
+        # Save individual component plots to disk
         try:
             output_dir = self.settings.get('output_dir', 'spectroscopy_output')
             os.makedirs(output_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             for i, plot in enumerate(final_plots):
-                # Filename indicates validation status
                 ptype = "validated" if current_depth > 0 else "standard"
                 filename = f"comp_{i+1}_{ptype}_depth_{current_depth}_{timestamp}.jpeg"
                 filepath = os.path.join(output_dir, filename)
                 with open(filepath, 'wb') as f:
                     f.write(plot['bytes'])
             
-            self.logger.info(f"📸 Saved {len(final_plots)} component plots to: {output_dir}")
-            
-            # Add to main analysis_images list so they are passed to the Final Synthesis
+            # Add to analysis_images so they appear in the final report
             for plot in final_plots:
                 state["analysis_images"].append({
                     "label": plot['label'],
@@ -455,24 +452,73 @@ class CreateAnalysisPlotsController:
         except Exception as e:
             self.logger.warning(f"Failed to save component plots: {e}")
         
-        # --- 3. Standard NMF Summary (Elbow/Grid) - Keep for all depths ---
+        # --- 2. NMF Summary Grid (The "Executive Summary" View) ---
         try:
             self.logger.info("  (Tool Info: Creating NMF summary plot...)")
             n_comp = state.get("final_n_components", components.shape[0])
             summary_bytes = tools.create_nmf_summary_plot(
                 components, abundance_maps, n_comp, state["system_info"], self.logger
             )
+            
             if summary_bytes:
-                # Save summary
+                # 1. Save to Disk
                 output_dir = self.settings.get('output_dir', 'spectroscopy_output')
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 iter_title = state.get('iteration_title', 'iter').replace(" ", "_")
                 filename = f"nmf_summary_{iter_title}_{n_comp}comp_{timestamp}.jpeg"
                 filepath = os.path.join(output_dir, filename)
+                
                 with open(filepath, 'wb') as f:
                     f.write(summary_bytes)
+                self.logger.info(f"📸 Saved final NMF summary plot to: {filepath}")
+
+                # 2. Add to Final Report State
+                # This ensures the summary grid appears in the final synthesis context
+                state["analysis_images"].append({
+                    "label": f"NMF Summary Grid ({state.get('iteration_title', 'Global')})",
+                    "data": summary_bytes
+                })
+
         except Exception as e:
             self.logger.warning(f"Failed to save NMF summary plot: {e}")
+
+        # --- 3. Structure Overlays (Optional) ---
+        if state.get("structure_image_path"):
+            try:
+                structure_img = load_image(state["structure_image_path"])
+                if len(structure_img.shape) == 3:
+                    structure_img_gray = cv2.cvtColor(structure_img, cv2.COLOR_RGB2GRAY)
+                else:
+                    structure_img_gray = structure_img
+                
+                overlay_bytes = tools.create_multi_abundance_overlays(
+                    structure_img_gray, abundance_maps,
+                    threshold_percentile=85.0 
+                )
+                state["structure_overlay_bytes"] = overlay_bytes
+                
+                if overlay_bytes:
+                    # Save to disk
+                    try:
+                        output_dir = self.settings.get('output_dir', 'spectroscopy_output')
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"structure_overlays_{timestamp}.jpeg"
+                        filepath = os.path.join(output_dir, filename)
+                        with open(filepath, 'wb') as f:
+                            f.write(overlay_bytes)
+                        self.logger.info(f"📸 Saved structure overlay plot to: {filepath}")
+                        
+                        # Add to final report state
+                        state["analysis_images"].append({
+                            "label": "Structure-Abundance Overlays",
+                            "data": overlay_bytes
+                        })
+                    except Exception as e:
+                        self.logger.warning(f"Failed to save structure overlay plot: {e}")
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to create structure overlays: {e}")
+                state["structure_overlay_bytes"] = None
 
         self.logger.info("✅ Tool Complete: Final analysis plots created.")
         return state
