@@ -378,6 +378,9 @@ class CreateAnalysisPlotsController:
     """
     [🛠️ Tool Step]
     Generates all final visualizations for the LLM.
+    
+    Updated to include Abundance-Weighted Validation plots 
+    specifically for refinement steps (depth > 0).
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -394,16 +397,19 @@ class CreateAnalysisPlotsController:
             self.logger.warning("Skipping plot creation: final components/maps not found.")
             return state
 
-        # 1. Create component/abundance pairs
+        # --- 1. Standard Analysis: Component/Abundance Pairs ---
+        # These are used in every iteration to show "What did we find?"
         pair_plots = tools.create_component_abundance_pairs(
             components, abundance_maps, state["system_info"], self.logger
         )
         state["component_pair_plots"] = pair_plots # list of {'label':..., 'bytes':...}
         
+        # Save Pair Plots to Disk
         try:
             output_dir = self.settings.get('output_dir', 'spectroscopy_output')
             os.makedirs(output_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
             for i, plot in enumerate(pair_plots):
                 filename = f"component_pair_{i+1}_{timestamp}.jpeg"
                 filepath = os.path.join(output_dir, filename)
@@ -413,12 +419,14 @@ class CreateAnalysisPlotsController:
         except Exception as e:
             self.logger.warning(f"Failed to save component pair plots: {e}")
         
+        # --- 2. Standard Analysis: NMF Summary Plot ---
         try:
             self.logger.info("  (Tool Info: Creating final NMF summary plot...)")
             n_comp = state.get("final_n_components", components.shape[0])
             summary_bytes = tools.create_nmf_summary_plot(
                 components, abundance_maps, n_comp, state["system_info"], self.logger
             )
+            
             if summary_bytes:
                 output_dir = self.settings.get('output_dir', 'spectroscopy_output')
                 os.makedirs(output_dir, exist_ok=True)
@@ -427,13 +435,14 @@ class CreateAnalysisPlotsController:
                 iter_title = state.get('iteration_title', 'iter').replace(" ", "_")
                 filename = f"final_nmf_summary_{iter_title}_{n_comp}comp_{timestamp}.jpeg"
                 filepath = os.path.join(output_dir, filename)
+                
                 with open(filepath, 'wb') as f:
                     f.write(summary_bytes)
                 self.logger.info(f"📸 Saved final NMF summary plot to: {filepath}")
         except Exception as e:
             self.logger.warning(f"Failed to save final NMF summary plot: {e}")
         
-        # 2. Create structure overlays if structure image exists
+        # --- 3. Standard Analysis: Structure Overlays ---
         if state.get("structure_image_path"):
             try:
                 structure_img = load_image(state["structure_image_path"])
@@ -444,7 +453,7 @@ class CreateAnalysisPlotsController:
                 
                 overlay_bytes = tools.create_multi_abundance_overlays(
                     structure_img_gray, abundance_maps,
-                    threshold_percentile=85.0 # Use a high percentile for overlays
+                    threshold_percentile=85.0 
                 )
                 state["structure_overlay_bytes"] = overlay_bytes
                 
@@ -464,7 +473,59 @@ class CreateAnalysisPlotsController:
             except Exception as e:
                 self.logger.warning(f"Failed to create structure overlays: {e}")
                 state["structure_overlay_bytes"] = None
+
+        # --- 4. Quantitative Validation (Only for Refinement Steps) ---
+        #  Perform rigorous validation when zooming in
+        current_depth = state.get("current_depth", 0)
         
+        if current_depth > 0:
+            self.logger.info(f"Refinement depth is {current_depth} (>0). Running Abundance-Weighted Validation.")
+            
+            validation_plots = []
+            # Use the data currently in state (which is already sliced for this task)
+            raw_data = state["hspy_data"]
+            
+            for i in range(components.shape[0]):
+                # Call the new tool function we designed
+                plot_bytes = tools.compare_component_with_weighted_raw(
+                    raw_data,
+                    components[i],
+                    abundance_maps[..., i],
+                    i,
+                    self.logger
+                )
+                
+                if plot_bytes:
+                    label = f"Validation (Comp {i+1}): Model vs Weighted Raw"
+                    validation_plots.append({
+                        "label": label,
+                        "bytes": plot_bytes
+                    })
+                    
+                    # Save validation plots to disk for history
+                    try:
+                        output_dir = self.settings.get('output_dir', 'spectroscopy_output')
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"validation_comp_{i+1}_depth_{current_depth}_{timestamp}.jpeg"
+                        filepath = os.path.join(output_dir, filename)
+                        with open(filepath, 'wb') as f:
+                            f.write(plot_bytes)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to save validation plot: {e}")
+
+            # Store specifically for the prompt builder to reference
+            state["validation_plots"] = validation_plots
+            self.logger.info(f"Generated {len(validation_plots)} validation plots.")
+            
+            # Add to main analysis_images list so they are stored/passed to synthesis
+            for vp in validation_plots:
+                state["analysis_images"].append({
+                    "label": vp["label"],
+                    "data": vp["bytes"]
+                })
+        else:
+            self.logger.info("Global Analysis (Depth 0). Skipping weighted validation plots.")
+
         self.logger.info("✅ Tool Complete: Final analysis plots created.")
         return state
 
@@ -473,6 +534,9 @@ class BuildHyperspectralPromptController:
     [📝 Prep Step]
     Assembles all results into the final prompt for interpretation.
     THIS IS FOR A SINGLE ITERATION, NOT THE FINAL SYNTHESIS.
+    
+    Updated to include specific instructions for interpreting 
+    Abundance-Weighted Validation plots if they exist.
     """
     def __init__(self, logger: logging.Logger):
         self.logger = logger
@@ -481,15 +545,18 @@ class BuildHyperspectralPromptController:
         if state.get("error_dict"): return state
         self.logger.info("\n\n📝 --- PREP STEP: BUILDING FINAL PROMPT --- 📝\n")
         
+        # 1. Base Instruction
         prompt_parts = [state["instruction_prompt"]]
 
+        # 2. Context: Why are we doing this? (Critical for recursion)
         if state.get("parent_refinement_reasoning"):
             prompt_parts.append("\n\n### 🔍 CONTEXT: Why are we performing this focused analysis?")
             prompt_parts.append(f"**Reasoning from previous step:** \"{state['parent_refinement_reasoning']}\"")
             prompt_parts.append("Use this context to guide your interpretation of the specific features in this zoom.")
         
-        # Add data/unmixing info
+        # 3. Data Metadata
         h, w, e = state["hspy_data"].shape
+        # Helper to get energy label if available
         _, energy_xlabel, _ = tools.create_energy_axis(e, state["system_info"])
         
         prompt_parts.append(f"\n\nHyperspectral Data Information:")
@@ -503,30 +570,54 @@ class BuildHyperspectralPromptController:
         else:
             prompt_parts.append("- No spectral unmixing performed.")
 
-        # Add structure overlay
+        # 4. Structure Overlays (Spatial Context)
         if state.get("structure_overlay_bytes"):
             prompt_parts.append("\n\n**Structure-Abundance Correlation Analysis:**")
             prompt_parts.append("Overlays showing where NMF components (top 15%) are concentrated on the structural image.")
             prompt_parts.append({"mime_type": "image/jpeg", "data": state["structure_overlay_bytes"]})
-            # Add to analysis_images for this iteration
-            state["analysis_images"].append({
-                "label": "Structure-Abundance Overlays",
-                "data": state["structure_overlay_bytes"]
-            })
+            
+            # Ensure this image is saved for the synthesis step later
+            # We check if it's already in there to avoid duplicates if re-running
+            found = False
+            for img in state.get("analysis_images", []):
+                if img.get("label") == "Structure-Abundance Overlays": found = True
+            if not found:
+                state["analysis_images"].append({
+                    "label": "Structure-Abundance Overlays",
+                    "data": state["structure_overlay_bytes"]
+                })
 
-        # Add component-abundance pairs
+        # 5. Standard Component Analysis (The "What")
         if state.get("component_pair_plots"):
             prompt_parts.append("\n\n**Spectral Component Analysis (Component-Abundance Pairs):**")
             for plot in state["component_pair_plots"]:
                 prompt_parts.append(f"\n{plot['label']}:")
                 prompt_parts.append({"mime_type": "image/jpeg", "data": plot['bytes']})
                 
+                # Add to history if not present
                 state["analysis_images"].append({
                     "label": plot['label'],
                     "data": plot['bytes']
                 })
 
-        # Add system info
+        # --- 6. NEW: Quantitative Validation (The "Truth Check") ---
+        # This section only appears if depth > 0 and the tool successfully ran
+        if state.get("validation_plots"):
+            prompt_parts.append("\n\n### 🧪 Quantitative Validation")
+            prompt_parts.append("Since this is a focused refinement, we performed **Abundance-Weighted Averaging** to validate the NMF components.")
+            
+            prompt_parts.append("These plots overlay the mathematical NMF component (Red Dashed) onto the actual weighted average of the raw data (Black Solid).")
+            
+            prompt_parts.append("\n**INTERPRETATION RULES:**")
+            prompt_parts.append("1. **Fit Quality:** Do the Red and Black lines match? Significant deviations suggest NMF artifacts.")
+            prompt_parts.append("2. **Over-Decomposition:** If the Red line has sharp peaks that the Black line does NOT have, NMF is hallucinating features. Trust the Black line.")
+            prompt_parts.append("3. **Physical Units:** The Black line represents the TRUE intensity scale. Use these Y-values for any quantitative claims.")
+
+            for plot in state["validation_plots"]:
+                prompt_parts.append(f"\n{plot['label']}:")
+                prompt_parts.append({"mime_type": "image/jpeg", "data": plot['bytes']})
+
+        # 7. System Metadata & Formatting
         if state.get("system_info"):
             sys_info_str = json.dumps(state["system_info"], indent=2)
             prompt_parts.append(f"\n\nAdditional System Information (Metadata):\n{sys_info_str}")

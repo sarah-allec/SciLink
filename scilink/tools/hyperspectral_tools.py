@@ -304,3 +304,58 @@ def apply_spectral_slice(
     }
     
     return sliced_data, new_system_info
+
+
+def compare_component_with_weighted_raw(
+    hspy_data: np.ndarray, 
+    component_spectrum: np.ndarray, 
+    abundance_map: np.ndarray, 
+    component_idx: int,
+    logger
+) -> bytes:
+    """
+    Calculates the Abundance-Weighted Average Spectrum of the raw data
+    and plots it against the NMF component for validation.
+    """
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    
+    try:
+        h, w, e = hspy_data.shape
+        
+        # Flatten
+        flat_data = hspy_data.reshape(-1, e) 
+        flat_abundance = abundance_map.ravel() 
+        
+        # Weighted Average
+        total_weight = np.sum(flat_abundance)
+        if total_weight < 1e-10:
+            return None
+
+        weighted_raw_spectrum = np.dot(flat_abundance, flat_data) / total_weight
+        
+        # Scale NMF to match raw data max
+        scale_factor = np.max(weighted_raw_spectrum) / (np.max(component_spectrum) + 1e-6)
+        scaled_nmf = component_spectrum * scale_factor
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(weighted_raw_spectrum, color='black', linewidth=2, alpha=0.8, label='Raw Data (Weighted Avg)')
+        ax.plot(scaled_nmf, color='red', linestyle='--', linewidth=1.5, label=f'NMF Comp {component_idx+1} (Model)')
+        
+        residual = weighted_raw_spectrum - scaled_nmf
+        ax.fill_between(range(len(residual)), residual, 0, color='gray', alpha=0.2, label='Residual')
+
+        ax.set_title(f"Validation: Component {component_idx+1} vs. Raw Data")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        buf = BytesIO()
+        plt.savefig(buf, format='jpeg', dpi=150, bbox_inches='tight')
+        plt.close()
+        buf.seek(0)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to create weighted comparison plot: {e}")
+        return None
