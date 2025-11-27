@@ -340,13 +340,13 @@ def compare_component_with_weighted_raw(
 
         # Plot
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(weighted_raw_spectrum, color='black', linewidth=2, alpha=0.8, label='Abundance-Weighted Mean Spectrum')
+        ax.plot(weighted_raw_spectrum, color='black', linewidth=2, alpha=0.8, label='Mean Spectrum')
         ax.plot(scaled_nmf, color='red', linestyle='--', linewidth=1.5, label=f'NMF Comp {component_idx+1} (Model)')
         
         residual = weighted_raw_spectrum - scaled_nmf
         ax.fill_between(range(len(residual)), residual, 0, color='gray', alpha=0.2, label='Residual')
 
-        ax.set_title(f"Validation: Component {component_idx+1} vs. Weighted Mean Spectrum")
+        ax.set_title(f"Validation: Component {component_idx+1} vs. Abundance-Weighted Mean Spectrum")
         ax.legend()
         ax.grid(True, alpha=0.3)
         
@@ -410,7 +410,7 @@ def create_validated_component_pair(
 
         # --- Right Plot: Spectral Validation ---
         # Ground Truth (Black)
-        ax2.plot(weighted_raw_spectrum, color='black', linewidth=2, alpha=0.8, label='Abundance-Weighted Mean Spectrum')
+        ax2.plot(weighted_raw_spectrum, color='black', linewidth=2, alpha=0.8, label='Mean Spectrum')
         # Model (Red Dashed)
         ax2.plot(scaled_nmf, color='red', linestyle='--', linewidth=1.5, label='NMF Model')
         
@@ -418,7 +418,7 @@ def create_validated_component_pair(
         residual = weighted_raw_spectrum - scaled_nmf
         ax2.fill_between(range(len(residual)), residual, 0, color='gray', alpha=0.2, label='Residual')
 
-        ax2.set_title("Validation: Model vs Weighted Mean Spectrum", fontsize=12, fontweight='bold')
+        ax2.set_title("Validation: Model vs Abundance-Weighted Mean Spectrum", fontsize=12, fontweight='bold')
         ax2.legend(loc='upper right')
         ax2.grid(True, alpha=0.3)
         ax2.set_xlabel("Spectral Channel")
