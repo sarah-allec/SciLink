@@ -956,13 +956,16 @@ class BuildHolisticSynthesisPromptController:
         return state
     
 
-import base64
-
 class GenerateHTMLReportController:
     """
     [🛠️ Tool Step]
     Generates a beautiful, human-readable HTML report.
-    It embeds images as Base64 so the file is self-contained.    
+    
+    UPDATED LOGIC:
+    - Citation-Based Filtering: Scans the 'detailed_analysis' text. 
+      Only displays images that the LLM explicitly referenced by name.
+    - Fallback: If the LLM references nothing, falls back to 'Smart Filtering' 
+      (showing Grids and hiding redundant components) to ensure the report isn't empty.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -971,6 +974,38 @@ class GenerateHTMLReportController:
     def _image_to_base64(self, image_bytes: bytes) -> str:
         """Helper to convert bytes to base64 string for HTML embedding."""
         return base64.b64encode(image_bytes).decode('utf-8')
+
+    def _filter_by_citations(self, text: str, all_images: list) -> list:
+        """Returns only images whose labels appear exactly in the analysis text."""
+        cited_images = []
+        for img in all_images:
+            label = img.get('label', '')
+            # Check if the label (e.g. "[Global_Analysis] NMF Summary Grid") is in the text
+            if label in text:
+                cited_images.append(img)
+        return cited_images
+
+    def _filter_redundant_heuristic(self, all_images: list) -> list:
+        """
+        Backup Strategy: If LLM fails to cite images, use logic to pick the best ones.
+        Hides individual components if a Grid exists.
+        """
+        iterations_with_grid = set()
+        for img in all_images:
+            label = img.get('label', '')
+            if "NMF Summary Grid" in label:
+                match = re.match(r"\[(.*?)\]", label)
+                if match: iterations_with_grid.add(match.group(1))
+
+        filtered_images = []
+        for img in all_images:
+            label = img.get('label', '')
+            match = re.match(r"\[(.*?)\]", label)
+            if match and match.group(1) in iterations_with_grid:
+                if "Component" in label and "Analysis" in label:
+                    continue # Skip component if grid exists
+            filtered_images.append(img)
+        return filtered_images
 
     def execute(self, state: dict) -> dict:
         self.logger.info("\n\n📄 --- TOOL STEP: GENERATING HTML REPORT --- 📄\n")
@@ -986,6 +1021,19 @@ class GenerateHTMLReportController:
         system_info = state.get("system_info", {})
         all_images = state.get("analysis_images", [])
         
+        # --- SELECTION LOGIC ---
+        # 1. Try Strict Citation
+        display_images = self._filter_by_citations(detailed_analysis, all_images)
+        selection_method = "Strict Text Citation"
+
+        # 2. Fallback to Heuristic if strict failed (LLM didn't follow instructions)
+        if not display_images:
+            self.logger.warning("LLM did not explicitly cite any images. Falling back to heuristic filter.")
+            display_images = self._filter_redundant_heuristic(all_images)
+            selection_method = "Heuristic (Backup)"
+
+        self.logger.info(f"Report Generation: Selected {len(display_images)} images using method: {selection_method}")
+
         # Output Setup
         output_dir = self.settings.get('output_dir', 'spectroscopy_output')
         os.makedirs(output_dir, exist_ok=True)
@@ -1012,11 +1060,11 @@ class GenerateHTMLReportController:
                 .analysis-text {{ white-space: pre-wrap; background-color: #fafafa; padding: 20px; border-radius: 5px; border: 1px solid #eee; }}
                 .claim-card {{ background-color: #e8f6f3; border-left: 5px solid #1abc9c; padding: 15px; margin-bottom: 15px; }}
                 .claim-title {{ font-weight: bold; font-size: 1.1em; color: #0e6655; }}
-                .image-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-top: 20px; }}
-                .image-card {{ background: white; border: 1px solid #ddd; padding: 10px; border-radius: 5px; text-align: center; }}
+                .image-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 25px; margin-top: 20px; }}
+                .image-card {{ background: white; border: 1px solid #ddd; padding: 15px; border-radius: 5px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
                 .image-card img {{ max-width: 100%; height: auto; border-radius: 3px; cursor: pointer; transition: transform 0.2s; }}
-                .image-card img:hover {{ transform: scale(1.02); }}
-                .image-label {{ margin-top: 10px; font-weight: bold; color: #555; font-size: 0.9em; }}
+                .image-card img:hover {{ transform: scale(1.01); }}
+                .image-label {{ margin-top: 12px; font-weight: bold; color: #444; font-size: 1em; border-top: 1px solid #eee; padding-top: 10px; }}
                 .footer {{ margin-top: 50px; text-align: center; color: #7f8c8d; font-size: 0.8em; }}
             </style>
         </head>
@@ -1033,19 +1081,20 @@ class GenerateHTMLReportController:
                 <div class="analysis-text">{detailed_analysis}</div>
 
                 <h2>2. Key Evidence (Visual Gallery)</h2>
-                <p>These figures are referenced in the analysis above.</p>
+                <p>These figures are explicitly cited in the analysis above.</p>
                 <div class="image-grid">
         """
 
-        # --- FIGURES SECTION ---
-        for img in all_images:
+        for img in display_images:
             label = img.get('label', 'Unknown Figure')
             data = img.get('data') or img.get('bytes')
             
             if data:
                 b64_str = self._image_to_base64(data)
+                safe_id = _sanitize_filename(label)
+                
                 html_content += f"""
-                    <div class="image-card" id="{_sanitize_filename(label)}">
+                    <div class="image-card" id="{safe_id}">
                         <img src="data:image/jpeg;base64,{b64_str}" alt="{label}" loading="lazy">
                         <div class="image-label">{label}</div>
                     </div>
@@ -1053,11 +1102,9 @@ class GenerateHTMLReportController:
 
         html_content += """
                 </div>
-                
                 <h2>3. Key Scientific Claims</h2>
         """
 
-        # --- CLAIMS SECTION ---
         if not scientific_claims:
             html_content += "<p>No specific claims generated.</p>"
         else:
@@ -1083,11 +1130,8 @@ class GenerateHTMLReportController:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(html_content)
             self.logger.info(f"✅ REPORT GENERATED: {filepath}")
-            
-            # Add report path to result so the user knows where it is
             if "result_paths" not in state: state["result_paths"] = []
             state["result_paths"].append(filepath)
-            
         except Exception as e:
             self.logger.error(f"❌ Failed to write HTML report: {e}")
 
