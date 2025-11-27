@@ -192,6 +192,8 @@ class IterativeFeedbackController:
 You MUST re-analyze the original targets and the human feedback, then generate a single, complete, and definitive JSON object.
 
 Your task is to provide the FINAL list of executable tasks. Do NOT embed descriptions or reasonings outside of the specified keys.
+                            
+You are FORBIDDEN from returning `refinement_needed: true` with an empty `targets` list. If refinement is needed, at least one target is required.
 
 Output must strictly adhere to the original JSON format:
 
