@@ -4,6 +4,7 @@ import json
 import os
 import re
 from datetime import datetime
+import base64
 import cv2
 from typing import Callable
 from google.generativeai.types import GenerationConfig
@@ -952,4 +953,139 @@ class BuildHolisticSynthesisPromptController:
         state["analysis_images"] = all_images 
         
         self.logger.info("✅ Prep Step Complete: Final synthesis prompt is ready.")
+        return state
+    
+
+class GenerateHTMLReportController:
+    """
+    [🛠️ Tool Step]
+    Generates a beautiful, human-readable HTML report.
+    It embeds images as Base64 so the file is self-contained.
+    """
+    def __init__(self, logger: logging.Logger, settings: dict):
+        self.logger = logger
+        self.settings = settings
+
+    def _image_to_base64(self, image_bytes: bytes) -> str:
+        """Helper to convert bytes to base64 string for HTML embedding."""
+        return base64.b64encode(image_bytes).decode('utf-8')
+
+    def execute(self, state: dict) -> dict:
+        self.logger.info("\n\n📄 --- TOOL STEP: GENERATING HTML REPORT --- 📄\n")
+        
+        result_json = state.get("result_json")
+        if not result_json:
+            self.logger.warning("Skipping report generation: No result_json found.")
+            return state
+
+        # Extract Data
+        detailed_analysis = result_json.get("detailed_analysis", "No analysis provided.")
+        # Convert newlines to <br> for HTML, or wrap in pre-wrap
+        scientific_claims = result_json.get("scientific_claims", [])
+        system_info = state.get("system_info", {})
+        all_images = state.get("analysis_images", [])
+        
+        # Output Setup
+        output_dir = self.settings.get('output_dir', 'spectroscopy_output')
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Hyperspectral_Report_{file_timestamp}.html"
+        filepath = os.path.join(output_dir, filename)
+
+        # --- HTML CONSTRUCTION ---
+        html_content = f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Hyperspectral Analysis Report</title>
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; background-color: #f4f4f9; }}
+                .container {{ background-color: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+                h2 {{ color: #2980b9; margin-top: 30px; }}
+                h3 {{ color: #16a085; }}
+                .metadata-box {{ background-color: #ecf0f1; padding: 15px; border-radius: 5px; border-left: 5px solid #bdc3c7; margin-bottom: 20px; }}
+                .analysis-text {{ white-space: pre-wrap; background-color: #fafafa; padding: 20px; border-radius: 5px; border: 1px solid #eee; }}
+                .claim-card {{ background-color: #e8f6f3; border-left: 5px solid #1abc9c; padding: 15px; margin-bottom: 15px; }}
+                .claim-title {{ font-weight: bold; font-size: 1.1em; color: #0e6655; }}
+                .image-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-top: 20px; }}
+                .image-card {{ background: white; border: 1px solid #ddd; padding: 10px; border-radius: 5px; text-align: center; }}
+                .image-card img {{ max-width: 100%; height: auto; border-radius: 3px; cursor: pointer; transition: transform 0.2s; }}
+                .image-card img:hover {{ transform: scale(1.02); }}
+                .image-label {{ margin-top: 10px; font-weight: bold; color: #555; font-size: 0.9em; }}
+                .footer {{ margin-top: 50px; text-align: center; color: #7f8c8d; font-size: 0.8em; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🔬 Hyperspectral Analysis Report</h1>
+                <div class="metadata-box">
+                    <p><strong>Date:</strong> {timestamp}</p>
+                    <p><strong>Data Source:</strong> {state.get('image_path', 'N/A')}</p>
+                    <p><strong>System Info:</strong> {json.dumps(system_info)}</p>
+                </div>
+
+                <h2>1. Synthesized Scientific Analysis</h2>
+                <div class="analysis-text">{detailed_analysis}</div>
+
+                <h2>2. Key Scientific Claims</h2>
+        """
+
+        if not scientific_claims:
+            html_content += "<p>No specific claims generated.</p>"
+        else:
+            for i, claim in enumerate(scientific_claims, 1):
+                html_content += f"""
+                <div class="claim-card">
+                    <div class="claim-title">Claim {i}: {claim.get('claim', 'N/A')}</div>
+                    <p><strong>Impact:</strong> {claim.get('scientific_impact', 'N/A')}</p>
+                    <p><strong>Research Question:</strong> <em>{claim.get('has_anyone_question', 'N/A')}</em></p>
+                </div>
+                """
+
+        html_content += """
+                <h2>3. Key Evidence (Visual Gallery)</h2>
+                <p>These figures are referenced in the analysis above.</p>
+                <div class="image-grid">
+        """
+
+        # Loop through images and embed them
+        for img in all_images:
+            label = img.get('label', 'Unknown Figure')
+            data = img.get('data') or img.get('bytes')
+            
+            if data:
+                b64_str = self._image_to_base64(data)
+                html_content += f"""
+                    <div class="image-card" id="{_sanitize_filename(label)}">
+                        <img src="data:image/jpeg;base64,{b64_str}" alt="{label}" loading="lazy">
+                        <div class="image-label">{label}</div>
+                    </div>
+                """
+
+        html_content += """
+                </div>
+                <div class="footer">
+                    Generated by SciLink Hyperspectral Analysis Agent
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            self.logger.info(f"✅ REPORT GENERATED: {filepath}")
+            
+            # Add report path to result so the user knows where it is
+            if "result_paths" not in state: state["result_paths"] = []
+            state["result_paths"].append(filepath)
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to write HTML report: {e}")
+
         return state

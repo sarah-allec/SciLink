@@ -11,7 +11,8 @@ from ..controllers.hyperspectral_controllers import (
     BuildHyperspectralPromptController,
     SelectRefinementTargetController,
     GenerateRefinementTasksController,
-    BuildHolisticSynthesisPromptController
+    BuildHolisticSynthesisPromptController,
+    GenerateHTMLReportController
 )
 from ..controllers.base_controllers import (
     RunFinalInterpretationController,
@@ -110,7 +111,10 @@ def create_hyperspectral_synthesis_pipeline(
         model, logger, generation_config, safety_settings, parse_fn
     ))
 
-    # 3. [🛠️ Tool] Store all images from all iterations
+    # 3. [📄 Report] Generate HTML Report
+    pipeline.append(GenerateHTMLReportController(logger, settings))
+
+    # 4. [🛠️ Tool] Store all images from all iterations (Legacy/API storage)
     pipeline.append(StoreAnalysisResultsController(logger, store_fn))
     
     logger.info(f"Hyperspectral *synthesis* pipeline created with {len(pipeline)} steps.")
