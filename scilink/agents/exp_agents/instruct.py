@@ -1367,50 +1367,70 @@ Output ONLY the JSON object.
 """
 
 
-SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS = """
-You are an expert spectroscopist acting as a scientific director. You have just received the results of an NMF analysis (spectral unmixing) on a hyperspectral dataset.
+# ... (Previous prompts) ...
 
-Your task is to analyze these results and determine if **one or more** focused, higher-resolution "zoom-in" analyses are scientifically justified to resolve ambiguities.
+# ==============================================================================
+# SPECTROSCOPY-SPECIFIC REFINEMENT (Robust Logic + Strict Formatting)
+# ==============================================================================
 
-**Input You Will Receive:**
-1.  **Analysis Title**: (e.g., "Global Analysis").
-2.  **NMF Results**: Component spectra and abundance maps.
+SPECTROSCOPY_REFINEMENT_INSTRUCTIONS = """You are an expert spectroscopist steering an automated analysis pipeline.
 
-**Your Decision Process:**
-Look for complexity or ambiguity.
-* **Overlapping Phases?** If Map 1 and Map 2 overlap in a specific area, zoom in spatially on that area to separate them.
-* **Broad/Complex Peaks?** If Component 3 has a broad shoulder, zoom in spectrally on that energy range to resolve the doublet.
-* **Distinct Features?** If you see two completely different interesting regions (e.g., a grain boundary AND a precipitate), create TWO separate targets.
+**Goal:** Analyze results to determine if a focused "Zoom-In" is scientifically justified.
+
+**Crucial Constraint:** The refinement step uses **the same NMF algorithm** on a subset of data.
+* It **CAN** resolve spatial mixing (overlap) or spectral broadening by isolating the variance.
+* It **CANNOT** fix fundamental NMF mismatches (e.g., non-linear artifacts or pure noise).
+
+**Input:**
+1. **Analysis Plots:** Component Spectra and Spatial Abundance Maps. (Note: Refinement steps may include specific "Validation Plots" overlaying Model vs. Raw Data).
+2. **Context:** System metadata.
+
+**Decision Logic:**
+1. **Artifact Check (STOP):**
+   * **Spectral:** Does the spectrum look like random noise (jagged, high-frequency spikes) rather than a physical signal?
+   * **Spatial:** Does the map look like random "salt-and-pepper" static?
+   * **Validation (if available):** Does the Model (Red) hallucinate peaks not present in the Raw Data (Black)?
+   * *If YES to any, the feature is invalid.*
+2. **Success Check (STOP):** If the components are chemically distinct, clean (high SNR), and the spatial domains are well-defined, the analysis is complete. Don't zoom just for the sake of it.
+3. **Ambiguity Check (REFINE):** If the signal is **real but complex** (e.g. broad/asymmetric peaks suggesting doublets, or spatial regions containing mixed phases), define a target.
 
 **Output Format:**
 You MUST output a valid JSON object.
 
-**If NO refinement is needed:**
+**STRICT TYPE RULES:**
+* For "spatial" targets, the 'value' MUST be an **Integer** (the 1-based component index).
+* For "spectral" targets, the 'value' MUST be a **List of two Integers** (e.g., [400, 500]).
+
+**Example 1: STOP (Artifact / Noise detected)**
 {
   "refinement_needed": false,
-  "reasoning": "All components are well-resolved and chemically distinct."
+  "reasoning": "Component 4 represents noise. The spatial map is incoherent (static) and the spectrum consists of random non-physical spikes. Zooming in will not fix this."
 }
 
-**If refinement IS needed (You can propose multiple):**
+**Example 2: STOP (Success / Clear Result)**
+{
+  "refinement_needed": false,
+  "reasoning": "The analysis successfully isolated distinct phases. The spectra are chemically identifiable and the spatial domains are well-defined. No further refinement is needed."
+}
+
+**Example 3: REFINE (Real Signal)**
 {
   "refinement_needed": true,
-  "reasoning": "Component 2 contains a broad peak, and Map 4 shows a distinct precipitate that needs isolated analysis.",
+  "reasoning": "Component 2 is a real feature (clean signal), but the peak is asymmetric, suggesting a convolution of two oxidation states. A focused spectral analysis is needed.",
   "targets": [
       {
-        "type": "spectral",
-        "description": "Focus on 400-500 eV range to resolve Component 2 shoulder",
-        "value": [400, 500]
+        "type": "spatial",
+        "description": "Isolate phase boundary",
+        "value": 2 
       },
       {
-        "type": "spatial",
-        "description": "Isolate the precipitate region defined by Component 4",
-        "value": 4
+        "type": "spectral",
+        "description": "Resolve doublet",
+        "value": [450, 550]
       }
   ]
-}
+}"""
 
-Provide ONLY the JSON object.
-"""
 
 SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS = """ You are an expert materials scientist synthesizing a multi-scale hyperspectral analysis. You will be provided with a series of analysis results, starting from a "Global Analysis" and followed by one or more "Focused Analyses" (zooms).
 
@@ -1452,43 +1472,40 @@ Ensure the final output is ONLY the JSON object and nothing else.
 """
 
 
-ITERATION_REFINEMENT_INSTRUCTIONS = """You are an expert scientist acting as a steering committee for an automated data analysis pipeline. You have just reviewed the intermediate output from one step of the analysis.
+# ITERATION_REFINEMENT_INSTRUCTIONS = """You are an expert scientist acting as a steering committee for an automated data analysis pipeline. You have just reviewed the intermediate output from one step of the analysis.
 
-Your task is to analyze these results and determine if **one or more** focused, higher-resolution "sub-analyses" are scientifically or mathematically justified to resolve ambiguities.
+# Your task is to analyze these results and determine if **one or more** focused, higher-resolution "sub-analyses" are scientifically or mathematically justified to resolve ambiguities.
 
-**Input You Will Receive:**
-1.  **Analysis Title**: (e.g., "Global Search", "Fit Attempt 1").
-2.  **Analysis Results**: Plots, figures, tables, or text summary describing the output of the current step.
-3.  **Scientific/System Context**: Metadata relevant to the overall goal.
+# **Input You Will Receive:**
+# 1.  **Analysis Title**: (e.g., "Global Search", "Fit Attempt 1").
+# 2.  **Analysis Results**: Plots, figures, tables, or text summary describing the output of the current step.
+# 3.  **Scientific/System Context**: Metadata relevant to the overall goal.
 
-**Your Decision Process:**
-Look for complexity, ambiguity, or insufficient detail that prevents a confident conclusion.
+# **Your Decision Process:**
+# 1. **Rule out Artifacts:** If the model fits noise, "hallucinates" features not present in the raw data, or produces physically implausible results (e.g., random spatial static, jagged noise peaks), **STOP**. Mark `refinement_needed: false`.
+# 2. **Identify Ambiguity:** If the signal is valid but complex (e.g., overlapping peaks, mixed spatial domains, broad distributions, or suboptimal parameters), **REFINE**. Define specific targets to isolate or resolve the feature.
 
-* **Ambiguity Resolution?** If a feature (e.g., a peak, a cluster, a spatial domain) appears complex, composite, or overlaps with another, define a focused sub-task to isolate it.
-* **Parameter Optimization?** If a result hints that initial parameters (e.g., region size, components) might be sub-optimal, define a task to re-run the analysis on a narrower, more targeted data range.
-* **Distinct Features?** If the result reveals multiple distinct phenomena, define separate tasks for each, moving the overall analysis from a "survey" state to a "focused" state.
+# **Output Format:**
+# You MUST output a valid JSON object.
 
-**Output Format:**
-You MUST output a valid JSON object.
+# **If NO further focused analysis is needed (e.g., the result is clear):**
+# {
+#   "refinement_needed": false,
+#   "reasoning": "The current results are unambiguous and directly address the initial problem."
+# }
 
-**If NO further focused analysis is needed (e.g., the result is clear):**
-{
-  "refinement_needed": false,
-  "reasoning": "The current results are unambiguous and directly address the initial problem."
-}
+# **If focused analysis IS needed (You can propose multiple sub-tasks):**
+# {
+#   "refinement_needed": true,
+#   "reasoning": "The current step suggests the presence of two distinct phenomena that must be analyzed separately to prevent convolution.",
+#   "targets": [
+#       {
+#         "type": "[STRING, defining the kind of resource needed, e.g., 'spectral_range', 'spatial_region', 'data_subset', 'new_parameters']",
+#         "description": "[A concise description of what the sub-task should achieve]",
+#         "value": "[The specific technical value needed for the next step, e.g., [400, 500] for a range, 'component 4' for a specific cluster, or {'n_components': 2} for new parameters]"
+#       }
+#   ]
+# }
 
-**If focused analysis IS needed (You can propose multiple sub-tasks):**
-{
-  "refinement_needed": true,
-  "reasoning": "The current step suggests the presence of two distinct phenomena that must be analyzed separately to prevent convolution.",
-  "targets": [
-      {
-        "type": "[STRING, defining the kind of resource needed, e.g., 'spectral_range', 'spatial_region', 'data_subset', 'new_parameters']",
-        "description": "[A concise description of what the sub-task should achieve]",
-        "value": "[The specific technical value needed for the next step, e.g., [400, 500] for a range, 'component 4' for a specific cluster, or {'n_components': 2} for new parameters]"
-      }
-  ]
-}
-
-Provide ONLY the JSON object."""
+# Provide ONLY the JSON object."""
 

@@ -21,6 +21,8 @@ from ..controllers.base_controllers import (
 )
 from ..preprocess import HyperspectralPreprocessingAgent
 
+from ..instruct import SPECTROSCOPY_REFINEMENT_INSTRUCTIONS
+
 def create_hyperspectral_iteration_pipeline(
     model,
     logger: logging.Logger,
@@ -82,7 +84,8 @@ def create_hyperspectral_iteration_pipeline(
     
     # 3d. [🧠/👤 User] Immediate Feedback step
     pipeline.append(IterativeFeedbackController(
-        model, logger, generation_config, safety_settings, parse_fn, settings
+        model, logger, generation_config, safety_settings, 
+        parse_fn, settings, refinement_instruction=SPECTROSCOPY_REFINEMENT_INSTRUCTIONS
     ))
     
     # 3e. [🛠️ Tool] Prepare data for next loop (if needed)
