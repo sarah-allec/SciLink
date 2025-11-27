@@ -29,7 +29,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     until no further refinement is needed, then synthesizes all results.
     """
     
-    MAX_REFINEMENT_ITERATIONS = 4 # Global + 3 zoom-ins
+    MAX_REFINEMENT_ITERATIONS = 2 # Global + 2 zoom-ins
 
     def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05",
                  local_model: str = None,

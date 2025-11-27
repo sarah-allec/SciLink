@@ -38,12 +38,72 @@ def _sanitize_filename(text: str) -> str:
     safe_text = re.sub(r'[^\w\-\_]', '', text.replace(" ", "_"))
     return safe_text
 
+def _create_grid_from_images(image_bytes_list: list, logger: logging.Logger) -> bytes:
+    """
+    Stitches a list of JPEG bytes into a single grid image using OpenCV.
+    Used to create a 'Validated Summary Grid' from individual validated plots.
+    """
+    if not image_bytes_list:
+        return None
+        
+    try:
+        # Decode all images
+        images = []
+        for b in image_bytes_list:
+            nparr = np.frombuffer(b, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                images.append(img)
+        
+        if not images:
+            return None
+
+        n_imgs = len(images)
+        
+        # If only one, return it directly (re-encoded)
+        if n_imgs == 1:
+            return image_bytes_list[0]
+
+        # Determine grid size (target ~2 columns)
+        cols = 2
+        rows = (n_imgs + cols - 1) // cols
+        
+        # Find max dimensions to standardize cells
+        max_h = max(img.shape[0] for img in images)
+        max_w = max(img.shape[1] for img in images)
+        
+        # Create blank canvas
+        grid_h = rows * max_h
+        grid_w = cols * max_w
+        grid_img = np.zeros((grid_h, grid_w, 3), dtype=np.uint8) + 255 # White background
+        
+        for idx, img in enumerate(images):
+            r = idx // cols
+            c = idx % cols
+            
+            # Resize current img to fit cell if needed (maintain aspect ratio logic could go here, 
+            # but usually plots are uniform size. We'll center it.)
+            h, w = img.shape[:2]
+            
+            y_offset = r * max_h
+            x_offset = c * max_w
+            
+            # Simple copy (top-left alignment for simplicity, or center)
+            grid_img[y_offset:y_offset+h, x_offset:x_offset+w] = img
+            
+        # Encode back to jpeg
+        retval, buf = cv2.imencode('.jpg', grid_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return buf.tobytes()
+
+    except Exception as e:
+        logger.warning(f"Failed to stitch validation grid: {e}")
+        return None
+
+
 class RunPreprocessingController:
     """
     [🛠️ Tool Step]
-    Runs the HyperspectralPreprocessingAgent *only if* settings['run_preprocessing'] is True.
-    If False (i.e., on a refinement iteration), it *only* calculates statistics
-    for the next step.
+    Runs the HyperspectralPreprocessingAgent.
     """
     def __init__(self, logger: logging.Logger, preprocessor: HyperspectralPreprocessingAgent):
         self.logger = logger
@@ -69,22 +129,20 @@ class RunPreprocessingController:
                     "snr_estimate": snr_value,
                     "reasoning": f"SNR of *current iteration* data: {snr_reasoning}"
                 }
-                # Set an all-true mask, since no masking was performed on this iter
                 state["preprocessing_mask"] = np.ones(state["hspy_data"].shape[:2], dtype=bool)
                 self.logger.info(f"✅ Tool Complete: Statistics calculated. SNR = {snr_value:.2f}")
-                return state # Skip the rest of the function
+                return state 
             except Exception as e:
                 self.logger.error(f"❌ Tool Failed: Stat calculation on refinement data failed: {e}", exc_info=True)
                 state["error_dict"] = {"error": "Stat calculation on refinement data failed", "details": str(e)}
                 return state
 
-        # This code now only runs for the *first* iteration (Global Analysis)
         try:
             processed_data, mask, data_quality = self.preprocessor.run_preprocessing(
                 state["hspy_data"], 
                 state["system_info"]
             )
-            state["hspy_data"] = processed_data # Overwrite with processed data
+            state["hspy_data"] = processed_data 
             state["preprocessing_mask"] = mask
             state["data_quality"] = data_quality
             self.logger.info("✅ Tool Complete: Full preprocessing finished.")
@@ -96,7 +154,7 @@ class RunPreprocessingController:
 class GetInitialComponentParamsController:
     """
     [🧠 LLM Step]
-    Asks LLM for initial n_components for spectral unmixing.
+    Asks LLM for initial n_components.
     """
     def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable):
         self.model = model
@@ -137,7 +195,7 @@ class GetInitialComponentParamsController:
             
             if error_dict:
                 self.logger.warning(f"LLM initial estimation failed: {error_dict}. Using default.")
-                n_components = 4 # Default fallback
+                n_components = 4 
             else:
                 n_components = result_json.get('estimated_components', 4)
                 reasoning = result_json.get('reasoning', 'No reasoning provided.')
@@ -158,15 +216,14 @@ class GetInitialComponentParamsController:
 
         except Exception as e:
             self.logger.error(f"❌ LLM Step Failed: Initial component estimation: {e}", exc_info=True)
-            state["initial_n_components"] = 4 # Default fallback
+            state["initial_n_components"] = 4 
             
         return state
 
 class RunComponentTestLoopController:
     """
     [🛠️ Tool Step]
-    Loops from min to max components, runs spectral unmixing, 
-    and stores reconstruction errors.
+    Loops from min to max components, runs spectral unmixing.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -176,7 +233,6 @@ class RunComponentTestLoopController:
         if state.get("error_dict"): return state
         self.logger.info("\n\n🛠️ --- CALLING TOOL: COMPONENT TEST LOOP --- 🛠️\n")
 
-        # Strip all non-tool metadata
         tool_settings = self.settings.copy()
         for key in AGENT_METADATA_KEYS_TO_STRIP:
             tool_settings.pop(key, None)
@@ -187,7 +243,7 @@ class RunComponentTestLoopController:
         component_range = list(range(min_c, max_c + 1))
         
         errors = []
-        visual_examples = [] # Store visuals for key component numbers
+        visual_examples = [] 
         
         for n_comp in component_range:
             try:
@@ -197,7 +253,6 @@ class RunComponentTestLoopController:
                 errors.append(error)
                 self.logger.info(f"  (Loop {n_comp}/{max_c}): Error = {error:.4f}")
 
-                # Generate visual examples for min, max, and initial estimate
                 if n_comp == min_c or n_comp == max_c or n_comp == initial_estimate:
                     summary_bytes = tools.create_nmf_summary_plot(
                         components, abundance_maps, n_comp, state["system_info"], self.logger
@@ -214,7 +269,6 @@ class RunComponentTestLoopController:
                             os.makedirs(output_dir, exist_ok=True)
                             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                             
-                            # UPDATED NAMING: Include Iteration Title
                             iter_title = _sanitize_filename(state.get('iteration_title', 'iter'))
                             filename = f"{iter_title}_TestLoop_{n_comp}comp_{timestamp}.jpeg"
                             filepath = os.path.join(output_dir, filename)
@@ -237,7 +291,7 @@ class RunComponentTestLoopController:
 class CreateElbowPlotController:
     """
     [🛠️ Tool Step]
-    Generates the elbow plot from the test loop results.
+    Generates the elbow plot.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -260,7 +314,6 @@ class CreateElbowPlotController:
                 os.makedirs(output_dir, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-                # UPDATED NAMING: Include Iteration Title
                 iter_title = _sanitize_filename(state.get('iteration_title', 'iter'))
                 filename = f"{iter_title}_Elbow_Plot_{timestamp}.jpeg"
                 filepath = os.path.join(output_dir, filename)
@@ -277,7 +330,7 @@ class CreateElbowPlotController:
 class GetFinalComponentSelectionController:
     """
     [🧠 LLM Step]
-    Asks LLM to pick the best n_components using the elbow plot and visual examples.
+    Asks LLM to pick the best n_components.
     """
     def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable):
         self.model = model
@@ -347,14 +400,14 @@ class GetFinalComponentSelectionController:
 
         except Exception as e:
             self.logger.error(f"❌ LLM Step Failed: Final component selection: {e}", exc_info=True)
-            state["final_n_components"] = initial_estimate # Default fallback
+            state["final_n_components"] = initial_estimate 
             
         return state
 
 class RunFinalSpectralUnmixingController:
     """
     [🛠️ Tool Step]
-    Runs spectral unmixing one last time with the final selected n_components.
+    Runs spectral unmixing one last time.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -366,12 +419,10 @@ class RunFinalSpectralUnmixingController:
         
         final_n_components = state.get("final_n_components")
         if not final_n_components:
-            # If auto-comp failed, try falling back to fixed component count
             final_n_components = self.settings.get('n_components', 4)
             self.logger.warning(f"Auto-selection failed. Using fixed component count: {final_n_components}")
             state["final_n_components"] = final_n_components
 
-        # Strip all non-tool metadata
         tool_settings = self.settings.copy()
         for key in AGENT_METADATA_KEYS_TO_STRIP:
             tool_settings.pop(key, None)
@@ -394,9 +445,13 @@ class CreateAnalysisPlotsController:
     [🛠️ Tool Step]
     Generates all final visualizations for the LLM.
     
-    UPDATED FIX:
-    1. Uses strict naming convention: "{Iteration_Title}_{Label}.jpeg"
-    2. Ensures file on disk matches the "label" in the state 1:1 (after sanitization).
+    UPDATED LOGIC:
+    1. Strict Naming: Uses "{Iteration_Title}_{Label}.jpeg"
+    2. Split Validation Logic:
+       - Depth 0 (Global): Standard NMF plots.
+       - Depth > 0 (Refinement): Validated NMF plots (Red vs Black lines).
+    3. Validated Summary Grid: For Depth > 0, we STITCH individual validated plots
+       to create a "Validation Grid" because the standard tool doesn't support validation.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -423,8 +478,10 @@ class CreateAnalysisPlotsController:
         os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # --- 1. Generate Component Pairs (Standard vs Validated) ---
+        # --- 1. Generate Component Pairs ---
         final_plots = []
+        # For Depth > 0, we keep the raw bytes to stitch them later
+        validated_bytes_list = [] 
         
         if current_depth == 0:
             # GLOBAL ANALYSIS: Standard NMF Pairs
@@ -433,7 +490,7 @@ class CreateAnalysisPlotsController:
                 components, abundance_maps, state["system_info"], self.logger
             )
         else:
-            # REFINEMENT ANALYSIS: Validated Pairs
+            # REFINEMENT ANALYSIS: Validated Pairs (Map + Validation Spectrum)
             self.logger.info(f"Refinement (Depth {current_depth}): Generating Validated Pairs.")
             for i in range(components.shape[0]):
                 plot_bytes = tools.create_validated_component_pair(
@@ -445,19 +502,18 @@ class CreateAnalysisPlotsController:
                 )
                 if plot_bytes:
                     final_plots.append({
-                        'label': f"Component {i+1} Analysis (Validated)",
+                        'label': f"Component {i+1} Analysis", # Label without "Validated" string, implied by depth
                         'bytes': plot_bytes
                     })
+                    validated_bytes_list.append(plot_bytes)
 
         state["component_pair_plots"] = final_plots
         
         # Save individual component plots to disk using SEMANTIC names
         try:
             for i, plot in enumerate(final_plots):
-                # Label: "Component 1 Analysis (Validated)" -> "Component_1_Analysis_Validated"
+                # Label: "Component 1 Analysis" -> "Component_1_Analysis"
                 label_safe = _sanitize_filename(plot['label'])
-                
-                # Final Name: "Global_Analysis_Component_1_Analysis_Validated.jpeg"
                 filename = f"{iter_prefix}_{label_safe}.jpeg"
                 filepath = os.path.join(output_dir, filename)
                 
@@ -477,10 +533,18 @@ class CreateAnalysisPlotsController:
         try:
             self.logger.info("  (Tool Info: Creating NMF summary plot...)")
             n_comp = state.get("final_n_components", components.shape[0])
-            summary_bytes = tools.create_nmf_summary_plot(
-                components, abundance_maps, n_comp, state["system_info"], self.logger
-            )
+            summary_bytes = None
             
+            if current_depth == 0:
+                # Standard Grid for Global
+                summary_bytes = tools.create_nmf_summary_plot(
+                    components, abundance_maps, n_comp, state["system_info"], self.logger
+                )
+            else:
+                # Validated Grid for Refinement (Stitching)
+                self.logger.info("  (Tool Info: Stitching validated plots into Summary Grid...)")
+                summary_bytes = _create_grid_from_images(validated_bytes_list, self.logger)
+
             if summary_bytes:
                 label = "NMF Summary Grid"
                 label_safe = _sanitize_filename(label)
@@ -498,7 +562,7 @@ class CreateAnalysisPlotsController:
                 })
 
         except Exception as e:
-            self.logger.warning(f"Failed to save NMF summary plot: {e}")
+            self.logger.warning(f"Failed to create/save NMF summary plot: {e}")
 
         # --- 3. Structure Overlays (Optional) ---
         if state.get("structure_image_path"):
