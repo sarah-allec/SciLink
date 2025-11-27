@@ -347,7 +347,7 @@ def compare_component_with_weighted_raw(
         ax.fill_between(range(len(residual)), residual, 0, color='gray', alpha=0.2, label='Residual')
 
         ax.set_title(f"Validation: Component {component_idx+1} vs. Abundance-Weighted Mean Spectrum")
-        ax.legend()
+        ax.legend(loc='best')
         ax.grid(True, alpha=0.3)
         
         buf = BytesIO()
