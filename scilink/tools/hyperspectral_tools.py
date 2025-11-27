@@ -419,7 +419,7 @@ def create_validated_component_pair(
         ax2.fill_between(range(len(residual)), residual, 0, color='gray', alpha=0.2, label='Residual')
 
         ax2.set_title("Validation: Model vs Abundance-Weighted Mean Spectrum", fontsize=12, fontweight='bold')
-        ax2.legend(loc='upper right')
+        ax2.legend(loc='best')
         ax2.grid(True, alpha=0.3)
         ax2.set_xlabel("Spectral Channel")
         ax2.set_ylabel("Intensity")
