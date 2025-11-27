@@ -15,7 +15,7 @@ from ..preprocess import HyperspectralPreprocessingAgent
 from ..instruct import (
     COMPONENT_INITIAL_ESTIMATION_INSTRUCTIONS,
     COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS,
-    SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS,
+    SPECTROSCOPY_REFINEMENT_INSTRUCTIONS,
     SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS,
 )
 
@@ -703,7 +703,7 @@ class SelectRefinementTargetController:
         self.generation_config = generation_config
         self.safety_settings = safety_settings
         self._parse_llm_response = parse_fn
-        self.instructions = SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS
+        self.instructions = SPECTROSCOPY_REFINEMENT_INSTRUCTIONS
 
     def execute(self, state: dict) -> dict:
         if state.get("error_dict"): return state

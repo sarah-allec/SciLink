@@ -1367,12 +1367,6 @@ Output ONLY the JSON object.
 """
 
 
-# ... (Previous prompts) ...
-
-# ==============================================================================
-# SPECTROSCOPY-SPECIFIC REFINEMENT (Robust Logic + Strict Formatting)
-# ==============================================================================
-
 SPECTROSCOPY_REFINEMENT_INSTRUCTIONS = """You are an expert spectroscopist steering an automated analysis pipeline.
 
 **Goal:** Analyze results to determine if a focused "Zoom-In" is scientifically justified.
