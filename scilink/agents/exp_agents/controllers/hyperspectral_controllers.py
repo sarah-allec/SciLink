@@ -654,11 +654,26 @@ class BuildHyperspectralPromptController:
                 prompt_parts.append("For each component, the LEFT image is the Spectral Signature and the RIGHT image is the Spatial Abundance.")
             else:
                 # Validation Instructions for Depth > 0
-                prompt_parts.append("### 🧪 Quantitative Validation Mode")
-                prompt_parts.append("Because this is a focused refinement, we provide **Validated Analysis Plots**.")
-                prompt_parts.append("- **Left Image (Map):** Spatial distribution of the component.")
-                prompt_parts.append("- **Right Image (Validation Graph):** Overlays the NMF Model (Red) vs. the Abundance-Weighted Raw Data (Black).")
-                prompt_parts.append("👉 **CRITICAL:** Trust the Black Line (Raw Data) for peak shapes and intensities. If the Red line creates peaks not seen in the Black line, they are artifacts.")
+                prompt_parts.append("### 🧪 Quantitative Validation Mode (Split-Panel Analysis)")
+                prompt_parts.append("Because this is a focused refinement, the plots are more detailed to help you detect artifacts.")
+                prompt_parts.append("Each figure contains:")
+                
+                prompt_parts.append("\n**1. LEFT: Spatial Distribution**")
+                prompt_parts.append("- Shows where this component is located physically.")
+                
+                prompt_parts.append("\n**2. RIGHT (TOP PANEL): Spectral Fit & Variance**")
+                prompt_parts.append("- **Black Line (Mean):** The abundance-weighted average spectrum of the raw data (Ground Truth).")
+                prompt_parts.append("- **Red Dashed Line (Model):** The NMF component (Mathematical Model).")
+                prompt_parts.append("- **Blue Shaded Band:** The Weighted Standard Deviation ($\pm 1\sigma$). This represents the natural heterogeneity of the data in this region.")
+                
+                prompt_parts.append("\n**3. RIGHT (BOTTOM PANEL): Residuals**")
+                prompt_parts.append("- **Gray Area:** The difference between the Data and the Model.")
+
+                prompt_parts.append("\n### ⚠️ CRITICAL INTERPRETATION RULES")
+                prompt_parts.append("Use the **Blue Band** to distinguish between 'Messy Data' and 'Bad Model':")
+                prompt_parts.append("1. **Valid Fit:** If the Red Line (Model) stays mostly **INSIDE** the Blue Band, the component is valid, even if it doesn't match the Black Line perfectly. The mismatch is just natural variation.")
+                prompt_parts.append("2. **Hallucination (Artifact):** If the Red Line creates a peak that goes significantly **OUTSIDE** the Blue Band (and the Black Line is flat there), NMF has 'invented' a feature. **Reject this feature.**")
+                prompt_parts.append("3. **Missed Physics:** If the Bottom Panel (Residual) shows a large, structured peak, NMF failed to capture a real physical/chemical feature present in the data.")
 
             # Append the plots
             for plot in state["component_pair_plots"]:

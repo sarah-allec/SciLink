@@ -1,10 +1,10 @@
-import os
 import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO
 from .spectral_unmixer import SpectralUnmixer
 from .image_processor import create_multi_abundance_overlays
+import matplotlib.gridspec as gridspec
 import cv2
 
 def run_spectral_unmixing(
@@ -366,57 +366,79 @@ def create_validated_component_pair(
     component_spectrum: np.ndarray, 
     abundance_map: np.ndarray, 
     component_idx: int,
-    system_info: dict, 
+    system_info: dict,
     logger
 ) -> bytes:
     """
-    Generates a combined visualization for Refinement Steps with PHYSICAL X-AXIS.
+    Generates a Split-Panel visualization:
+    - Left: Spatial Map
+    - Right Top: Spectrum (Mean ± StdDev vs Model)
+    - Right Bottom: Residual
     """
     try:
         h, w, e = hspy_data.shape
-        
-        # --- 1. Generate Energy Axis ---
-        # Reuse existing helper to get the calibrated axis
         energy_axis, xlabel, _ = create_energy_axis(e, system_info)
-
-        # --- 2. Calculate Weighted Average ---
+        
+        # --- Data Calculation (Same as before) ---
         flat_data = hspy_data.reshape(-1, e)
         flat_abundance = abundance_map.ravel()
         total_weight = np.sum(flat_abundance)
         
-        if total_weight < 1e-10:
-            return None
+        if total_weight < 1e-10: return None
 
         weighted_raw_spectrum = np.dot(flat_abundance, flat_data) / total_weight
+        variance_sq = np.average((flat_data - weighted_raw_spectrum)**2, axis=0, weights=flat_abundance)
+        std_dev = np.sqrt(variance_sq)
+        
         scale_factor = np.max(weighted_raw_spectrum) / (np.max(component_spectrum) + 1e-6)
         scaled_nmf = component_spectrum * scale_factor
-
-        # --- 3. Plotting ---
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        
-        # Left: Map
-        im = ax1.imshow(abundance_map, cmap='viridis')
-        ax1.set_title(f"Component {component_idx+1} Distribution", fontsize=12, fontweight='bold')
-        ax1.axis('off')
-        plt.colorbar(im, ax=ax1, fraction=0.046, pad=0.04)
-
-        # Right: Spectrum
-        # ------------------------------------------------------
-        ax2.plot(energy_axis, weighted_raw_spectrum, color='black', linewidth=2, alpha=0.8, label='Mean Spectrum')
-        ax2.plot(energy_axis, scaled_nmf, color='red', linestyle='--', linewidth=1.5, label='NMF Model')
-        
-        # Residual fill
         residual = weighted_raw_spectrum - scaled_nmf
-        ax2.fill_between(energy_axis, residual, 0, color='gray', alpha=0.2, label='Residual')
 
-        ax2.set_title("Validation: Model vs Mean Spectrum", fontsize=12, fontweight='bold')
-        ax2.legend(loc='best')
-        ax2.grid(True, alpha=0.3)
+        # --- PLOTTING SETUP ---
+        fig = plt.figure(figsize=(12, 6))
+        gs = gridspec.GridSpec(2, 2, height_ratios=[3, 1], width_ratios=[1, 1.5])
         
-        # Use the dynamic label (e.g., "Energy (eV)")
-        ax2.set_xlabel(xlabel) 
-        ax2.set_ylabel("Intensity")
+        # 1. Spatial Map (Takes up the whole Left column)
+        ax_map = fig.add_subplot(gs[:, 0])
+        im = ax_map.imshow(abundance_map, cmap='viridis')
+        ax_map.set_title(f"Component {component_idx+1} Distribution", fontsize=12, fontweight='bold')
+        ax_map.axis('off')
+        plt.colorbar(im, ax=ax_map, fraction=0.046, pad=0.04)
+
+        # 2. Main Spectrum (Top Right)
+        ax_spec = fig.add_subplot(gs[0, 1])
         
+        # Plot Variance Band (Background)
+        ax_spec.fill_between(energy_axis, 
+                             weighted_raw_spectrum - std_dev, 
+                             weighted_raw_spectrum + std_dev, 
+                             color='blue', alpha=0.15, label='Raw Variance (±1σ)')
+        
+        # Plot Mean and Model
+        ax_spec.plot(energy_axis, weighted_raw_spectrum, color='black', linewidth=2, label='Weighted Mean')
+        ax_spec.plot(energy_axis, scaled_nmf, color='red', linestyle='--', linewidth=1.5, label='NMF Model')
+        
+        ax_spec.set_title("Validation: Spectrum & Model Fit", fontsize=12, fontweight='bold')
+        ax_spec.legend(loc='best', fontsize=9)
+        ax_spec.grid(True, alpha=0.3)
+        ax_spec.set_ylabel("Intensity")
+        # Hide x-labels on top plot to avoid clutter
+        plt.setp(ax_spec.get_xticklabels(), visible=False)
+
+        # 3. Residual Plot (Bottom Right)
+        ax_res = fig.add_subplot(gs[1, 1], sharex=ax_spec)
+        
+        # Plot Zero line
+        ax_res.axhline(0, color='black', linewidth=1, alpha=0.5)
+        
+        # Plot Residual
+        ax_res.plot(energy_axis, residual, color='gray', linewidth=1)
+        ax_res.fill_between(energy_axis, residual, 0, color='gray', alpha=0.3)
+        
+        ax_res.set_ylabel("Residual")
+        ax_res.set_xlabel(xlabel)
+        ax_res.grid(True, alpha=0.3)
+
         plt.tight_layout()
         
         buf = BytesIO()
@@ -426,5 +448,5 @@ def create_validated_component_pair(
         return buf.getvalue()
 
     except Exception as e:
-        logger.error(f"Failed to create validated pair for component {component_idx}: {e}")
+        logger.error(f"Failed to create validated pair: {e}")
         return None
