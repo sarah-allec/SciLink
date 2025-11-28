@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO
-from atomai.stat import SpectralUnmixer
+from .spectral_unmixer import SpectralUnmixer
 from .image_processor import create_multi_abundance_overlays
 import cv2
 
