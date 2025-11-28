@@ -499,6 +499,7 @@ class CreateAnalysisPlotsController:
                     components[i], 
                     abundance_maps[..., i], 
                     i, 
+                    state["system_info"],
                     self.logger
                 )
                 if plot_bytes:
