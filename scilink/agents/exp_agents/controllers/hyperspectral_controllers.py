@@ -828,10 +828,44 @@ class GenerateRefinementTasksController:
 
                 elif t_type == "spectral":
                     self.logger.info(f"Processing Spectral Task {i}: {t_desc}")
-                    new_data, new_sys_info = tools.apply_spectral_slice(
-                        state["original_hspy_data"], state["system_info"], list(t_value)
+                    
+                    # t_value is expected to be [start_index, end_index]
+                    slice_indices = list(t_value)
+                    
+                    # 1. Perform the slicing (existing logic)
+                    new_data, _ = tools.apply_spectral_slice(
+                        state["original_hspy_data"], state["system_info"], slice_indices
                     )
                     
+                    # 2. Recalculate Metadata Calibration
+                    new_sys_info = state["system_info"].copy()
+                    
+                    start_idx, end_idx = slice_indices[0], slice_indices[1]
+                    
+                    # Check if we have valid energy range data to interpolate
+                    energy_meta = new_sys_info.get('energy_range', {})
+                    if energy_meta and energy_meta.get('start') is not None and energy_meta.get('end') is not None:
+                        
+                        orig_start = float(energy_meta['start'])
+                        orig_end = float(energy_meta['end'])
+                        # Original number of channels
+                        orig_len = state["original_hspy_data"].shape[-1]
+                        
+                        # Calculate dispersion (Energy per pixel)
+                        dispersion = (orig_end - orig_start) / orig_len
+                        
+                        # Calculate NEW start and end based on the slice indices
+                        new_start = orig_start + (start_idx * dispersion)
+                        new_end = orig_start + (end_idx * dispersion)
+                        
+                        # Update the metadata for the new task
+                        new_sys_info['energy_range'] = {
+                            'start': new_start,
+                            'end': new_end,
+                            'units': energy_meta.get('units', 'units')
+                        }
+                        self.logger.info(f"Recalibrated axis: {orig_start}-{orig_end} -> {new_start:.2f}-{new_end:.2f}")
+
                     if new_data.shape[-1] < self.MIN_SPECTRAL_CHANNELS:
                         self.logger.warning(f"Skipping spectral task '{short_title}': too few channels.")
                         continue
