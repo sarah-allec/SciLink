@@ -829,42 +829,47 @@ class GenerateRefinementTasksController:
                 elif t_type == "spectral":
                     self.logger.info(f"Processing Spectral Task {i}: {t_desc}")
                     
-                    # t_value is expected to be [start_index, end_index]
-                    slice_indices = list(t_value)
+                    # t_value comes from LLM as physical units, e.g., [0.6, 1.0]
+                    target_start_ev, target_end_ev = t_value[0], t_value[1]
                     
-                    # 1. Perform the slicing (existing logic)
+                    # 1. Reconstruct the full energy axis for the ORIGINAL data
+                    h, w, e = state["original_hspy_data"].shape
+                    # (Assuming you have access to create_energy_axis from tools)
+                    energy_axis, _, _ = tools.create_energy_axis(e, state["system_info"])
+                    
+                    # 2. Find the closest integer indices for these physical values
+                    # argmin(abs(axis - target)) finds the index of the closest value
+                    start_idx = (np.abs(energy_axis - target_start_ev)).argmin()
+                    end_idx = (np.abs(energy_axis - target_end_ev)).argmin()
+                    
+                    # Ensure start < end
+                    if start_idx > end_idx:
+                        start_idx, end_idx = end_idx, start_idx
+                    
+                    # Guardrail: Ensure reasonable slice width
+                    if end_idx - start_idx < self.MIN_SPECTRAL_CHANNELS:
+                        # Pad slightly if the LLM zoomed in too tight
+                        padding = self.MIN_SPECTRAL_CHANNELS // 2
+                        start_idx = max(0, start_idx - padding)
+                        end_idx = min(e, end_idx + padding)
+
+                    # 3. Perform the slicing using INDICES
+                    # Note: We pass the indices to the tool, NOT the physical values
                     new_data, _ = tools.apply_spectral_slice(
-                        state["original_hspy_data"], state["system_info"], slice_indices
+                        state["original_hspy_data"], 
+                        state["system_info"], 
+                        [energy_axis[start_idx], energy_axis[end_idx]] # tool expects physical range
                     )
-                    
-                    # 2. Recalculate Metadata Calibration
+
+                    # 4. Update System Info with the NEW Physical Range
                     new_sys_info = state["system_info"].copy()
+                    new_sys_info['energy_range'] = {
+                        'start': float(energy_axis[start_idx]),
+                        'end': float(energy_axis[end_idx]),
+                        'units': state["system_info"].get('energy_range', {}).get('units', 'units')
+                    }
                     
-                    start_idx, end_idx = slice_indices[0], slice_indices[1]
-                    
-                    # Check if we have valid energy range data to interpolate
-                    energy_meta = new_sys_info.get('energy_range', {})
-                    if energy_meta and energy_meta.get('start') is not None and energy_meta.get('end') is not None:
-                        
-                        orig_start = float(energy_meta['start'])
-                        orig_end = float(energy_meta['end'])
-                        # Original number of channels
-                        orig_len = state["original_hspy_data"].shape[-1]
-                        
-                        # Calculate dispersion (Energy per pixel)
-                        dispersion = (orig_end - orig_start) / orig_len
-                        
-                        # Calculate NEW start and end based on the slice indices
-                        new_start = orig_start + (start_idx * dispersion)
-                        new_end = orig_start + (end_idx * dispersion)
-                        
-                        # Update the metadata for the new task
-                        new_sys_info['energy_range'] = {
-                            'start': new_start,
-                            'end': new_end,
-                            'units': energy_meta.get('units', 'units')
-                        }
-                        self.logger.info(f"Recalibrated axis: {orig_start}-{orig_end} -> {new_start:.2f}-{new_end:.2f}")
+                    self.logger.info(f"Recalibrated axis: {state['system_info']['energy_range']['start']:.2f}-{state['system_info']['energy_range']['end']:.2f} -> {new_sys_info['energy_range']['start']:.2f}-{new_sys_info['energy_range']['end']:.2f}")
 
                     if new_data.shape[-1] < self.MIN_SPECTRAL_CHANNELS:
                         self.logger.warning(f"Skipping spectral task '{short_title}': too few channels.")
