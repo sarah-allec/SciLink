@@ -1393,7 +1393,7 @@ You MUST output a valid JSON object.
 
 **STRICT TYPE RULES:**
 * For "spatial" targets, the 'value' MUST be an **Integer** (the 1-based component index).
-* For "spectral" targets, the 'value' MUST be a **List of two Integers** (e.g., [400, 500]).
+* For "spectral" targets, the 'value' MUST be a **List of two Numbers** (Integers or Floats) representing the start and end of the range (e.g., [0.5, 1.2] or [400, 500]).
 
 **Example 1: STOP (Artifact / Noise detected)**
 {
