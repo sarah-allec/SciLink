@@ -1272,7 +1272,7 @@ from typing import Callable
 class RunDynamicAnalysisController:
     """
     [🧠 + 💻] The 'Code Interpreter' / 'Dynamic Analyst'.
-        """
+    """
     MAX_RETRIES = 5
 
     def __init__(self, model, logger, generation_config, safety_settings, parse_fn):
@@ -1300,6 +1300,14 @@ class RunDynamicAnalysisController:
         self.logger.info("\n\n💻 --- DYNAMIC ANALYSIS: GENERATING CUSTOM CODE --- 💻\n")
         self.logger.info(f"Task: {target_desc}")
 
+        # Retrieve the output directory from settings (same as NMF)
+        output_dir = state.get("settings", {}).get("output_dir", "spectroscopy_output")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Create a timestamp and safe title for file naming
+        iter_title = _sanitize_filename(state.get("iteration_title", "iter"))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         # 2. Context Extraction
         task_id = state.get("iteration_title", "Unknown_Task")
         context_reason = state.get("parent_refinement_reasoning", "Refinement")
@@ -1321,7 +1329,7 @@ class RunDynamicAnalysisController:
         The standard NMF tool failed to model a spectral feature described as: "{target_desc}".
         
         Your task: Write a Python function to mathematically model this feature. 
-        Since complex features often require multiple parameters (e.g., Peak Position AND Peak Width, or Peak A AND Peak B), your function must be able to return MULTIPLE maps.
+        Since complex features often require multiple parameters (e.g., Peak Position AND Peak Width), your function must be able to return MULTIPLE maps.
 
         ### 1. DATA CONTEXT
         - Input Data `hspy_data`: Shape ({h}, {w}, {e}) (Numpy array)
@@ -1348,12 +1356,6 @@ class RunDynamicAnalysisController:
         4. **Return Format:** You must return a dictionary, not a print statement or a plot.
 
         ### 4. YOUR GOAL
-        Write a function `analyze_feature(data, axis)` that:
-        1. Reshapes data to (pixels, energy).
-        2. Implements the physics math (e.g., peak fitting, integration).
-        3. Returns a DICTIONARY containing the results and metadata.
-
-        ### YOUR GOAL
         Write a function `analyze_feature(data, axis)` that:
         1. Reshapes data to (pixels, energy).
         2. Implements the specific math required.
@@ -1410,12 +1412,26 @@ class RunDynamicAnalysisController:
                 func = local_scope["analyze_feature"]
                 result_dict = func(state["hspy_data"], state["energy_axis"])
                 
-                # D. Code Output Validation (UPDATED)
+                # D. Code Output Validation
                 if not isinstance(result_dict, dict): raise ValueError("Function return must be a dict.")
                 
                 maps_dict = result_dict.get("maps")
                 if not maps_dict or not isinstance(maps_dict, dict):
                     raise ValueError("Return dict must contain a 'maps' key with a dictionary of 2D arrays.")
+
+                # --- SAVE THE GENERATED SCRIPT ---
+                # We save it here because execution was successful
+                script_filename = f"{iter_title}_DynamicCode_{timestamp}.py"
+                script_path = os.path.join(output_dir, script_filename)
+                try:
+                    with open(script_path, "w", encoding="utf-8") as f:
+                        f.write(f"# Auto-generated Dynamic Analysis Script\n")
+                        f.write(f"# Task: {target_desc}\n")
+                        f.write(f"# Timestamp: {timestamp}\n\n")
+                        f.write(code_str)
+                    self.logger.info(f"  💾 Saved generated script to: {script_path}")
+                except Exception as e:
+                    self.logger.warning(f"  Failed to save script file: {e}")
 
                 # Containers for valid results
                 valid_maps = []
@@ -1443,7 +1459,6 @@ class RunDynamicAnalysisController:
                     
                     if not qc_result:
                         self.logger.warning(f"  Visual QC Rejected {feature_name}: {qc_critique}")
-                        # Depending on strictness, we might skip or fail. Let's skip bad ones but keep good ones.
                         continue
 
                     # F. Storage & Visualization
@@ -1451,7 +1466,18 @@ class RunDynamicAnalysisController:
                         result_map, feature_name, units, desc, provenance_str
                     )
 
-                    # Add to analysis images
+                    # --- SAVE THE IMAGE FILE ---
+                    safe_fname = _sanitize_filename(feature_name)
+                    img_filename = f"{iter_title}_Dynamic_{safe_fname}_{timestamp}.jpeg"
+                    img_path = os.path.join(output_dir, img_filename)
+                    try:
+                        with open(img_path, "wb") as f:
+                            f.write(plot_bytes)
+                        self.logger.info(f"  📸 Saved map image to: {img_path}")
+                    except Exception as e:
+                        self.logger.warning(f"  Failed to save image file: {e}")
+
+                    # Add to analysis images (for synthesis report)
                     if "analysis_images" not in state: state["analysis_images"] = []
                     state["analysis_images"].append({
                         "label": f"Custom Analysis: {feature_name}",
@@ -1478,7 +1504,7 @@ class RunDynamicAnalysisController:
                 # Stack maps into (H, W, N)
                 state["final_abundance_maps"] = np.stack(valid_maps, axis=-1)
                 
-                # Store List of Metadata (UPDATED: This is now a list, downstream must handle it)
+                # Store List of Metadata
                 state["custom_analysis_metadata_list"] = valid_meta 
                 
                 state["method_used"] = "Dynamic Code Generation"
@@ -1521,17 +1547,36 @@ class RunDynamicAnalysisController:
             return True, ""
 
     def _create_annotated_heatmap(self, data_map, title, units, description, provenance):
-        fig, ax = plt.subplots(figsize=(8, 6.5))
+        """
+        Creates a clean, publication-quality heatmap without cluttering text overlays.
+        """
+        # Slightly larger figure for clarity
+        fig, ax = plt.subplots(figsize=(8, 6))
+        
+        # Robust scaling to handle outliers (2nd to 98th percentile)
         vmin = np.nanpercentile(data_map, 2)
         vmax = np.nanpercentile(data_map, 98)
-        im = ax.imshow(data_map, cmap='plasma', vmin=vmin, vmax=vmax)
-        cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label(f"{title} ({units})", rotation=270, labelpad=20, fontsize=10)
-        ax.set_title(f"Dynamic Analysis: {title}", fontsize=12, fontweight='bold', pad=20)
-        if provenance:
-            plt.text(0.5, 1.02, provenance, ha='center', va='bottom', transform=ax.transAxes, fontsize=8, color='blue', alpha=0.7)
-        ax.set_xlabel(f"\n{description}", fontsize=9, style='italic', color='#555555')
-        ax.set_xticks([]); ax.set_yticks([])
+        
+        # Plot Data
+        im = ax.imshow(data_map, cmap='plasma', vmin=vmin, vmax=vmax, origin='upper')
+        
+        # Clean Colorbar
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(f"{units}", rotation=270, labelpad=15, fontsize=12)
+        cbar.ax.tick_params(labelsize=10)
+        
+        # Title only (Large and bold)
+        clean_title = title.replace("_", " ")
+        ax.set_title(f"{clean_title}", fontsize=14, fontweight='bold', pad=12)
+        
+        # Remove axes ticks for a cleaner look
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
+        # Remove the border spine for a modern look
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
         buf = BytesIO()
         plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
         plt.close()
