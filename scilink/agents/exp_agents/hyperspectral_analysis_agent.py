@@ -231,7 +231,8 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                     "iteration_analysis_text": iteration_state.get("result_json", {}).get("detailed_analysis", "Analysis text not found."),
                     "analysis_images": iteration_state.get("analysis_images", []),
                     "refinement_decision": iteration_state.get("refinement_decision", {}),
-                    "depth": current_task["depth"]
+                    "depth": current_task["depth"],
+                    "custom_analysis_metadata": iteration_state.get("custom_analysis_metadata")
                 }
                 all_completed_results.append(result_summary)
 

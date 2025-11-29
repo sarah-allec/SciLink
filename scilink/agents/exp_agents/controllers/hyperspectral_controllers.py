@@ -9,6 +9,10 @@ import cv2
 from typing import Callable
 from google.generativeai.types import GenerationConfig
 
+import traceback
+import matplotlib.pyplot as plt
+from io import BytesIO
+
 from ....tools import hyperspectral_tools as tools
 from ....tools.image_processor import load_image
 from ..preprocess import HyperspectralPreprocessingAgent
@@ -765,14 +769,35 @@ class SelectRefinementTargetController:
                 state["refinement_decision"] = {"refinement_needed": False, "reasoning": "LLM selection failed."}
                 return state
 
-            targets = result_json.get("targets", [])
+            # Get Raw Targets
+            raw_targets = result_json.get("targets", [])
             is_needed = result_json.get("refinement_needed", False)
 
-            # Store the final decision including the list of targets
+            # Priority Filtering (Custom Code vs Standard)
+            custom_code_targets = [t for t in raw_targets if t.get('type') == 'custom_code']
+            standard_targets = [t for t in raw_targets if t.get('type') != 'custom_code']
+            
+            final_targets = []
+            requires_custom_code = False
+            
+            if custom_code_targets:
+                # Winner-Takes-All: If code is needed, focus ONLY on that.
+                # We pick the first custom target and ignore standard zooms for this turn.
+                top_target = custom_code_targets[0] 
+                self.logger.info(f"🎯 Priority Target Selected (Custom Code): {top_target.get('description')}")
+                final_targets = [top_target]
+                requires_custom_code = True
+            else:
+                # Otherwise, proceed with standard targets
+                final_targets = standard_targets
+                requires_custom_code = False
+
+            # Store the final decision with the filtered targets and the FLAG
             state["refinement_decision"] = {
                 "refinement_needed": is_needed,
                 "reasoning": result_json.get("reasoning", "No reasoning provided."),
-                "targets": targets
+                "targets": final_targets,                # <--- Uses the filtered list
+                "requires_custom_code": requires_custom_code # <--- Critical Flag for next controller
             }
 
             self.logger.info(f"✅ LLM Step Complete: Refinement decision: {state['refinement_decision']['reasoning']}")
@@ -780,10 +805,11 @@ class SelectRefinementTargetController:
             print("\n" + "="*80)
             print("🧠 LLM REASONING (SelectRefinementTargetController)")
             print(f"  Refinement Needed: {is_needed}")
+            print(f"  Custom Code Triggered: {requires_custom_code}")
             print(f"  Explanation: {state['refinement_decision']['reasoning']}")
-            print(f"  Targets Found: {len(targets)}")
-            if targets:
-                for i, t in enumerate(targets):
+            print(f"  Targets Found: {len(final_targets)}")
+            if final_targets:
+                for i, t in enumerate(final_targets):
                     print(f"    Target {i+1} ({t.get('type')}): {t.get('description')}")
             print("="*80 + "\n")
 
@@ -792,6 +818,7 @@ class SelectRefinementTargetController:
             state["refinement_decision"] = {"refinement_needed": False, "reasoning": f"Exception: {e}"}
             
         return state
+    
 
 class GenerateRefinementTasksController:
     """
@@ -915,11 +942,7 @@ class BuildHolisticSynthesisPromptController:
     """
     [📝 Prep Step]
     Assembles ALL iteration results into the final prompt for synthesis.
-    
-    Updated Fix:
-    1. Removes dynamic "Figure X" counting which caused inconsistency.
-    2. Uses stable, semantic labels: "[Iteration_Name] Plot_Name".
-    3. Instructions updated to force the LLM to cite these semantic labels.
+    Merges Dynamic Analysis metadata with strict Reporting Formatting.
     """
     def __init__(self, logger: logging.Logger):
         self.logger = logger
@@ -946,61 +969,70 @@ class BuildHolisticSynthesisPromptController:
         all_images = []
 
         for i, iter_result in enumerate(all_results):
-            # Get the semantic title (e.g., "Global_Analysis", "Focused_Analysis_D1_T1")
             raw_title = iter_result.get('iteration_title', f'Iteration_{i}')
-            # Sanitize title for cleaner references (remove spaces if any)
             iter_ref_id = _sanitize_filename(raw_title)
             
             prompt_parts.append(f"\n\n### SECTION {i+1}: {raw_title}")
             
-            # Re-inject Context
+            # Context: Why did we do this?
             context_desc = iter_result.get('parent_refinement_reasoning') 
             if context_desc:
                 prompt_parts.append(f"**Target Description:** \"{context_desc}\"")
+
+            # --- DYNAMIC ANALYSIS INJECTION ---
+            custom_meta = iter_result.get("custom_analysis_metadata")
+            if custom_meta:
+                name = custom_meta.get('name', 'Custom Feature')
+                desc = custom_meta.get('description', 'N/A')
+                units = custom_meta.get('units', 'a.u.')
+                stats = custom_meta.get('stats', {})
+                
+                prompt_parts.append(f"\n**🔍 DYNAMIC ANALYSIS FINDINGS (Physics-Based Mapping):**")
+                prompt_parts.append(f"- Feature Mapped: **{name}**")
+                prompt_parts.append(f"- Physical Interpretation: {desc}")
+                prompt_parts.append(f"- Units: {units}")
+                
+                # Crash Fix: Use .get(key, 0.0) to handle missing stats gracefully
+                if stats:
+                    prompt_parts.append(f"- Statistics: Min {stats.get('min', 0.0):.2f}, Max {stats.get('max', 0.0):.2f}, Mean {stats.get('mean', 0.0):.2f}")
+                
+                prompt_parts.append("-> **INSTRUCTION:** This map represents a physics-based model. COMPARE it with the NMF results.")
             
             # Text Summary
-            iter_analysis = iter_result.get('iteration_analysis_text', 'No text summary.')
-            prompt_parts.append(f"**Previous Analysis Summary:**\n{iter_analysis}")
+            iter_analysis = iter_result.get('iteration_analysis_text')
+            if iter_analysis:
+                prompt_parts.append(f"**Previous NMF Analysis Summary:**\n{iter_analysis}")
             
-            # Refinement Decision
-            ref_decision = iter_result.get('refinement_decision', {})
-            if ref_decision:
-                prompt_parts.append(f"\n**Reason for Next Step:** {ref_decision.get('reasoning')}")
-
             # Visual Evidence
             iter_images = iter_result.get('analysis_images', [])
             if iter_images:
                 prompt_parts.append(f"\n**Visual Evidence for {raw_title}:**")
                 for img in iter_images:
-                    # Robustly get bytes
                     image_bytes = img.get('data') or img.get('bytes')
                     raw_label = img.get('label', 'Unknown_Plot')
                     
                     if image_bytes:
-                        # --- FIXED REFERENCE LOGIC ---
-                        # Create a stable semantic ID instead of "Figure X"
-                        # Format: [Context] Content
-                        # Example: "[Global_Analysis] NMF Summary Grid"
+                        # Stable semantic ID
                         unique_ref = f"[{iter_ref_id}] {raw_label}"
                         
                         prompt_parts.append(f"\n**{unique_ref}**")
                         prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
                         
-                        # Update the label in the list we return, so the final report matches
+                        # Update label for report filtering
                         img['label'] = unique_ref 
                         all_images.append(img)
 
         # 3. EXPLICIT REPORTING INSTRUCTIONS
         prompt_parts.append("\n\n### 📝 CRITICAL REPORTING INSTRUCTIONS")
-        prompt_parts.append("1. Write a cohesive narrative synthesizing the findings from all iterations.")
-        prompt_parts.append("2. **AT THE END of your 'detailed_analysis' text**, you MUST append a section titled **'### Key Evidence'**.")
-        prompt_parts.append("3. In that section, you MUST list the supporting figures using their **EXACT bolded titles** provided above (the strings inside brackets).")
+        
+        prompt_parts.append("1. **AT THE END of your 'detailed_analysis' text**, you MUST append a section titled **'### Key Evidence'**.")
+        prompt_parts.append("2. In that section, you MUST list the supporting figures using their **EXACT bolded titles** provided above.")
         
         prompt_parts.append("\n**Required Format for Evidence Section:**")
         prompt_parts.append("### Key Evidence")
         prompt_parts.append("- **[Global_Analysis] NMF Summary Grid**: Explain what this specific plot proves.")
-        prompt_parts.append("- **[Focused_Analysis_D1_T1] Component 1 Analysis**: ...")
-        prompt_parts.append("\n(Use the exact reference strings provided above. Do not invent figure numbers like 'Figure 1' unless they are part of the name.)")
+        prompt_parts.append("- **[Focused_Analysis_D1_T1] Dynamic Analysis: Peak Center**: Describe the gradient revealed by the physics mapping.")
+        prompt_parts.append("\n(Use the exact reference strings provided above inside the brackets.)")
 
         prompt_parts.append("\n\nProvide your final, synthesized analysis in the requested JSON format.")
         
@@ -1016,7 +1048,6 @@ class GenerateHTMLReportController:
     [🛠️ Tool Step]
     Generates a beautiful, human-readable HTML report.
     
-    UPDATED LOGIC:
     - Citation-Based Filtering: Scans the 'detailed_analysis' text. 
       Only displays images that the LLM explicitly referenced by name.
     - Fallback: If the LLM references nothing, falls back to 'Smart Filtering' 
@@ -1191,3 +1222,288 @@ class GenerateHTMLReportController:
             self.logger.error(f"❌ Failed to write HTML report: {e}")
 
         return state
+    
+
+import logging
+import traceback
+import numpy as np
+import matplotlib.pyplot as plt
+from io import BytesIO
+from typing import Callable
+
+class RunDynamicAnalysisController:
+    """
+    [🧠 + 💻] The 'Code Interpreter' / 'Dynamic Analyst'.
+    
+    Logic Flow:
+    1. Detects if the Refinement Decision requested 'custom_code'.
+    2. Prompts LLM to write a Python function using scipy/sklearn/numpy to solve the specific physics problem.
+    3. Executes code in a restricted namespace.
+    4. [Visual Check] Asks the LLM to look at the resulting map to verify it isn't noise/static.
+    5. Saves the result as the primary 'Abundance Map' for this iteration.
+    """
+    MAX_RETRIES = 5
+
+    def __init__(self, model, logger, generation_config, safety_settings, parse_fn):
+        self.model = model
+        self.logger = logger
+        self.generation_config = generation_config
+        self.safety_settings = safety_settings
+        self._parse_llm_response = parse_fn
+
+    def execute(self, state: dict) -> dict:
+        decision = state.get("refinement_decision", {})
+        targets = decision.get("targets", [])
+        
+        # 1. Gatekeeping: Only run if custom code was requested
+        has_custom_target = any(t.get('type') == 'custom_code' for t in targets)
+        
+        # Also check the flag for backward compatibility
+        if not has_custom_target and not decision.get("requires_custom_code", False):
+            return state
+
+        # Get the specific task description
+        if has_custom_target:
+            custom_target = next(t for t in targets if t.get('type') == 'custom_code')
+            target_desc = custom_target.get("description", "Analyze spectral feature")
+        else:
+            target_desc = "Analyze spectral feature"
+
+        self.logger.info("\n\n💻 --- DYNAMIC ANALYSIS: GENERATING CUSTOM CODE --- 💻\n")
+        self.logger.info(f"Task: {target_desc}")
+
+        # 2. Context Extraction ("Breadcrumbs")
+        # We need to label the plot so we know which parent task this came from
+        task_id = state.get("iteration_title", "Unknown_Task")
+        context_reason = state.get("parent_refinement_reasoning", "Refinement")
+        provenance_str = f"Source: {task_id} | Context: {context_reason}"
+
+        h, w, e = state["hspy_data"].shape
+        
+        # Ensure we have an energy axis
+        if "energy_axis" not in state:
+            if state.get("system_info", {}).get("energy_range"):
+                start = state["system_info"]["energy_range"]["start"]
+                end = state["system_info"]["energy_range"]["end"]
+                state["energy_axis"] = np.linspace(start, end, e)
+            else:
+                state["energy_axis"] = np.arange(e)
+
+        # 3. The Prompt Template
+        base_prompt = f"""
+        You are a Python Data Scientist specialized in Spectroscopy. 
+        The standard NMF tool failed to model a spectral feature described as: "{target_desc}".
+        
+        Your task: Write a Python function to mathematically model this feature and map its abundance/magnitude across the image.
+
+        ### DATA CONTEXT
+        - Input Data `hspy_data`: Shape ({h}, {w}, {e}) (Numpy array)
+        - Energy Axis `energy_axis`: Shape ({e},) (Numpy array, eV units)
+        - Libraries available: `numpy` (as np), `scipy.optimize`, `scipy.signal`, `sklearn`.
+
+        ### YOUR GOAL
+        Write a function `analyze_feature(data, axis)` that:
+        1. Reshapes data to (pixels, energy).
+        2. Implements the specific math required (e.g., peak fitting, integration, derivative, slope, cross-correlation).
+        3. Returns a DICTIONARY containing the results and metadata.
+
+        ### REQUIRED RETURN FORMAT
+        The function must return a Python dictionary with these exact keys:
+        {{
+            "map": np.ndarray,       # The 2D result map (shape {h}, {w})
+            "units": str,            # The physical units (e.g., "eV", "Counts", "Slope", "R^2")
+            "feature_name": str,     # A short label (e.g., "Peak Center", "Bandgap Onset")
+            "description": str       # One sentence explaining what high/low values mean.
+        }}
+
+        ### RESPONSE FORMAT
+        Return a JSON object with:
+        - "code": The valid Python code string containing the function `analyze_feature`.
+        - "explanation": Brief physics logic.
+        """
+
+        current_prompt = base_prompt
+        retries = 0
+
+        while retries < self.MAX_RETRIES:
+            try:
+                # A. Generate Code
+                self.logger.info(f"  (Attempt {retries+1}) Asking LLM to write code...")
+                response = self.model.generate_content(current_prompt, generation_config=self.generation_config)
+                result_json, _ = self._parse_llm_response(response)
+                code_str = result_json.get("code", "")
+                
+                # B. Sandbox Execution setup
+                local_scope = {}
+                global_scope = {
+                    "np": np,
+                    "scipy": __import__("scipy"),
+                    "sklearn": __import__("sklearn"),
+                    "curve_fit": __import__("scipy.optimize", fromlist=["curve_fit"]).curve_fit,
+                    "nnls": __import__("scipy.optimize", fromlist=["nnls"]).nnls,
+                    "linregress": __import__("scipy.stats", fromlist=["linregress"]).linregress,
+                    "find_peaks": __import__("scipy.signal", fromlist=["find_peaks"]).find_peaks,
+                    "gaussian_filter": __import__("scipy.ndimage", fromlist=["gaussian_filter"]).gaussian_filter
+                }
+                
+                # Execute string
+                exec(code_str, global_scope, local_scope)
+                
+                if "analyze_feature" not in local_scope:
+                    raise ValueError("Function 'analyze_feature' was not found in generated code.")
+                
+                # C. Run Analysis on Real Data
+                self.logger.info("  Executing generated code...")
+                func = local_scope["analyze_feature"]
+                result_dict = func(state["hspy_data"], state["energy_axis"])
+                
+                # D. Code Output Validation
+                if not isinstance(result_dict, dict): raise ValueError("Function return must be a dict.")
+                result_map = result_dict.get("map")
+                if result_map is None: raise ValueError("Result dict missing 'map' key.")
+                if result_map.shape != (h, w): raise ValueError(f"Shape mismatch: Expected ({h}, {w}), got {result_map.shape}")
+                
+                # Check for computational failures (NaNs)
+                if np.all(np.isnan(result_map)):
+                    raise ValueError("Map contains only NaNs. Fitting likely failed everywhere.")
+
+                # E. VISUAL SELF-REFLECTION (The "Look at it" Check)
+                self.logger.info("  👀 Performing Visual QC on generated map...")
+                qc_result, qc_critique = self._check_result_visually(result_map, target_desc)
+                
+                if not qc_result:
+                    # If the LLM says the map looks wrong, we treat it as a code failure
+                    raise ValueError(f"Visual QC Failed: {qc_critique}")
+                
+                self.logger.info("  ✅ Visual QC Passed.")
+
+                # F. Success & Storage
+                name = result_dict.get("feature_name", "Custom Feature")
+                units = result_dict.get("units", "a.u.")
+                desc = result_dict.get("description", "")
+                
+                # Create Visualization with Provenance
+                plot_bytes = self._create_annotated_heatmap(result_map, name, units, desc, provenance_str)
+
+                # Overwrite State
+                # We treat this dynamic result as the "Truth" for this iteration
+                state["final_abundance_maps"] = result_map[..., np.newaxis]
+                
+                # Clear NMF plots, keep only this custom result
+                state["analysis_images"] = [] 
+                state["analysis_images"].append({
+                    "label": f"Custom Analysis: {name}",
+                    "data": plot_bytes
+                })
+                
+                # Store Metadata for Final Report
+                state["custom_analysis_metadata"] = {
+                    "name": name, 
+                    "units": units, 
+                    "description": desc,
+                    "stats": {
+                        "min": float(np.min(result_map)), 
+                        "max": float(np.max(result_map)),
+                        "mean": float(np.mean(result_map))
+                    }
+                }
+                
+                state["method_used"] = "Dynamic Code Generation"
+                # Stop further branching - we have drilled down as far as possible
+                state["new_tasks"] = [] 
+                
+                return state
+
+            except Exception as e:
+                # G. Self-Correction Loop
+                error_msg = traceback.format_exc()
+                # If it was a Visual QC error, use just the critique, not the full traceback
+                if "Visual QC Failed" in str(e):
+                    error_msg = str(e)
+                
+                self.logger.warning(f"  ❌ Code/QC failed: {str(e)}")
+                retries += 1
+                
+                # Feed error back to prompt
+                current_prompt = base_prompt + f"\n\n### ❌ PREVIOUS CODE FAILED\nCritique:\n```text\n{error_msg}\n```\nFix the logic/math to address this critique and regenerate JSON."
+        
+        # H. Fallback
+        self.logger.warning("⚠️ Dynamic Analysis failed after max retries. Falling back to Standard NMF.")
+        state["dynamic_analysis_failed"] = True
+        return state
+
+    def _check_result_visually(self, map_data, feature_desc):
+        """
+        Asks the LLM to look at the generated heatmap and judge its quality.
+        Returns: (is_valid: bool, critique: str)
+        """
+        # Render temp image for the LLM
+        plot_bytes = self._create_annotated_heatmap(map_data, "Validation Check", "a.u.", "", "")
+        
+        check_prompt = [
+            f"You are a Quality Assurance Scientist. You just wrote code to map '{feature_desc}'.",
+            "Below is the resulting map generated by your code.",
+            "Does this look like a valid physical result?",
+            "\n**Failure Criteria:**",
+            "- Is the map completely empty (all one color)?",
+            "- Is it pure 'salt-and-pepper' static noise?",
+            "- Does it look like a hard error (e.g., distinct rectangular artifacts of 0 vs NaN)?",
+            "\nReturn a JSON with:",
+            "- 'valid': boolean",
+            "- 'critique': string (If invalid, explain WHY so the coder can fix it.)"
+        ]
+        check_prompt.append({"mime_type": "image/jpeg", "data": plot_bytes})
+        
+        try:
+            resp = self.model.generate_content(check_prompt, generation_config={"response_mime_type": "application/json"})
+            result, _ = self._parse_llm_response(resp)
+            return result.get("valid", True), result.get("critique", "")
+        except:
+            # If the vision check crashes, we fail open (assume valid) to avoid blocking
+            self.logger.warning("Visual QC API call failed. Assuming valid.")
+            return True, ""
+
+    def _create_annotated_heatmap(self, data_map, title, units, description, provenance):
+        # Helper to create self-explanatory plots
+        fig, ax = plt.subplots(figsize=(8, 6.5))
+        
+        # Robust colormap scaling (ignore outliers for visualization)
+        vmin = np.nanpercentile(data_map, 2)
+        vmax = np.nanpercentile(data_map, 98)
+        
+        im = ax.imshow(data_map, cmap='plasma', vmin=vmin, vmax=vmax)
+        
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label(f"{title} ({units})", rotation=270, labelpad=20, fontsize=10)
+        
+        ax.set_title(f"Dynamic Analysis: {title}", fontsize=12, fontweight='bold', pad=20)
+        
+        # Add Provenance (Breadcrumbs)
+        if provenance:
+            plt.text(0.5, 1.02, provenance, ha='center', va='bottom', transform=ax.transAxes, fontsize=8, color='blue', alpha=0.7)
+            
+        ax.set_xlabel(f"\n{description}", fontsize=9, style='italic', color='#555555')
+        ax.set_xticks([]); ax.set_yticks([])
+        
+        buf = BytesIO()
+        plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
+        plt.close()
+        return buf.getvalue()
+
+    def _create_annotated_heatmap(self, data_map, title, units, description, provenance):
+        # Helper to create self-explanatory plots
+        fig, ax = plt.subplots(figsize=(8, 6.5))
+        im = ax.imshow(data_map, cmap='plasma')
+        
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label(f"{title} ({units})", rotation=270, labelpad=20, fontsize=10)
+        
+        ax.set_title(f"Dynamic Analysis: {title}", fontsize=12, fontweight='bold', pad=20)
+        plt.text(0.5, 1.02, provenance, ha='center', va='bottom', transform=ax.transAxes, fontsize=8, color='blue', alpha=0.7)
+        ax.set_xlabel(f"\n{description}", fontsize=9, style='italic', color='#555555')
+        ax.set_xticks([]); ax.set_yticks([])
+        
+        buf = BytesIO()
+        plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
+        plt.close()
+        return buf.getvalue()

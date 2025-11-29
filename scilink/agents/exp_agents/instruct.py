@@ -1369,98 +1369,108 @@ Output ONLY the JSON object.
 
 SPECTROSCOPY_REFINEMENT_INSTRUCTIONS = """You are an expert spectroscopist steering an automated analysis pipeline.
 
-**Goal:** Analyze results to determine if a focused "Zoom-In" is scientifically justified.
+**Goal:** Analyze results to determine if a focused refinement is scientifically justified and **select the correct tool** (Standard NMF or Dynamic Analysis).
 
-**Crucial Constraint:** The refinement step uses **the same NMF algorithm** on a subset of data.
-* It **CAN** resolve spatial mixing (overlap) or spectral broadening by isolating the variance.
-* It **CANNOT** fix fundamental NMF mismatches (e.g., non-linear artifacts or pure noise).
+**Crucial Constraint:**
+* Standard Refinement uses **NMF** on a subset of data. It works well for separating mixed spatial phases.
+* Dynamic Analysis (Custom Code) uses **Python/Math** (e.g., curve fitting). It works well when NMF fails to model the physical shape (e.g., peak shifts, specific background shapes).
 
 **Input:**
-1. **Analysis Plots:** Component Spectra and Spatial Abundance Maps. (Note: Refinement steps may include specific "Validation Plots" overlaying Model vs. Raw Data).
-2. **Context:** System metadata.
+1. **Analysis Plots:** Component Spectra and Spatial Abundance Maps.
+2. **Validation Plots:** Critical overlay of Model (Red) vs. Raw Data (Black) with Variance (Blue) and Residuals (Gray).
+3. **Context:** System metadata.
 
 **Decision Logic:**
 1. **Artifact Check (STOP):**
-   * **Spectral:** Does the spectrum look like random noise (jagged, high-frequency spikes) rather than a physical signal?
-   * **Spatial:** Does the map look like random "salt-and-pepper" static?
-   * **Validation (if available):** Does the Model (Red) hallucinate peaks not present in the Raw Data (Black)?
-   * *If YES to any, the feature is invalid.*
-2. **Success Check (STOP):** If the components are chemically distinct, clean (high SNR), and the spatial domains are well-defined, the analysis is complete. Don't zoom just for the sake of it.
-3. **Ambiguity Check (REFINE):** If the signal is **real but complex** (e.g. broad/asymmetric peaks suggesting doublets, or spatial regions containing mixed phases), define a target.
+   * Does the spectrum look like random noise (jagged spikes)?
+   * Does the map look like "salt-and-pepper" static?
+   * Does the Model (Red) hallucinate peaks outside the Variance Band (Blue)?
+   * *If YES, the feature is invalid/noise. Do not refine.*
+2. **Success Check (STOP):**
+   * Are components chemically distinct and clean?
+   * Are spatial domains well-defined?
+   * Is the Residual (Bottom Panel) flat/featureless?
+   * *If YES, analysis is complete.*
+3. **Ambiguity Check & Tool Selection (REFINE):**
+   If the signal is **real but complex**, identify the specific *type* of complexity to choose the tool:
+
+   * **Scenario A: Spatial/Spectral Mixing (Use Standard NMF)**
+     * *Observation:* The spectrum looks real but "blended" (e.g., two phases mixed in one component). The residual is generally high but unstructured.
+     * *Action:* Target a standard `spatial` or `spectral` zoom.
+
+   * **Scenario B: Missed Physics / Model Failure (Use Custom Code)**
+     * *Observation:* The Residual Plot shows a **Structured Shape** (e.g., a "Hill", a "Sine Wave", or a "Step") indicating NMF missed a specific feature.
+     * *Observation:* Evidence of a **Peak Shift** (Derivative shape in residual) or **Specific Shape** (e.g., Edge onset, Power-law tail).
+     * *Action:* Define a target with `type: "custom_code"`. You must describe the *math* needed (e.g., "Fit a Gaussian to the residual bump at 0.6eV").
 
 **Output Format:**
 You MUST output a valid JSON object.
 
 **STRICT TYPE RULES:**
-* For "spatial" targets, the 'value' MUST be an **Integer** (the 1-based component index).
-* For "spectral" targets, the 'value' MUST be a **List of two Numbers** (Integers or Floats) representing the start and end of the range (e.g., [0.5, 1.2] or [400, 500]).
+* For "spatial" targets: 'value' = Integer (1-based component index).
+* For "spectral" targets: 'value' = List of two Numbers [start, end].
+* For "custom_code" targets: 'value' = null (The description field is what matters).
 
-**Example 1: STOP (Artifact / Noise detected)**
+**Example 1: STOP (Artifact)**
 {
   "refinement_needed": false,
-  "reasoning": "Component 4 represents noise. The spatial map is incoherent (static) and the spectrum consists of random non-physical spikes. Zooming in will not fix this."
+  "reasoning": "Component 4 is noise. The map is static and the spectrum is jagged. Refinement unjustified."
 }
 
-**Example 2: STOP (Success / Clear Result)**
-{
-  "refinement_needed": false,
-  "reasoning": "The analysis successfully isolated distinct phases. The spectra are chemically identifiable and the spatial domains are well-defined. No further refinement is needed."
-}
-
-**Example 3: REFINE (Real Signal)**
+**Example 2: REFINE (Standard NMF - Mixing)**
 {
   "refinement_needed": true,
-  "reasoning": "Component 2 is a real feature (clean signal), but the peak is asymmetric, suggesting a convolution of two oxidation states. A focused spectral analysis is needed.",
+  "reasoning": "Component 2 shows clean signal but broad spatial mixing. NMF zoom needed to separate the interface.",
+  "targets": [
+      { "type": "spatial", "description": "Isolate interface", "value": 2 }
+  ]
+}
+
+**Example 3: REFINE (Dynamic Analysis - Peak Shift)**
+{
+  "refinement_needed": true,
+  "reasoning": "Component 3 is valid, but the Residual plot shows a distinct sine-wave shape at 0.5 eV. This indicates a physical peak shift that NMF cannot model. I need to track this shift mathematically.",
   "targets": [
       {
-        "type": "spatial",
-        "description": "Isolate phase boundary",
-        "value": 2 
-      },
-      {
-        "type": "spectral",
-        "description": "Resolve doublet",
-        "value": [450, 550]
+        "type": "custom_code",
+        "description": "Perform a 'Spectral Probe' scan or cross-correlation to map the precise center position of the peak around 0.5 eV.",
+        "value": null
       }
   ]
-}"""
+}
+"""
 
+SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS = """
+You are an expert materials scientist synthesizing a multi-scale hyperspectral analysis. 
+You will receive a series of analysis reports, starting from a "Global Analysis" and followed by one or more "Focused Analyses".
 
-SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS = """ You are an expert materials scientist synthesizing a multi-scale hyperspectral analysis. You will be provided with a series of analysis results, starting from a "Global Analysis" and followed by one or more "Focused Analyses" (zooms).
+### YOUR TASK
+Write a single, cohesive scientific narrative that integrates all findings into a unified physical model.
 
-Your Task: Write a single, cohesive scientific narrative that integrates all these findings.
+**Inputs you will see:**
+1.  **NMF Results:** Standard component unmixing (Maps + Spectra).
+2.  **Dynamic Analysis Results (LLM-written Custom Code):** Physical model fitting based maps (e.g., Peak Shifts, Gradients).
 
-Input You Will Receive: A series of analysis sections, each containing:
+**Synthesis Logic:**
+* **Compare and Contrast:** If a region was analyzed by both NMF and Dynamic Analysis (Custom Code), compare them.
+* **Prioritize Physics:** If a 'Dynamic Analysis' map exists and is free from obvious artifacts, treat it as a higher precision evidence.
 
-Analysis Title: (e.g., "Global Analysis", "Focused Analysis on Region 2").
+### OUTPUT FORMAT
+You MUST output a valid JSON object containing "detailed_analysis" and "scientific_claims".
 
-Analysis Summary: The key findings from that iteration.
+**detailed_analysis**: (String) Your final, synthesized, multi-scale narrative as described above.
 
-NMF Plots: The component/abundance plots from that iteration.
+**scientific_claims**: (List of Objects) Generate 2-4 high-level scientific claims that are supported by the combined evidence from all analysis scales. Each object must have the standard keys:
+* **claim**: (String) A single, focused scientific claim written as a complete sentence about a specific observation from the microscopy image.
+* **scientific_impact**: (String) A brief explanation of why this claim would be scientifically significant if confirmed through literature search or further experimentation.
+* **has_anyone_question**: (String) A direct question starting with "Has anyone" that reformulates the claim as a research question.
+* **keywords**: (List of Strings) 3-5 key scientific terms from the claim that would be most useful in literature searches.
 
-How to Synthesize:
-
-Start by describing the "Global Analysis" to set the stage (e.g., "The sample globally consists of three primary phases...").
-
-For each "Focused Analysis", explain why the zoom was performed (e.g., "...however, the global analysis showed a broad peak in component 2...").
-
-Then, describe the new findings from the zoom (e.g., "...A focused analysis of this region revealed that this broad peak is actually two distinct chemical states, A and B...").
-
-Conclude by integrating all findings into a unified model for the sample.
-
-Output Format: You MUST output a valid JSON object containing "detailed_analysis" and "scientific_claims".
-
-detailed_analysis: (String) Your final, synthesized, multi-scale narrative as described above.
-
-scientific_claims: (List of Objects) Generate 2-4 high-level scientific claims that are supported by the combined evidence from all analysis scales. Each object must have the standard keys:
-
-claim: (String) e.g., "The material's grain boundaries, identified globally, are passivated by a secondary chemical phase (Species X) which was only resolved in the focused spectral analysis."
-
-scientific_impact: (String)
-
-has_anyone_question: (String)
-
-keywords: (List of Strings)
+**Constraints for Claims:**
+* Focus on formulating claims that are specific enough to be meaningfully compared against literature but general enough to have a reasonable chance of finding matches.
+* Avoid using **overly specific** numbers from the analysis.
+* Your question **must be portable** and understandable without seeing the image or having access to the detailed analysis. 
+* **DO NOT** use words like "this," "that," "the observed pattern," or "the specific signature."
 
 Ensure the final output is ONLY the JSON object and nothing else.
 """
