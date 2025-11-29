@@ -448,15 +448,7 @@ class RunFinalSpectralUnmixingController:
 class CreateAnalysisPlotsController:
     """
     [🛠️ Tool Step]
-    Generates all final visualizations for the LLM.
-    
-    UPDATED LOGIC:
-    1. Strict Naming: Uses "{Iteration_Title}_{Label}.jpeg"
-    2. Split Validation Logic:
-       - Depth 0 (Global): Standard NMF plots.
-       - Depth > 0 (Refinement): Validated NMF plots (Red vs Black lines).
-    3. Validated Summary Grid: For Depth > 0, we STITCH individual validated plots
-       to create a "Validation Grid" because the standard tool doesn't support validation.
+    Generates high-quality visualization pairs for the Agent.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -464,11 +456,10 @@ class CreateAnalysisPlotsController:
 
     def execute(self, state: dict) -> dict:
         if state.get("error_dict"): return state
-        self.logger.info("\n\n🛠️ --- CALLING TOOL: CREATE FINAL PLOTS --- 🛠️\n")
+        self.logger.info("\n\n🛠️ --- CALLING TOOL: CREATE ANALYSIS PLOTS --- 🛠️\n")
         
         components = state.get("final_components")
         abundance_maps = state.get("final_abundance_maps")
-        current_depth = state.get("current_depth", 0)
         
         # Retrieve the stable iteration title (e.g., "Global_Analysis", "Focused_Analysis_D1_T1")
         iter_title_raw = state.get("iteration_title", "Global_Analysis")
@@ -481,75 +472,65 @@ class CreateAnalysisPlotsController:
         # Output directory setup
         output_dir = self.settings.get('output_dir', 'spectroscopy_output')
         os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        # --- 1. Generate Component Pairs ---
+        
+        # Container for the loop results
         final_plots = []
-        # For Depth > 0, we keep the raw bytes to stitch them later
         validated_bytes_list = [] 
         
-        if current_depth == 0:
-            # GLOBAL ANALYSIS: Standard NMF Pairs
-            self.logger.info("Global Analysis (Depth 0): Generating Standard NMF Pairs.")
-            final_plots = tools.create_component_abundance_pairs(
-                components, abundance_maps, state["system_info"], self.logger
-            )
-        else:
-            # REFINEMENT ANALYSIS: Validated Pairs (Map + Validation Spectrum)
-            self.logger.info(f"Refinement (Depth {current_depth}): Generating Validated Pairs.")
-            for i in range(components.shape[0]):
-                plot_bytes = tools.create_validated_component_pair(
-                    state["hspy_data"], 
-                    components[i], 
-                    abundance_maps[..., i], 
-                    i, 
-                    state["system_info"],
-                    self.logger
-                )
-                if plot_bytes:
-                    final_plots.append({
-                        'label': f"Component {i+1} Analysis", # Label without "Validated" string, implied by depth
-                        'bytes': plot_bytes
-                    })
-                    validated_bytes_list.append(plot_bytes)
-
-        state["component_pair_plots"] = final_plots
+        # --- 1. Generate Validated Pairs for Each Component ---
+        self.logger.info(f"Generating Validated Analysis Plots for {components.shape[0]} components...")
         
-        # Save individual component plots to disk using SEMANTIC names
-        try:
-            for i, plot in enumerate(final_plots):
-                # Label: "Component 1 Analysis" -> "Component_1_Analysis"
-                label_safe = _sanitize_filename(plot['label'])
-                filename = f"{iter_prefix}_{label_safe}.jpeg"
-                filepath = os.path.join(output_dir, filename)
-                
-                with open(filepath, 'wb') as f:
-                    f.write(plot['bytes'])
+        for i in range(components.shape[0]):
+            # Use the advanced tool (Map + Spectrum/Variance + Residual)
+            # Pass state["system_info"] so axes are in eV!
+            plot_bytes = tools.create_validated_component_pair(
+                state["hspy_data"], 
+                components[i], 
+                abundance_maps[..., i], 
+                i, 
+                state["system_info"],
+                self.logger
+            )
             
-                # Add to analysis_images with the RAW label (Final synthesis controller handles the referencing)
-                state["analysis_images"].append({
-                    "label": plot['label'],
-                    "data": plot['bytes']
+            if plot_bytes:
+                # Semantic Label: e.g., "Component 1 Analysis"
+                label = f"Component {i+1} Analysis"
+                
+                # Store for prompt context
+                final_plots.append({
+                    'label': label,
+                    'bytes': plot_bytes
                 })
                 
-        except Exception as e:
-            self.logger.warning(f"Failed to save component plots: {e}")
+                # Store for grid stitching
+                validated_bytes_list.append(plot_bytes)
+                
+                # Save individual file to disk (for debugging/user access)
+                try:
+                    label_safe = _sanitize_filename(label)
+                    filename = f"{iter_prefix}_{label_safe}.jpeg"
+                    filepath = os.path.join(output_dir, filename)
+                    with open(filepath, 'wb') as f:
+                        f.write(plot_bytes)
+                except Exception as e:
+                    self.logger.warning(f"Failed to save plot {label}: {e}")
+
+        # Store in state for the Prompt Builder
+        state["component_pair_plots"] = final_plots
         
-        # --- 2. NMF Summary Grid (The "Executive Summary" View) ---
+        # Add to the global 'analysis_images' list so the Final Report sees them
+        for plot in final_plots:
+            state["analysis_images"].append({
+                "label": plot['label'],
+                "data": plot['bytes']
+            })
+
+        # --- 2. Create Summary Grid (Stitching) ---
+        # Instead of a basic NMF grid, we stitch the high-detail validation plots
+        # so the Executive Summary shows the residuals immediately.
         try:
-            self.logger.info("  (Tool Info: Creating NMF summary plot...)")
-            n_comp = state.get("final_n_components", components.shape[0])
-            summary_bytes = None
-            
-            if current_depth == 0:
-                # Standard Grid for Global
-                summary_bytes = tools.create_nmf_summary_plot(
-                    components, abundance_maps, n_comp, state["system_info"], self.logger
-                )
-            else:
-                # Validated Grid for Refinement (Stitching)
-                self.logger.info("  (Tool Info: Stitching validated plots into Summary Grid...)")
-                summary_bytes = _create_grid_from_images(validated_bytes_list, self.logger)
+            self.logger.info("  (Tool Info: Stitching validated plots into Summary Grid...)")
+            summary_bytes = _create_grid_from_images(validated_bytes_list, self.logger)
 
             if summary_bytes:
                 label = "NMF Summary Grid"
@@ -561,7 +542,6 @@ class CreateAnalysisPlotsController:
                     f.write(summary_bytes)
                 self.logger.info(f"📸 Saved NMF summary plot to: {filepath}")
 
-                # Add to Final Report State
                 state["analysis_images"].append({
                     "label": label, 
                     "data": summary_bytes
@@ -571,16 +551,19 @@ class CreateAnalysisPlotsController:
             self.logger.warning(f"Failed to create/save NMF summary plot: {e}")
 
         # --- 3. Structure Overlays (Optional) ---
+        # This overlays the NMF maps onto a STEM/SEM image if provided
         if state.get("structure_image_path"):
             try:
                 structure_img = load_image(state["structure_image_path"])
-                if len(structure_img.shape) == 3:
+                if structure_img.ndim == 3:
                     structure_img_gray = cv2.cvtColor(structure_img, cv2.COLOR_RGB2GRAY)
                 else:
                     structure_img_gray = structure_img
                 
+                # Create overlays (e.g. Top 15% of abundance colored over the structure)
                 overlay_bytes = tools.create_multi_abundance_overlays(
-                    structure_img_gray, abundance_maps,
+                    structure_img_gray, 
+                    abundance_maps,
                     threshold_percentile=85.0 
                 )
                 state["structure_overlay_bytes"] = overlay_bytes
@@ -591,18 +574,14 @@ class CreateAnalysisPlotsController:
                     filename = f"{iter_prefix}_{label_safe}.jpeg"
                     filepath = os.path.join(output_dir, filename)
 
-                    try:
-                        with open(filepath, 'wb') as f:
-                            f.write(overlay_bytes)
-                        self.logger.info(f"📸 Saved structure overlay plot to: {filepath}")
-                        
-                        # Add to final report state
-                        state["analysis_images"].append({
-                            "label": label,
-                            "data": overlay_bytes
-                        })
-                    except Exception as e:
-                        self.logger.warning(f"Failed to save structure overlay plot: {e}")
+                    with open(filepath, 'wb') as f:
+                        f.write(overlay_bytes)
+                    self.logger.info(f"📸 Saved structure overlay plot to: {filepath}")
+                    
+                    state["analysis_images"].append({
+                        "label": label,
+                        "data": overlay_bytes
+                    })
                 
             except Exception as e:
                 self.logger.warning(f"Failed to create structure overlays: {e}")
@@ -1030,9 +1009,9 @@ class BuildHolisticSynthesisPromptController:
         
         prompt_parts.append("\n**Required Format for Evidence Section:**")
         prompt_parts.append("### Key Evidence")
-        prompt_parts.append("- **[Global_Analysis] NMF Summary Grid**: Explain what this specific plot proves.")
-        prompt_parts.append("- **[Focused_Analysis_D1_T1] Dynamic Analysis: Peak Center**: Describe the gradient revealed by the physics mapping.")
-        prompt_parts.append("\n(Use the exact reference strings provided above inside the brackets.)")
+        prompt_parts.append("- **[Exact_ID_From_Above] Image Title**: Explanation of evidence.")
+        prompt_parts.append("- **[Exact_ID_From_Above] Image Title**: Explanation of evidence.")
+        prompt_parts.append("\n(NOTE: Do not copy these examples. Use the ACTUAL titles provided in the visual context above, ensuring you match the correct Iteration ID to the correct plot.)")
 
         prompt_parts.append("\n\nProvide your final, synthesized analysis in the requested JSON format.")
         
@@ -1062,14 +1041,86 @@ class GenerateHTMLReportController:
         return base64.b64encode(image_bytes).decode('utf-8')
 
     def _filter_by_citations(self, text: str, all_images: list) -> list:
-        """Returns only images whose labels appear exactly in the analysis text."""
+        """
+        Selects images based on 'Concept Triggers' rather than strict string matching.
+        If the text discusses a scientific method (e.g., NMF), the relevant summary plots are forced to display.
+        """
         cited_images = []
+        lower_text = text.lower()
+        
         for img in all_images:
-            label = img.get('label', '')
-            # Check if the label (e.g. "[Global_Analysis] NMF Summary Grid") is in the text
-            if label in text:
+            raw_label = img.get('label', '')
+            label_lower = raw_label.lower()
+            
+            # --- 1. Exact & Direct Match ---
+            if raw_label in text:
                 cited_images.append(img)
-        return cited_images
+                continue
+            
+            # Check for label without the [ID] prefix
+            # e.g. Label: "[Global_Analysis] NMF Summary Grid" -> Match: "NMF Summary Grid"
+            clean_name = re.sub(r'\[.*?\]', '', label_lower).strip()
+            if clean_name and clean_name in lower_text:
+                cited_images.append(img)
+                continue
+
+            # --- 2. Concept Triggers (The Safety Net) ---
+            
+            # TRIGGER: NMF / Spectral Unmixing
+            # If the plot is an NMF Grid and the text mentions "NMF" or "Components", show it.
+            if "nmf summary grid" in label_lower:
+                if "nmf" in lower_text or "component" in lower_text or "unmixing" in lower_text:
+                    cited_images.append(img)
+                    continue
+
+            # TRIGGER: Custom / Dynamic Analysis
+            # If the plot is a Custom Analysis, check if the specific feature name (e.g. "Peak Center") is mentioned.
+            if "custom analysis" in label_lower and ":" in label_lower:
+                # Extract feature name: "[ID] Custom Analysis: Peak Center" -> "peak center"
+                try:
+                    feature_name = label_lower.split(":", 1)[1].strip()
+                    if feature_name and feature_name in lower_text:
+                        cited_images.append(img)
+                        continue
+                except IndexError:
+                    pass
+
+            # TRIGGER: Structure / Morphology
+            # If the plot is a Structure Overlay and text mentions Structure/Correlation, show it.
+            if "structure" in label_lower and "overlay" in label_lower:
+                if "structure" in lower_text or "morphology" in lower_text or "correlation" in lower_text:
+                    cited_images.append(img)
+                    continue
+
+            # --- 3. Iteration Context Match ---
+            # If the text explicitly names an iteration (e.g. "Global Analysis"), 
+            # ensure the main summary grid for that iteration is shown.
+            match = re.match(r"\[(.*?)\]", raw_label)
+            if match:
+                iter_id_clean = match.group(1).replace("_", " ").lower() # e.g. "global analysis"
+                if iter_id_clean in lower_text and ("grid" in label_lower or "custom" in label_lower):
+                    cited_images.append(img)
+                    continue
+
+        # --- Deduplicate (Preserve Order) ---
+        unique_images = []
+        seen = set()
+        for img in cited_images:
+            if img['label'] not in seen:
+                unique_images.append(img)
+                seen.add(img['label'])
+
+        # --- 4. Final Fail-Safe ---
+        # If the filter returned <= 1 image, force the Global NMF Summary to appear 
+        # to ensure the report always has context.
+        if len(unique_images) <= 1:
+            for img in all_images:
+                if "global" in img['label'].lower() and "nmf summary" in img['label'].lower():
+                    if img['label'] not in seen:
+                        unique_images.insert(0, img) # Insert at top
+                        seen.add(img['label'])
+
+        return unique_images
 
     def _filter_redundant_heuristic(self, all_images: list) -> list:
         """
@@ -1389,8 +1440,10 @@ class RunDynamicAnalysisController:
                 # We treat this dynamic result as the "Truth" for this iteration
                 state["final_abundance_maps"] = result_map[..., np.newaxis]
                 
-                # Clear NMF plots, keep only this custom result
-                state["analysis_images"] = [] 
+                # We want to keep the NMF Summary Grid for comparison in the report
+                if "analysis_images" not in state:
+                    state["analysis_images"] = []
+                    
                 state["analysis_images"].append({
                     "label": f"Custom Analysis: {name}",
                     "data": plot_bytes
