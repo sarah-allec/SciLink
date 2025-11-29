@@ -921,7 +921,6 @@ class BuildHolisticSynthesisPromptController:
     """
     [📝 Prep Step]
     Assembles ALL iteration results into the final prompt for synthesis.
-    Merges Dynamic Analysis metadata with strict Reporting Formatting.
     """
     def __init__(self, logger: logging.Logger):
         self.logger = logger
@@ -932,19 +931,13 @@ class BuildHolisticSynthesisPromptController:
         self.logger.info("\n\n📝 --- PREP STEP: BUILDING FINAL SYNTHESIS PROMPT --- 📝\n")
         
         prompt_parts = [self.instructions]
-        
         all_results = state.get("all_iteration_results", [])
-        if not all_results:
-            self.logger.error("No iteration results found to synthesize.")
-            state["error_dict"] = {"error": "No iteration results found for synthesis."}
-            return state
-
+        
         # 1. System Info
         if state.get("system_info"):
             sys_info_str = json.dumps(state["system_info"], indent=2)
             prompt_parts.append(f"\n\n--- System Information ---\n{sys_info_str}")
 
-        # 2. Build Context for Each Iteration
         all_images = []
 
         for i, iter_result in enumerate(all_results):
@@ -953,29 +946,31 @@ class BuildHolisticSynthesisPromptController:
             
             prompt_parts.append(f"\n\n### SECTION {i+1}: {raw_title}")
             
-            # Context: Why did we do this?
             context_desc = iter_result.get('parent_refinement_reasoning') 
             if context_desc:
                 prompt_parts.append(f"**Target Description:** \"{context_desc}\"")
 
-            # --- DYNAMIC ANALYSIS INJECTION ---
-            custom_meta = iter_result.get("custom_analysis_metadata")
-            if custom_meta:
-                name = custom_meta.get('name', 'Custom Feature')
-                desc = custom_meta.get('description', 'N/A')
-                units = custom_meta.get('units', 'a.u.')
-                stats = custom_meta.get('stats', {})
-                
+            # DYNAMIC ANALYSIS INJECTION
+            # Check for the new List format
+            custom_meta_list = iter_result.get("custom_analysis_metadata_list")
+
+            if custom_meta_list:
                 prompt_parts.append(f"\n**🔍 DYNAMIC ANALYSIS FINDINGS (Physics-Based Mapping):**")
-                prompt_parts.append(f"- Feature Mapped: **{name}**")
-                prompt_parts.append(f"- Physical Interpretation: {desc}")
-                prompt_parts.append(f"- Units: {units}")
                 
-                # Crash Fix: Use .get(key, 0.0) to handle missing stats gracefully
-                if stats:
-                    prompt_parts.append(f"- Statistics: Min {stats.get('min', 0.0):.2f}, Max {stats.get('max', 0.0):.2f}, Mean {stats.get('mean', 0.0):.2f}")
-                
-                prompt_parts.append("-> **INSTRUCTION:** This map represents a physics-based model. COMPARE it with the NMF results.")
+                # Loop through every feature generated in this iteration
+                for idx, meta in enumerate(custom_meta_list, 1):
+                    name = meta.get('name', 'Custom Feature')
+                    desc = meta.get('description', 'N/A')
+                    units = meta.get('units', 'a.u.')
+                    stats = meta.get('stats', {})
+                    
+                    prompt_parts.append(f"\n   **Feature {idx}: {name}**")
+                    prompt_parts.append(f"   - Interpretation: {desc}")
+                    prompt_parts.append(f"   - Units: {units}")
+                    if stats:
+                        prompt_parts.append(f"   - Stats: Min {stats.get('min', 0.0):.2f}, Max {stats.get('max', 0.0):.2f}, Mean {stats.get('mean', 0.0):.2f}")
+
+                prompt_parts.append("\n-> **INSTRUCTION:** Use these specific physical maps to validate or correct the NMF results.")
             
             # Text Summary
             iter_analysis = iter_result.get('iteration_analysis_text')
@@ -991,28 +986,20 @@ class BuildHolisticSynthesisPromptController:
                     raw_label = img.get('label', 'Unknown_Plot')
                     
                     if image_bytes:
-                        # Stable semantic ID
                         unique_ref = f"[{iter_ref_id}] {raw_label}"
-                        
                         prompt_parts.append(f"\n**{unique_ref}**")
                         prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
-                        
-                        # Update label for report filtering
                         img['label'] = unique_ref 
                         all_images.append(img)
 
         # 3. EXPLICIT REPORTING INSTRUCTIONS
         prompt_parts.append("\n\n### 📝 CRITICAL REPORTING INSTRUCTIONS")
-        
         prompt_parts.append("1. **AT THE END of your 'detailed_analysis' text**, you MUST append a section titled **'### Key Evidence'**.")
         prompt_parts.append("2. In that section, you MUST list the supporting figures using their **EXACT bolded titles** provided above.")
-        
         prompt_parts.append("\n**Required Format for Evidence Section:**")
         prompt_parts.append("### Key Evidence")
         prompt_parts.append("- **[Exact_ID_From_Above] Image Title**: Explanation of evidence.")
-        prompt_parts.append("- **[Exact_ID_From_Above] Image Title**: Explanation of evidence.")
-        prompt_parts.append("\n(NOTE: Do not copy these examples. Use the ACTUAL titles provided in the visual context above, ensuring you match the correct Iteration ID to the correct plot.)")
-
+        
         prompt_parts.append("\n\nProvide your final, synthesized analysis in the requested JSON format.")
         
         state["final_prompt_parts"] = prompt_parts
@@ -1285,14 +1272,7 @@ from typing import Callable
 class RunDynamicAnalysisController:
     """
     [🧠 + 💻] The 'Code Interpreter' / 'Dynamic Analyst'.
-    
-    Logic Flow:
-    1. Detects if the Refinement Decision requested 'custom_code'.
-    2. Prompts LLM to write a Python function using scipy/sklearn/numpy to solve the specific physics problem.
-    3. Executes code in a restricted namespace.
-    4. [Visual Check] Asks the LLM to look at the resulting map to verify it isn't noise/static.
-    5. Saves the result as the primary 'Abundance Map' for this iteration.
-    """
+        """
     MAX_RETRIES = 5
 
     def __init__(self, model, logger, generation_config, safety_settings, parse_fn):
@@ -1306,14 +1286,11 @@ class RunDynamicAnalysisController:
         decision = state.get("refinement_decision", {})
         targets = decision.get("targets", [])
         
-        # 1. Gatekeeping: Only run if custom code was requested
+        # 1. Gatekeeping
         has_custom_target = any(t.get('type') == 'custom_code' for t in targets)
-        
-        # Also check the flag for backward compatibility
         if not has_custom_target and not decision.get("requires_custom_code", False):
             return state
 
-        # Get the specific task description
         if has_custom_target:
             custom_target = next(t for t in targets if t.get('type') == 'custom_code')
             target_desc = custom_target.get("description", "Analyze spectral feature")
@@ -1323,15 +1300,13 @@ class RunDynamicAnalysisController:
         self.logger.info("\n\n💻 --- DYNAMIC ANALYSIS: GENERATING CUSTOM CODE --- 💻\n")
         self.logger.info(f"Task: {target_desc}")
 
-        # 2. Context Extraction ("Breadcrumbs")
-        # We need to label the plot so we know which parent task this came from
+        # 2. Context Extraction
         task_id = state.get("iteration_title", "Unknown_Task")
         context_reason = state.get("parent_refinement_reasoning", "Refinement")
         provenance_str = f"Source: {task_id} | Context: {context_reason}"
 
         h, w, e = state["hspy_data"].shape
         
-        # Ensure we have an energy axis
         if "energy_axis" not in state:
             if state.get("system_info", {}).get("energy_range"):
                 start = state["system_info"]["energy_range"]["start"]
@@ -1345,26 +1320,54 @@ class RunDynamicAnalysisController:
         You are a Python Data Scientist specialized in Spectroscopy. 
         The standard NMF tool failed to model a spectral feature described as: "{target_desc}".
         
-        Your task: Write a Python function to mathematically model this feature and map its abundance/magnitude across the image.
+        Your task: Write a Python function to mathematically model this feature. 
+        Since complex features often require multiple parameters (e.g., Peak Position AND Peak Width, or Peak A AND Peak B), your function must be able to return MULTIPLE maps.
 
-        ### DATA CONTEXT
+        ### 1. DATA CONTEXT
         - Input Data `hspy_data`: Shape ({h}, {w}, {e}) (Numpy array)
         - Energy Axis `energy_axis`: Shape ({e},) (Numpy array, eV units)
-        - Libraries available: `numpy` (as np), `scipy.optimize`, `scipy.signal`, `sklearn`.
+
+        ### 2. EXECUTION ENVIRONMENT (STRICT)
+        Your code will run in a restricted `exec()` sandbox. 
+        
+        **PRE-IMPORTED LIBRARIES (Available Globally):**
+        - `np`: The full NumPy library.
+        - `scipy`: The top-level SciPy module.
+        - `sklearn`: The top-level Scikit-Learn module.
+        
+        **PRE-IMPORTED FUNCTIONS (Direct Shortcuts):**
+        - `curve_fit`, `nnls` (from scipy.optimize)
+        - `linregress` (from scipy.stats)
+        - `find_peaks` (from scipy.signal)
+        - `gaussian_filter` (from scipy.ndimage)
+
+        ### 3. CODING CONSTRAINTS
+        1. **NO External Imports:** Do not import `os`, `sys`, `matplotlib`, or `warnings`. The sandbox does not support them.
+        2. **SciPy Submodules:** If you need a specific SciPy submodule that is NOT in the shortcuts list (e.g., `scipy.interpolate` or `scipy.integrate`), you MUST write `import scipy.interpolate` **inside** your function definition before using it.
+        3. **Standard Math:** Use `np.exp`, `np.log`, etc., instead of the `math` library.
+        4. **Return Format:** You must return a dictionary, not a print statement or a plot.
+
+        ### 4. YOUR GOAL
+        Write a function `analyze_feature(data, axis)` that:
+        1. Reshapes data to (pixels, energy).
+        2. Implements the physics math (e.g., peak fitting, integration).
+        3. Returns a DICTIONARY containing the results and metadata.
 
         ### YOUR GOAL
         Write a function `analyze_feature(data, axis)` that:
         1. Reshapes data to (pixels, energy).
-        2. Implements the specific math required (e.g., peak fitting, integration, derivative, slope, cross-correlation).
-        3. Returns a DICTIONARY containing the results and metadata.
+        2. Implements the specific math required.
+        3. Returns a DICTIONARY containing the results.
 
         ### REQUIRED RETURN FORMAT
-        The function must return a Python dictionary with these exact keys:
+        The function must return a Python dictionary with this structure:
         {{
-            "map": np.ndarray,       # The 2D result map (shape {h}, {w})
-            "units": str,            # The physical units (e.g., "eV", "Counts", "Slope", "R^2")
-            "feature_name": str,     # A short label (e.g., "Peak Center", "Bandgap Onset")
-            "description": str       # One sentence explaining what high/low values mean.
+            "maps": {{
+                "Feature_Name_1": np.ndarray,  # 2D map ({h}, {w})
+                "Feature_Name_2": np.ndarray   # 2D map ({h}, {w}) (Optional, if multiple features exist)
+            }},
+            "units": str,            # The physical units (e.g., "eV", "Counts")
+            "description": str       # Explanation of what high/low values mean.
         }}
 
         ### RESPONSE FORMAT
@@ -1397,7 +1400,6 @@ class RunDynamicAnalysisController:
                     "gaussian_filter": __import__("scipy.ndimage", fromlist=["gaussian_filter"]).gaussian_filter
                 }
                 
-                # Execute string
                 exec(code_str, global_scope, local_scope)
                 
                 if "analyze_feature" not in local_scope:
@@ -1408,91 +1410,96 @@ class RunDynamicAnalysisController:
                 func = local_scope["analyze_feature"]
                 result_dict = func(state["hspy_data"], state["energy_axis"])
                 
-                # D. Code Output Validation
+                # D. Code Output Validation (UPDATED)
                 if not isinstance(result_dict, dict): raise ValueError("Function return must be a dict.")
-                result_map = result_dict.get("map")
-                if result_map is None: raise ValueError("Result dict missing 'map' key.")
-                if result_map.shape != (h, w): raise ValueError(f"Shape mismatch: Expected ({h}, {w}), got {result_map.shape}")
                 
-                # Check for computational failures (NaNs)
-                if np.all(np.isnan(result_map)):
-                    raise ValueError("Map contains only NaNs. Fitting likely failed everywhere.")
+                maps_dict = result_dict.get("maps")
+                if not maps_dict or not isinstance(maps_dict, dict):
+                    raise ValueError("Return dict must contain a 'maps' key with a dictionary of 2D arrays.")
 
-                # E. VISUAL SELF-REFLECTION (The "Look at it" Check)
-                self.logger.info("  👀 Performing Visual QC on generated map...")
-                qc_result, qc_critique = self._check_result_visually(result_map, target_desc)
+                # Containers for valid results
+                valid_maps = []
+                valid_meta = []
                 
-                if not qc_result:
-                    # If the LLM says the map looks wrong, we treat it as a code failure
-                    raise ValueError(f"Visual QC Failed: {qc_critique}")
-                
-                self.logger.info("  ✅ Visual QC Passed.")
-
-                # F. Success & Storage
-                name = result_dict.get("feature_name", "Custom Feature")
                 units = result_dict.get("units", "a.u.")
                 desc = result_dict.get("description", "")
-                
-                # Create Visualization with Provenance
-                plot_bytes = self._create_annotated_heatmap(result_map, name, units, desc, provenance_str)
 
-                # Overwrite State
-                # We treat this dynamic result as the "Truth" for this iteration
-                state["final_abundance_maps"] = result_map[..., np.newaxis]
-                
-                # We want to keep the NMF Summary Grid for comparison in the report
-                if "analysis_images" not in state:
-                    state["analysis_images"] = []
+                # Iterate through ALL returned maps
+                for feature_name, result_map in maps_dict.items():
+                    self.logger.info(f"  Processing map: {feature_name}")
                     
-                state["analysis_images"].append({
-                    "label": f"Custom Analysis: {name}",
-                    "data": plot_bytes
-                })
+                    # Shape Check
+                    if result_map.shape != (h, w): 
+                        self.logger.warning(f"Skipping {feature_name}: Shape mismatch {result_map.shape}")
+                        continue
+                    
+                    if np.all(np.isnan(result_map)):
+                        self.logger.warning(f"Skipping {feature_name}: Map contains only NaNs.")
+                        continue
+
+                    # E. Visual QC (Per Map)
+                    self.logger.info(f"  👀 Performing Visual QC on {feature_name}...")
+                    qc_result, qc_critique = self._check_result_visually(result_map, f"{target_desc} ({feature_name})")
+                    
+                    if not qc_result:
+                        self.logger.warning(f"  Visual QC Rejected {feature_name}: {qc_critique}")
+                        # Depending on strictness, we might skip or fail. Let's skip bad ones but keep good ones.
+                        continue
+
+                    # F. Storage & Visualization
+                    plot_bytes = self._create_annotated_heatmap(
+                        result_map, feature_name, units, desc, provenance_str
+                    )
+
+                    # Add to analysis images
+                    if "analysis_images" not in state: state["analysis_images"] = []
+                    state["analysis_images"].append({
+                        "label": f"Custom Analysis: {feature_name}",
+                        "data": plot_bytes
+                    })
+
+                    # Collect Data
+                    valid_maps.append(result_map)
+                    valid_meta.append({
+                        "name": feature_name,
+                        "units": units,
+                        "description": desc,
+                        "stats": {
+                            "min": float(np.nanmin(result_map)), 
+                            "max": float(np.nanmax(result_map)),
+                            "mean": float(np.nanmean(result_map))
+                        }
+                    })
+
+                if not valid_maps:
+                    raise ValueError("No valid maps were generated (all failed shape check, NaN check, or Visual QC).")
+
+                # G. Final State Update
+                # Stack maps into (H, W, N)
+                state["final_abundance_maps"] = np.stack(valid_maps, axis=-1)
                 
-                # Store Metadata for Final Report
-                state["custom_analysis_metadata"] = {
-                    "name": name, 
-                    "units": units, 
-                    "description": desc,
-                    "stats": {
-                        "min": float(np.min(result_map)), 
-                        "max": float(np.max(result_map)),
-                        "mean": float(np.mean(result_map))
-                    }
-                }
+                # Store List of Metadata (UPDATED: This is now a list, downstream must handle it)
+                state["custom_analysis_metadata_list"] = valid_meta 
                 
                 state["method_used"] = "Dynamic Code Generation"
-                # Stop further branching - we have drilled down as far as possible
                 state["new_tasks"] = [] 
                 
+                self.logger.info(f"  ✅ Dynamic Analysis Complete. Generated {len(valid_maps)} maps.")
                 return state
 
             except Exception as e:
-                # G. Self-Correction Loop
                 error_msg = traceback.format_exc()
-                # If it was a Visual QC error, use just the critique, not the full traceback
-                if "Visual QC Failed" in str(e):
-                    error_msg = str(e)
-                
+                if "Visual QC" in str(e): error_msg = str(e)
                 self.logger.warning(f"  ❌ Code/QC failed: {str(e)}")
                 retries += 1
-                
-                # Feed error back to prompt
                 current_prompt = base_prompt + f"\n\n### ❌ PREVIOUS CODE FAILED\nCritique:\n```text\n{error_msg}\n```\nFix the logic/math to address this critique and regenerate JSON."
         
-        # H. Fallback
-        self.logger.warning("⚠️ Dynamic Analysis failed after max retries. Falling back to Standard NMF.")
+        self.logger.warning("⚠️ Dynamic Analysis failed after max retries.")
         state["dynamic_analysis_failed"] = True
         return state
 
     def _check_result_visually(self, map_data, feature_desc):
-        """
-        Asks the LLM to look at the generated heatmap and judge its quality.
-        Returns: (is_valid: bool, critique: str)
-        """
-        # Render temp image for the LLM
         plot_bytes = self._create_annotated_heatmap(map_data, "Validation Check", "a.u.", "", "")
-        
         check_prompt = [
             f"You are a Quality Assurance Scientist. You just wrote code to map '{feature_desc}'.",
             "Below is the resulting map generated by your code.",
@@ -1506,56 +1513,25 @@ class RunDynamicAnalysisController:
             "- 'critique': string (If invalid, explain WHY so the coder can fix it.)"
         ]
         check_prompt.append({"mime_type": "image/jpeg", "data": plot_bytes})
-        
         try:
             resp = self.model.generate_content(check_prompt, generation_config={"response_mime_type": "application/json"})
             result, _ = self._parse_llm_response(resp)
             return result.get("valid", True), result.get("critique", "")
         except:
-            # If the vision check crashes, we fail open (assume valid) to avoid blocking
-            self.logger.warning("Visual QC API call failed. Assuming valid.")
             return True, ""
 
     def _create_annotated_heatmap(self, data_map, title, units, description, provenance):
-        # Helper to create self-explanatory plots
         fig, ax = plt.subplots(figsize=(8, 6.5))
-        
-        # Robust colormap scaling (ignore outliers for visualization)
         vmin = np.nanpercentile(data_map, 2)
         vmax = np.nanpercentile(data_map, 98)
-        
         im = ax.imshow(data_map, cmap='plasma', vmin=vmin, vmax=vmax)
-        
         cbar = plt.colorbar(im, ax=ax)
         cbar.set_label(f"{title} ({units})", rotation=270, labelpad=20, fontsize=10)
-        
         ax.set_title(f"Dynamic Analysis: {title}", fontsize=12, fontweight='bold', pad=20)
-        
-        # Add Provenance (Breadcrumbs)
         if provenance:
             plt.text(0.5, 1.02, provenance, ha='center', va='bottom', transform=ax.transAxes, fontsize=8, color='blue', alpha=0.7)
-            
         ax.set_xlabel(f"\n{description}", fontsize=9, style='italic', color='#555555')
         ax.set_xticks([]); ax.set_yticks([])
-        
-        buf = BytesIO()
-        plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
-        plt.close()
-        return buf.getvalue()
-
-    def _create_annotated_heatmap(self, data_map, title, units, description, provenance):
-        # Helper to create self-explanatory plots
-        fig, ax = plt.subplots(figsize=(8, 6.5))
-        im = ax.imshow(data_map, cmap='plasma')
-        
-        cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label(f"{title} ({units})", rotation=270, labelpad=20, fontsize=10)
-        
-        ax.set_title(f"Dynamic Analysis: {title}", fontsize=12, fontweight='bold', pad=20)
-        plt.text(0.5, 1.02, provenance, ha='center', va='bottom', transform=ax.transAxes, fontsize=8, color='blue', alpha=0.7)
-        ax.set_xlabel(f"\n{description}", fontsize=9, style='italic', color='#555555')
-        ax.set_xticks([]); ax.set_yticks([])
-        
         buf = BytesIO()
         plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
         plt.close()
