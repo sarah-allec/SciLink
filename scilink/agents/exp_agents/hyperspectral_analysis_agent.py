@@ -20,13 +20,7 @@ from ...tools.image_processor import load_image, convert_numpy_to_jpeg_bytes # F
 
 class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
-    Refactored agent for analyzing hyperspectral data using a modular,
-    controller-based pipeline.
-    
-    This agent now implements a recursive "survey-then-focus" loop.
-    It runs an analysis, uses an LLM to select a region to "zoom in" on,
-    and re-runs the analysis on that subset. It continues this loop
-    until no further refinement is needed, then synthesizes all results.
+    This agent implements a recursive "survey-then-focus" loop for hyperspectral data analysis.
     """
     
     MAX_REFINEMENT_ITERATIONS = 2 # Global + 2 zoom-ins
