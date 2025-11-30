@@ -380,7 +380,7 @@ def create_validated_component_pair(
         h, w, e = hspy_data.shape
         energy_axis, xlabel, _ = create_energy_axis(e, system_info)
         
-        # --- Data Calculation (Same as before) ---
+        # --- Data Calculation ---
         flat_data = hspy_data.reshape(-1, e)
         flat_abundance = abundance_map.ravel()
         total_weight = np.sum(flat_abundance)

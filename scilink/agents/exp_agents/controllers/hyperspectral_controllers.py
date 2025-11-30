@@ -505,7 +505,6 @@ class CreateAnalysisPlotsController:
             state["analysis_images"].append({"label": plot['label'], "data": plot['bytes']})
 
         # --- 2. Create Summary Grid ---
-        # USES NEW TOOL FUNCTION
         try:
             self.logger.info("  (Tool Info: Stitching validated plots into Summary Grid...)")
             summary_bytes = tools.create_image_grid(validated_bytes_list, self.logger)
@@ -734,8 +733,8 @@ class SelectRefinementTargetController:
             state["refinement_decision"] = {
                 "refinement_needed": is_needed,
                 "reasoning": result_json.get("reasoning", "No reasoning provided."),
-                "targets": final_targets,                # <--- Uses the filtered list
-                "requires_custom_code": requires_custom_code # <--- Critical Flag for next controller
+                "targets": final_targets,                
+                "requires_custom_code": requires_custom_code 
             }
 
             self.logger.info(f"✅ LLM Step Complete: Refinement decision: {state['refinement_decision']['reasoning']}")
@@ -1058,7 +1057,7 @@ class GenerateHTMLReportController:
                     cited_images.append(img)
                     continue
 
-        # --- Deduplicate (Preserve Order) ---
+        # --- Deduplicate ---
         unique_images = []
         seen = set()
         for img in cited_images:
