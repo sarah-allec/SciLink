@@ -463,7 +463,6 @@ class CreateAnalysisPlotsController:
         components = state.get("final_components")
         abundance_maps = state.get("final_abundance_maps")
         
-        # Retrieve the stable iteration title (e.g., "Global_Analysis", "Focused_Analysis_D1_T1")
         iter_title_raw = state.get("iteration_title", "Global_Analysis")
         iter_prefix = _sanitize_filename(iter_title_raw)
 
@@ -471,20 +470,15 @@ class CreateAnalysisPlotsController:
             self.logger.warning("Skipping plot creation: final components/maps not found.")
             return state
 
-        # Output directory setup
         output_dir = self.settings.get('output_dir', 'spectroscopy_output')
-        os.makedirs(output_dir, exist_ok=True)
         
-        # Container for the loop results
         final_plots = []
         validated_bytes_list = [] 
         
-        # --- 1. Generate Validated Pairs for Each Component ---
+        # --- 1. Generate Validated Pairs ---
         self.logger.info(f"Generating Validated Analysis Plots for {components.shape[0]} components...")
         
         for i in range(components.shape[0]):
-            # Use the advanced tool (Map + Spectrum/Variance + Residual)
-            # Pass state["system_info"] so axes are in eV!
             plot_bytes = tools.create_validated_component_pair(
                 state["hspy_data"], 
                 components[i], 
@@ -495,103 +489,66 @@ class CreateAnalysisPlotsController:
             )
             
             if plot_bytes:
-                # Semantic Label: e.g., "Component 1 Analysis"
                 label = f"Component {i+1} Analysis"
-                
-                # Store for prompt context
-                final_plots.append({
-                    'label': label,
-                    'bytes': plot_bytes
-                })
-                
-                # Store for grid stitching
+                final_plots.append({'label': label, 'bytes': plot_bytes})
                 validated_bytes_list.append(plot_bytes)
                 
-                # Save individual file to disk (for debugging/user access)
-                try:
-                    label_safe = _sanitize_filename(label)
-                    filename = f"{iter_prefix}_{label_safe}.jpeg"
-                    filepath = os.path.join(output_dir, filename)
-                    with open(filepath, 'wb') as f:
-                        f.write(plot_bytes)
-                except Exception as e:
-                    self.logger.warning(f"Failed to save plot {label}: {e}")
+                # Save using tool
+                label_safe = _sanitize_filename(label)
+                tools.save_image_bytes(
+                    plot_bytes, output_dir, 
+                    f"{iter_prefix}_{label_safe}.jpeg", self.logger
+                )
 
-        # Store in state for the Prompt Builder
         state["component_pair_plots"] = final_plots
-        
-        # Add to the global 'analysis_images' list so the Final Report sees them
         for plot in final_plots:
-            state["analysis_images"].append({
-                "label": plot['label'],
-                "data": plot['bytes']
-            })
+            state["analysis_images"].append({"label": plot['label'], "data": plot['bytes']})
 
-        # --- 2. Create Summary Grid (Stitching) ---
-        # Instead of a basic NMF grid, we stitch the high-detail validation plots
-        # so the Executive Summary shows the residuals immediately.
+        # --- 2. Create Summary Grid ---
+        # USES NEW TOOL FUNCTION
         try:
             self.logger.info("  (Tool Info: Stitching validated plots into Summary Grid...)")
-            summary_bytes = _create_grid_from_images(validated_bytes_list, self.logger)
+            summary_bytes = tools.create_image_grid(validated_bytes_list, self.logger)
 
             if summary_bytes:
                 label = "NMF Summary Grid"
-                label_safe = _sanitize_filename(label)
-                filename = f"{iter_prefix}_{label_safe}.jpeg"
-                filepath = os.path.join(output_dir, filename)
+                tools.save_image_bytes(
+                    summary_bytes, output_dir, 
+                    f"{iter_prefix}_{_sanitize_filename(label)}.jpeg", self.logger
+                )
                 
-                with open(filepath, 'wb') as f:
-                    f.write(summary_bytes)
-                self.logger.info(f"📸 Saved NMF summary plot to: {filepath}")
-
-                state["analysis_images"].append({
-                    "label": label, 
-                    "data": summary_bytes
-                })
+                state["analysis_images"].append({"label": label, "data": summary_bytes})
 
         except Exception as e:
             self.logger.warning(f"Failed to create/save NMF summary plot: {e}")
 
-        # --- 3. Structure Overlays (Optional) ---
-        # This overlays the NMF maps onto a STEM/SEM image if provided
+        # --- 3. Structure Overlays ---
         if state.get("structure_image_path"):
             try:
+                # Load image (Controller logic)
                 structure_img = load_image(state["structure_image_path"])
                 if structure_img.ndim == 3:
-                    structure_img_gray = cv2.cvtColor(structure_img, cv2.COLOR_RGB2GRAY)
-                else:
-                    structure_img_gray = structure_img
+                    structure_img = cv2.cvtColor(structure_img, cv2.COLOR_RGB2GRAY)
                 
-                # Create overlays (e.g. Top 15% of abundance colored over the structure)
+                # Create (Tool logic)
                 overlay_bytes = tools.create_multi_abundance_overlays(
-                    structure_img_gray, 
-                    abundance_maps,
-                    threshold_percentile=85.0 
+                    structure_img, abundance_maps, threshold_percentile=85.0 
                 )
                 state["structure_overlay_bytes"] = overlay_bytes
                 
                 if overlay_bytes:
                     label = "Structure-Abundance Overlays"
-                    label_safe = _sanitize_filename(label)
-                    filename = f"{iter_prefix}_{label_safe}.jpeg"
-                    filepath = os.path.join(output_dir, filename)
-
-                    with open(filepath, 'wb') as f:
-                        f.write(overlay_bytes)
-                    self.logger.info(f"📸 Saved structure overlay plot to: {filepath}")
-                    
-                    state["analysis_images"].append({
-                        "label": label,
-                        "data": overlay_bytes
-                    })
+                    tools.save_image_bytes(
+                        overlay_bytes, output_dir, 
+                        f"{iter_prefix}_{_sanitize_filename(label)}.jpeg", self.logger
+                    )
+                    state["analysis_images"].append({"label": label, "data": overlay_bytes})
                 
             except Exception as e:
                 self.logger.warning(f"Failed to create structure overlays: {e}")
-                state["structure_overlay_bytes"] = None
 
         self.logger.info("✅ Tool Complete: Final analysis plots created and saved.")
-        return state
-    
+        return state    
 
 class BuildHyperspectralPromptController:
     """
@@ -805,9 +762,6 @@ class GenerateRefinementTasksController:
     """
     [🛠️ Tool Step]
     Takes the list of targets from the LLM and generates new tasks.
-    
-    Updated: Generates structured, short IDs for task titles
-    (e.g., Focused_Analysis_D1_T1) instead of long descriptions.
     """
     MIN_SPECTRAL_CHANNELS = 10 
 
@@ -862,27 +816,22 @@ class GenerateRefinementTasksController:
                     energy_axis, _, _ = tools.create_energy_axis(e, state["system_info"])
                     
                     # 2. Find the closest integer indices for these physical values
-                    # argmin(abs(axis - target)) finds the index of the closest value
-                    start_idx = (np.abs(energy_axis - target_start_ev)).argmin()
-                    end_idx = (np.abs(energy_axis - target_end_ev)).argmin()
-                    
-                    # Ensure start < end
-                    if start_idx > end_idx:
-                        start_idx, end_idx = end_idx, start_idx
-                    
-                    # Guardrail: Ensure reasonable slice width
-                    if end_idx - start_idx < self.MIN_SPECTRAL_CHANNELS:
-                        # Pad slightly if the LLM zoomed in too tight
-                        padding = self.MIN_SPECTRAL_CHANNELS // 2
-                        start_idx = max(0, start_idx - padding)
-                        end_idx = min(e, end_idx + padding)
+                    start_idx, end_idx = tools.convert_energy_to_indices(
+                        energy_axis, 
+                        target_start_ev, 
+                        target_end_ev, 
+                        min_channels=self.MIN_SPECTRAL_CHANNELS
+                    )
 
                     # 3. Perform the slicing using INDICES
                     # Note: We pass the indices to the tool, NOT the physical values
+                    # Use the calculated safe indices to get safe physical range for the tool
+                    safe_physical_range = [energy_axis[start_idx], energy_axis[end_idx]]
+
                     new_data, _ = tools.apply_spectral_slice(
                         state["original_hspy_data"], 
                         state["system_info"], 
-                        [energy_axis[start_idx], energy_axis[end_idx]] # tool expects physical range
+                        safe_physical_range
                     )
 
                     # 4. Update System Info with the NEW Physical Range
@@ -1285,7 +1234,6 @@ class GenerateHTMLReportController:
 class RunDynamicAnalysisController:
     """
     [🧠 + 💻] The 'Code Interpreter' / 'Dynamic Analyst'.
-
     """
     MAX_RETRIES = 5
 
@@ -1393,7 +1341,7 @@ class RunDynamicAnalysisController:
                     "Feature_Name_2": np.ndarray   # 2D map ({h}, {w}) (Optional, if multiple features exist)
                 }},
                 
-                "units": {{                
+                "units": {{                 
                 "Feature_Name_1": "nm",
                 "Feature_Name_2": "a.u."
                 }},    
@@ -1493,18 +1441,10 @@ class RunDynamicAnalysisController:
                         elif isinstance(raw_units, str):
                             current_unit = raw_units # Fallback to global string
 
-                        plot_bytes = self._create_annotated_heatmap(result_map, feature_name, current_unit)
-
-                        # Save Image File
+                        plot_bytes = tools.create_annotated_heatmap(result_map, feature_name, current_unit)
                         safe_feat = _sanitize_filename(feature_name)
                         img_filename = f"{iter_title}_T{i}_{safe_feat}_{timestamp}.jpeg"
-                        img_path = os.path.join(output_dir, img_filename)
-                        try:
-                            with open(img_path, "wb") as f:
-                                f.write(plot_bytes)
-                            self.logger.info(f"    📸 Saved image to: {img_filename}")
-                        except Exception as e:
-                            self.logger.warning(f"    Failed to save image file: {e}")
+                        tools.save_image_bytes(plot_bytes, output_dir, img_filename, self.logger)
 
                         # Add to state for Report
                         if "analysis_images" not in state: state["analysis_images"] = []
@@ -1559,7 +1499,8 @@ class RunDynamicAnalysisController:
         return state
 
     def _check_result_visually(self, map_data, feature_desc):
-        plot_bytes = self._create_annotated_heatmap(map_data, "Validation Check", "a.u.")
+        plot_bytes = tools.create_annotated_heatmap(map_data, "Validation Check", "a.u.")
+        
         check_prompt = [
             f"You are a Quality Assurance Scientist. You just wrote code to map '{feature_desc}'.",
             "Below is the resulting map generated by your code.",
@@ -1579,42 +1520,6 @@ class RunDynamicAnalysisController:
             return result.get("valid", True), result.get("critique", "")
         except:
             return True, ""
-
-    def _create_annotated_heatmap(self, data_map, title, units):
-        """
-        Creates a clean, publication-quality heatmap without cluttering text overlays.
-        """
-        # Slightly larger figure for clarity
-        fig, ax = plt.subplots(figsize=(8, 6))
-        
-        # Robust scaling to handle outliers (2nd to 98th percentile)
-        vmin = np.nanpercentile(data_map, 2)
-        vmax = np.nanpercentile(data_map, 98)
-        
-        # Plot Data
-        im = ax.imshow(data_map, cmap='plasma', vmin=vmin, vmax=vmax, origin='upper')
-        
-        # Clean Colorbar
-        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label(f"{units}", rotation=270, labelpad=15, fontsize=12)
-        cbar.ax.tick_params(labelsize=10)
-        
-        # Title only (Large and bold)
-        clean_title = title.replace("_", " ")
-        ax.set_title(f"{clean_title}", fontsize=14, fontweight='bold', pad=12)
-        
-        # Remove axes ticks for a cleaner look
-        ax.set_xticks([])
-        ax.set_yticks([])
-        
-        # Remove the border spine for a modern look
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-
-        buf = BytesIO()
-        plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
-        plt.close()
-        return buf.getvalue()
     
 
 class RunSelfReflectionController:

@@ -1,3 +1,4 @@
+import os
 import logging
 import numpy as np
 import matplotlib.pyplot as plt
@@ -450,3 +451,141 @@ def create_validated_component_pair(
     except Exception as e:
         logger.error(f"Failed to create validated pair: {e}")
         return None
+    
+
+def save_image_bytes(image_bytes: bytes, output_dir: str, filename: str, logger: logging.Logger = None) -> str:
+    """
+    Helper to save image bytes to disk. Returns the full filepath.
+    """
+    if not image_bytes:
+        return None
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, filename)
+        with open(filepath, 'wb') as f:
+            f.write(image_bytes)
+        if logger:
+            logger.info(f"📸 Saved image to: {filepath}")
+        return filepath
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to save image {filename}: {e}")
+        return None
+
+def create_image_grid(image_bytes_list: list, logger: logging.Logger = None) -> bytes:
+    """
+    Stitches a list of JPEG bytes into a single grid image using OpenCV.
+    """
+    if not image_bytes_list:
+        return None
+        
+    try:
+        # Decode all images
+        images = []
+        for b in image_bytes_list:
+            nparr = np.frombuffer(b, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                images.append(img)
+        
+        if not images:
+            return None
+
+        n_imgs = len(images)
+        
+        # If only one, return it directly (re-encoded to ensure consistency)
+        if n_imgs == 1:
+            return image_bytes_list[0]
+
+        # Determine grid size (target ~2 columns)
+        cols = 2
+        rows = (n_imgs + cols - 1) // cols
+        
+        # Find max dimensions to standardize cells
+        max_h = max(img.shape[0] for img in images)
+        max_w = max(img.shape[1] for img in images)
+        
+        # Create blank canvas (White background)
+        grid_h = rows * max_h
+        grid_w = cols * max_w
+        grid_img = np.zeros((grid_h, grid_w, 3), dtype=np.uint8) + 255 
+        
+        for idx, img in enumerate(images):
+            r = idx // cols
+            c = idx % cols
+            
+            # Resize current img to fit cell (centering logic)
+            h, w = img.shape[:2]
+            y_offset = r * max_h + (max_h - h) // 2
+            x_offset = c * max_w + (max_w - w) // 2
+            
+            grid_img[y_offset:y_offset+h, x_offset:x_offset+w] = img
+            
+        # Encode back to jpeg
+        retval, buf = cv2.imencode('.jpg', grid_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return buf.tobytes()
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"Failed to stitch validation grid: {e}")
+        return None
+
+def create_annotated_heatmap(data_map: np.ndarray, title: str, units: str) -> bytes:
+    """
+    Creates a clean, publication-quality heatmap.
+    Moved from RunDynamicAnalysisController.
+    """
+    # Slightly larger figure for clarity
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Robust scaling to handle outliers (2nd to 98th percentile)
+    vmin = np.nanpercentile(data_map, 2)
+    vmax = np.nanpercentile(data_map, 98)
+    
+    # Plot Data
+    im = ax.imshow(data_map, cmap='plasma', vmin=vmin, vmax=vmax, origin='upper')
+    
+    # Clean Colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label(f"{units}", rotation=270, labelpad=15, fontsize=12)
+    cbar.ax.tick_params(labelsize=10)
+    
+    # Title only (Large and bold)
+    clean_title = title.replace("_", " ")
+    ax.set_title(f"{clean_title}", fontsize=14, fontweight='bold', pad=12)
+    
+    # Remove axes ticks for a cleaner look
+    ax.set_xticks([])
+    ax.set_yticks([])
+    
+    # Remove the border spine for a modern look
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    buf = BytesIO()
+    plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
+    plt.close()
+    return buf.getvalue()
+
+def convert_energy_to_indices(
+    energy_axis: np.ndarray, 
+    target_start: float, 
+    target_end: float, 
+    min_channels: int = 10
+) -> tuple[int, int]:
+    """
+    Calculates array indices from physical energy values.
+    """
+    start_idx = (np.abs(energy_axis - target_start)).argmin()
+    end_idx = (np.abs(energy_axis - target_end)).argmin()
+    
+    if start_idx > end_idx:
+        start_idx, end_idx = end_idx, start_idx
+        
+    # Guardrail: Padding
+    if end_idx - start_idx < min_channels:
+        padding = min_channels // 2
+        start_idx = max(0, start_idx - padding)
+        end_idx = min(len(energy_axis), end_idx + padding)
+        
+    return start_idx, end_idx
