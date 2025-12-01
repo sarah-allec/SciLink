@@ -6,6 +6,7 @@ from io import BytesIO
 from .spectral_unmixer import SpectralUnmixer
 from .image_processor import create_multi_abundance_overlays
 import matplotlib.gridspec as gridspec
+from sklearn.decomposition import PCA
 import cv2
 
 def run_spectral_unmixing(
@@ -651,3 +652,73 @@ def create_feature_dashboard(data_map: np.ndarray, feature_name: str, units: str
     plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
     plt.close()
     return buf.getvalue()
+
+
+def estimate_global_snr(hspy_data: np.ndarray) -> float:
+    """
+    Estimates SNR using the standard deviation of spectral derivatives.
+    Returns a float (e.g., 50.0 is clean, 3.0 is noisy).
+    """
+    # Flatten spatial dims: (Pixels, Energy)
+    h, w, c = hspy_data.shape
+    flat_data = hspy_data.reshape(-1, c)
+    
+    # 1. Estimate Signal Strength (Mean of global average spectrum)
+    # We take the mean of the data (simple approximation)
+    signal_mean = np.mean(flat_data)
+    if signal_mean <= 0: return 0.0
+
+    # 2. Estimate Noise (Std Dev of the derivative)
+    # diff(axis=1) removes slow-moving signal, leaving mostly high-freq noise
+    noise_est = np.std(np.diff(flat_data, axis=1)) / np.sqrt(2)
+    
+    if noise_est <= 0: return 100.0 # Perfect signal
+
+    return float(signal_mean / noise_est)
+
+def get_optimal_analysis_data(hspy_data: np.ndarray) -> tuple[np.ndarray, str]:
+    """
+    Decides between Raw vs. PCA-Cleaned data based on SNR.
+    """
+    snr = estimate_global_snr(hspy_data)
+    
+    # 1. PRISTINE DATA (SNR > 50)
+    # If the signal is 50x stronger than noise, curve_fit usually works fine on Raw.
+    # We trust the physics here.
+    if snr >= 50.0:
+        return hspy_data, f"Raw Data (High Quality, SNR={snr:.1f})"
+        
+    # 2. THE MIDDLE GROUND (SNR 15 - 50) 
+    # Data is good, but has 'shot noise' (jitter). 
+    # We keep 99.9% variance. This deletes the "fuzz" but keeps all signal shapes.
+    elif snr >= 15.0:
+        threshold = 0.999 
+        method = "PCA (Gentle)"
+        
+    # 3. STANDARD NOISE (SNR 5 - 15)
+    # Needs standard cleaning to prevent fit failures.
+    elif snr >= 5.0:
+        threshold = 0.99
+        method = "PCA (Standard)"
+
+    # 4. HIGH NOISE (SNR < 5)
+    # Garbage in, garbage out. We must scrub hard to get anything useful.
+    else:
+        threshold = 0.90
+        method = "PCA (Aggressive)"
+        
+    try:
+        h, w, c = hspy_data.shape
+        flat = hspy_data.reshape(-1, c)
+        
+        # Determine N components dynamically based on variance
+        pca = PCA(n_components=threshold)
+        transformed = pca.fit_transform(flat)
+        reconstructed = pca.inverse_transform(transformed).reshape(h, w, c)
+        
+        n_kept = pca.n_components_
+        note = f"Denoised (SNR={snr:.1f}). Applied {method} (Kept {n_kept} comps, {threshold*100}% variance)."
+        return reconstructed, note
+        
+    except Exception as e:
+        return hspy_data, f"Raw Data (Denoising failed: {e})"

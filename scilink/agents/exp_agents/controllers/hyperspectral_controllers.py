@@ -1291,6 +1291,9 @@ class RunDynamicAnalysisController:
         all_valid_maps = []
         all_valid_meta = []
 
+        optimal_data, processing_note = tools.get_optimal_analysis_data(state["hspy_data"])
+        self.logger.info(f"📊 Dynamic Analysis Prep: {processing_note}")
+        
         # --- MAIN LOOP: Process each target description separately ---
         for i, target in enumerate(custom_targets, 1):
             target_desc = target.get("description", "Analyze feature")
@@ -1335,6 +1338,12 @@ class RunDynamicAnalysisController:
             1. Reshapes data to (pixels, energy).
             2. Implements the specific math required.
             3. Returns a DICTIONARY containing the results.
+
+            ### ADDITIONAL NOTES
+            The variable `hspy_data` passed to your function contains: **{processing_note}**.
+            However, even with pre-processing, experimental data often contains high-frequency shot noise (jitter).
+            If you are performing derivative-based operations (like `find_peaks` or `curve_fit`), it is advisable to apply a light smoothing filter
+            (e.g., `gaussian_filter(..., sigma=1-2)`) to ensure convergence.
 
             ### REQUIRED RETURN FORMAT
             {{
@@ -1396,7 +1405,7 @@ class RunDynamicAnalysisController:
                     # --- D. RUN ON DATA ---
                     self.logger.info("    Executing generated code...")
                     func = local_scope["analyze_feature"]
-                    result_dict = func(state["hspy_data"], state["energy_axis"])
+                    result_dict = func(optimal_data, state["energy_axis"])
                     
                     # Validation
                     if not isinstance(result_dict, dict): raise ValueError("Function return must be a dict.")
@@ -1455,7 +1464,7 @@ class RunDynamicAnalysisController:
                                 current_run_valid_meta.append({
                                     "name": feature_name,
                                     "units": current_unit,
-                                    "description": desc,
+                                    "description": f"{desc}. [Data Source: {processing_note}]",
                                     "stats": {
                                         "min": float(np.nanmin(result_map)), 
                                         "max": float(np.nanmax(result_map)),
