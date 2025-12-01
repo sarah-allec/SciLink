@@ -1425,46 +1425,52 @@ class RunDynamicAnalysisController:
                             self.logger.warning(f"    Skipping {feature_name}: Map contains only NaNs.")
                             continue
 
-                        # E. Visual QC
-                        self.logger.info(f"    👀 Performing Visual QC on {feature_name}...")
-                        qc_result, qc_critique = self._check_result_visually(result_map, f"{target_desc} ({feature_name})")
-                        
-                        if not qc_result:
-                            self.logger.warning(f"    Visual QC Rejected {feature_name}: {qc_critique}")
-                            continue
-
-                        # F. Visualization & Saving
+                        # --- 1. DETERMINE UNITS & NAMES FIRST (Fixes UnboundLocalError) ---
                         current_unit = "a.u."
                         if isinstance(raw_units, dict):
-                            current_unit = raw_units.get(feature_name, "a.u.") # Lookup by name
+                            current_unit = raw_units.get(feature_name, "a.u.")
                         elif isinstance(raw_units, str):
-                            current_unit = raw_units # Fallback to global string
+                            current_unit = raw_units
 
-                        plot_bytes = tools.create_annotated_heatmap(result_map, feature_name, current_unit)
                         safe_feat = _sanitize_filename(feature_name)
-                        img_filename = f"{iter_title}_T{i}_{safe_feat}_{timestamp}.jpeg"
-                        tools.save_image_bytes(plot_bytes, output_dir, img_filename, self.logger)
 
-                        # Add to state for Report
-                        if "analysis_images" not in state: state["analysis_images"] = []
-                        state["analysis_images"].append({
-                            "label": f"Custom Analysis: {feature_name}",
-                            "data": plot_bytes
-                        })
+                        # --- 2. GENERATE DASHBOARD ---
+                        dashboard_bytes = tools.create_feature_dashboard(result_map, feature_name, current_unit)
 
-                        # Collect Valid Data
-                        all_valid_maps.append(result_map)
-                        all_valid_meta.append({
-                            "name": feature_name,
-                            "units": current_unit,
-                            "description": desc,
-                            "stats": {
-                                "min": float(np.nanmin(result_map)), 
-                                "max": float(np.nanmax(result_map)),
-                                "mean": float(np.nanmean(result_map))
-                            }
-                        })
-                        any_map_valid = True
+                        if dashboard_bytes:
+                            # --- 3. VISUAL QC (On the Dashboard) ---
+                            self.logger.info(f"    👀 Performing Visual QC on {feature_name}...")
+                            qc_result, qc_critique = self._check_result_visually(dashboard_bytes, f"{target_desc} ({feature_name})")
+                            
+                            if not qc_result:
+                                self.logger.warning(f"    ❌ QC Failed: {qc_critique}")
+                                # Trigger retry by raising error
+                                raise ValueError(f"Visual QC rejected the result. Critique: {qc_critique}")
+
+                            # --- 4. SAVE & STORE (Only if QC Passed) ---
+                            filename = f"{iter_title}_T{i}_{safe_feat}_Dashboard_{timestamp}.jpeg"
+                            tools.save_image_bytes(dashboard_bytes, output_dir, filename, self.logger)
+
+                            # Add to Agent Memory
+                            if "analysis_images" not in state: state["analysis_images"] = []
+                            state["analysis_images"].append({
+                                "label": f"Custom Analysis: {feature_name}", 
+                                "data": dashboard_bytes
+                            })
+
+                            # Collect Valid Data
+                            all_valid_maps.append(result_map)
+                            all_valid_meta.append({
+                                "name": feature_name,
+                                "units": current_unit,
+                                "description": desc,
+                                "stats": {
+                                    "min": float(np.nanmin(result_map)), 
+                                    "max": float(np.nanmax(result_map)),
+                                    "mean": float(np.nanmean(result_map))
+                                }
+                            })
+                            any_map_valid = True
 
                     if not any_map_valid:
                         raise ValueError("No valid maps generated from this script (QC or Shape failures).")
@@ -1474,7 +1480,7 @@ class RunDynamicAnalysisController:
 
                 except Exception as e:
                     error_msg = traceback.format_exc()
-                    if "Visual QC" in str(e): error_msg = str(e)
+                    if "Visual QC" in str(e): error_msg = str(e) # Keep QC message clean
                     self.logger.warning(f"    ❌ Code/QC failed for Task {i}: {str(e)}")
                     retries += 1
                     current_prompt = base_prompt + f"\n\n### ❌ PREVIOUS CODE FAILED\nCritique:\n```text\n{error_msg}\n```\nFix the logic/math to address this critique and regenerate JSON."
@@ -1497,27 +1503,45 @@ class RunDynamicAnalysisController:
         self.logger.info(f"✅ Dynamic Analysis Complete. Total unique maps generated: {len(all_valid_maps)}")
         return state
 
-    def _check_result_visually(self, map_data, feature_desc):
-        plot_bytes = tools.create_annotated_heatmap(map_data, "Validation Check", "a.u.")
-        
+    def _check_result_visually(self, dashboard_bytes: bytes, feature_desc: str) -> tuple[bool, str]:
+        """
+        Judge the Dashboard (Map + Histogram)
+        """
         check_prompt = [
-            f"You are a Quality Assurance Scientist. You just wrote code to map '{feature_desc}'.",
-            "Below is the resulting map generated by your code.",
-            "Does this look like a valid physical result?",
-            "\n**Failure Criteria:**",
-            "- Is the map completely empty (all one color)?",
-            "- Is it pure 'salt-and-pepper' static noise?",
-            "- Does it look like a hard error (e.g., distinct rectangular artifacts of 0 vs NaN)?",
-            "\nReturn a JSON with:",
+            f"You are a Quality Assurance Scientist. You wrote code to model the feature: '{feature_desc}'.",
+            "Below is the resulting 'Feature Dashboard' generated by your code.",
+            "The **LEFT Panel** is the Spatial Map. The **RIGHT Panel** is the Statistical Histogram.",
+            
+            "\n### YOUR TASK",
+            "Determine if this result represents a REAL physical feature or an ALGORITHM FAILURE.",
+            
+            "\n### FAILURE CRITERIA (Reject if ANY are true):",
+            "1. **Map Failure (Left):** Is it pure 'salt-and-pepper' static noise with no structure? Is it completely empty/constant?",
+            "2. **Histogram Failure (Right):** Is it a single sharp spike (Dirac delta)? This means the code output a constant value.",
+            "3. **Complete Rail-Gazing:** The data is piled up at the min/max edges with **NO secondary distribution** visible. (i.e., The algorithm failed everywhere).",
+            "4. **Artifacts:** Are there distinct rectangular blocks of NaN/Zeros that look like processing errors?",
+            
+            "\n### OUTPUT FORMAT",
+            "Return a JSON object with:",
             "- 'valid': boolean",
-            "- 'critique': string (If invalid, explain WHY so the coder can fix it.)"
+            "- 'critique': string (If invalid, explain clear which panel failed and WHY, so the coder can fix the logic.)"
         ]
-        check_prompt.append({"mime_type": "image/jpeg", "data": plot_bytes})
+        
+        # Pass the bytes directly
+        check_prompt.append({"mime_type": "image/jpeg", "data": dashboard_bytes})
+        
         try:
-            resp = self.model.generate_content(check_prompt, generation_config={"response_mime_type": "application/json"})
+            # Use low temp for strictness
+            config = GenerationConfig(response_mime_type="application/json", temperature=0.1)
+            resp = self.model.generate_content(
+                check_prompt, 
+                generation_config=config,
+                safety_settings=self.safety_settings
+            )
             result, _ = self._parse_llm_response(resp)
             return result.get("valid", True), result.get("critique", "")
-        except:
+        except Exception as e:
+            self.logger.warning(f"QC check crashed: {e}")
             return True, ""
     
 
