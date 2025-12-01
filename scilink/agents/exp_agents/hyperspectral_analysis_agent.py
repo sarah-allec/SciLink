@@ -30,7 +30,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                  spectral_unmixing_settings: dict | None = None,
                  run_preprocessing: bool = True,
                  output_dir: str = "spectroscopy_output",
-                 enable_human_feedback: bool = False):
+                 enable_human_feedback: bool = True):
         
         BaseAnalysisAgent.__init__(self, google_api_key, model_name, local_model)
         SimpleFeedbackMixin.__init__(self, enable_human_feedback=enable_human_feedback)
