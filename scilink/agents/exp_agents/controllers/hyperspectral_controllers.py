@@ -1233,8 +1233,10 @@ class GenerateHTMLReportController:
 class RunDynamicAnalysisController:
     """
     [🧠 + 💻] The 'Code Interpreter' / 'Dynamic Analyst'.
+    Generates, executes, and validates Python code to model spectral features.
     """
     MAX_RETRIES = 5
+    SUCCESS_THRESHOLD = 0.5  # If >50% of maps in a script pass QC, accept the run.
 
     def __init__(self, model, logger, generation_config, safety_settings, parse_fn):
         self.model = model
@@ -1305,6 +1307,7 @@ class RunDynamicAnalysisController:
             ### 1. DATA CONTEXT
             - Input Data `hspy_data`: Shape ({h}, {w}, {e}) (Numpy array)
             - X-Axis `axis`: Shape ({e},) (Numpy array). **Units: {axis_units}**
+            - **Axis Range:** {state['energy_axis'][0]:.2f} to {state['energy_axis'][-1]:.2f} {axis_units}
 
             ### 2. EXECUTION ENVIRONMENT (STRICT)
             Your code will run in a restricted `exec()` sandbox. 
@@ -1326,6 +1329,7 @@ class RunDynamicAnalysisController:
             3. **Standard Math:** Use `np.exp`, `np.log`, etc., instead of the `math` library.
             4. **Return Format:** You must return a dictionary, not a print statement or a plot.
 
+
             ### 4. YOUR GOAL
             Write a function `analyze_feature(data, axis)` that:
             1. Reshapes data to (pixels, energy).
@@ -1333,24 +1337,22 @@ class RunDynamicAnalysisController:
             3. Returns a DICTIONARY containing the results.
 
             ### REQUIRED RETURN FORMAT
-            The function must return a Python dictionary with this structure:
             {{
                 "maps": {{
-                    "Feature_Name_1": np.ndarray,  # 2D map ({h}, {w})
-                    "Feature_Name_2": np.ndarray   # 2D map ({h}, {w}) (Optional, if multiple features exist)
+                    "Feature_Name_1": np.ndarray, 
+                    "Feature_Name_2": np.ndarray
                 }},
-                
                 "units": {{                 
-                "Feature_Name_1": "nm",
-                "Feature_Name_2": "a.u."
+                    "Feature_Name_1": "{axis_units}",
+                    "Feature_Name_2": "a.u."
                 }},    
-                "description": str
+                "description": "Brief physics explanation"
             }}
 
             ### RESPONSE FORMAT
             Return a JSON object with:
-            - "code": The valid Python code string containing the function `analyze_feature`.
-            - "explanation": Brief physics logic.
+            - "code": The valid Python code string.
+            - "explanation": Brief logic summary.
             """
 
             current_prompt = base_prompt
@@ -1359,13 +1361,20 @@ class RunDynamicAnalysisController:
 
             while retries < self.MAX_RETRIES:
                 try:
-                    # A. Generate Code
+                    # --- A. CLEAN SLATE FOR THIS ATTEMPT ---
+                    # Prevents "Ghost Data" from failed previous attempts accumulating
+                    current_run_valid_images = []
+                    current_run_valid_maps = []
+                    current_run_valid_meta = []
+                    qc_failures = []
+
+                    # --- B. GENERATE CODE ---
                     self.logger.info(f"    (Attempt {retries+1}) Asking LLM to write code...")
                     response = self.model.generate_content(current_prompt, generation_config=self.generation_config)
                     result_json, _ = self._parse_llm_response(response)
                     code_str = result_json.get("code", "")
                     
-                    # B. Sandbox Execution setup (Reset for each task)
+                    # --- C. SANDBOX SETUP ---
                     local_scope = {}
                     global_scope = {
                         "np": np,
@@ -1384,48 +1393,40 @@ class RunDynamicAnalysisController:
                     if "analyze_feature" not in local_scope:
                         raise ValueError("Function 'analyze_feature' was not found in generated code.")
                     
-                    # C. Run Analysis on Real Data
+                    # --- D. RUN ON DATA ---
                     self.logger.info("    Executing generated code...")
                     func = local_scope["analyze_feature"]
                     result_dict = func(state["hspy_data"], state["energy_axis"])
                     
-                    # D. Code Output Validation
+                    # Validation
                     if not isinstance(result_dict, dict): raise ValueError("Function return must be a dict.")
-                    
                     maps_dict = result_dict.get("maps")
                     if not maps_dict or not isinstance(maps_dict, dict):
-                        raise ValueError("Return dict must contain a 'maps' key with a dictionary of 2D arrays.")
+                        raise ValueError("Return dict must contain a 'maps' key.")
 
-                    # --- SAVE THE SCRIPT ---
-                    safe_task_name = _sanitize_filename(target_desc)[:30] # Limit length
+                    # Save Script (for debugging)
+                    safe_task_name = _sanitize_filename(target_desc)[:30]
                     script_filename = f"{iter_title}_T{i}_{safe_task_name}_{timestamp}.py"
-                    script_path = os.path.join(output_dir, script_filename)
                     try:
-                        with open(script_path, "w", encoding="utf-8") as f:
-                            f.write(f"# Auto-generated Dynamic Analysis Script\n")
-                            f.write(f"# Task: {target_desc}\n")
-                            f.write(f"# Timestamp: {timestamp}\n\n")
-                            f.write(code_str)
-                        self.logger.info(f"    💾 Saved script to: {script_filename}")
-                    except Exception as e:
-                        self.logger.warning(f"    Failed to save script file: {e}")
+                        with open(os.path.join(output_dir, script_filename), "w", encoding="utf-8") as f:
+                            f.write(f"# Auto-generated Script\n# Task: {target_desc}\n\n{code_str}")
+                    except: pass
 
-                    # Iterate through returned maps from THIS script
-                    any_map_valid = False
+                    # --- E. PROCESS MAPS (Dashboard + QC) ---
+                    total_maps_expected = len(maps_dict)
                     raw_units = result_dict.get("units", "a.u.")
                     desc = result_dict.get("description", "")
 
                     for feature_name, result_map in maps_dict.items():
-                        # Shape Check
+                        # Shape/NaN Check
                         if result_map.shape != (h, w): 
-                            self.logger.warning(f"    Skipping {feature_name}: Shape mismatch {result_map.shape}")
+                            self.logger.warning(f"    Skipping {feature_name}: Shape mismatch.")
                             continue
-                        
                         if np.all(np.isnan(result_map)):
                             self.logger.warning(f"    Skipping {feature_name}: Map contains only NaNs.")
                             continue
 
-                        # --- 1. DETERMINE UNITS & NAMES FIRST (Fixes UnboundLocalError) ---
+                        # 1. Determine Units (Fixes UnboundLocalError)
                         current_unit = "a.u."
                         if isinstance(raw_units, dict):
                             current_unit = raw_units.get(feature_name, "a.u.")
@@ -1434,56 +1435,67 @@ class RunDynamicAnalysisController:
 
                         safe_feat = _sanitize_filename(feature_name)
 
-                        # --- 2. GENERATE DASHBOARD ---
+                        # 2. Generate Dashboard (Map + Histogram)
+                        # Assumes tools.create_feature_dashboard exists (as defined in previous turns)
                         dashboard_bytes = tools.create_feature_dashboard(result_map, feature_name, current_unit)
 
                         if dashboard_bytes:
-                            # --- 3. VISUAL QC (On the Dashboard) ---
+                            # 3. Visual QC (Generator-Judge Loop)
                             self.logger.info(f"    👀 Performing Visual QC on {feature_name}...")
-                            qc_result, qc_critique = self._check_result_visually(dashboard_bytes, f"{target_desc} ({feature_name})")
+                            is_valid, critique = self._check_result_visually(dashboard_bytes, f"{target_desc} ({feature_name})")
                             
-                            if not qc_result:
-                                self.logger.warning(f"    ❌ QC Failed: {qc_critique}")
-                                # Trigger retry by raising error
-                                raise ValueError(f"Visual QC rejected the result. Critique: {qc_critique}")
+                            if is_valid:
+                                # STAGE DATA (Do not commit to state yet)
+                                current_run_valid_images.append({
+                                    "label": f"Custom Analysis: {feature_name}", 
+                                    "data": dashboard_bytes,
+                                    "filename": f"{iter_title}_T{i}_{safe_feat}_Dashboard_{timestamp}.jpeg"
+                                })
+                                current_run_valid_maps.append(result_map)
+                                current_run_valid_meta.append({
+                                    "name": feature_name,
+                                    "units": current_unit,
+                                    "description": desc,
+                                    "stats": {
+                                        "min": float(np.nanmin(result_map)), 
+                                        "max": float(np.nanmax(result_map)),
+                                        "mean": float(np.nanmean(result_map))
+                                    }
+                                })
+                            else:
+                                self.logger.warning(f"    ❌ Visual QC rejected {feature_name}: {critique}")
+                                qc_failures.append(f"{feature_name}: {critique}")
 
-                            # --- 4. SAVE & STORE (Only if QC Passed) ---
-                            filename = f"{iter_title}_T{i}_{safe_feat}_Dashboard_{timestamp}.jpeg"
-                            tools.save_image_bytes(dashboard_bytes, output_dir, filename, self.logger)
+                    # --- F. SUCCESS DECISION (Threshold Logic) ---
+                    valid_count = len(current_run_valid_maps)
+                    success_rate = valid_count / total_maps_expected if total_maps_expected > 0 else 0
 
-                            # Add to Agent Memory
+                    if valid_count > 0 and success_rate >= self.SUCCESS_THRESHOLD:                        
+                        status_msg = "✅ Success" if valid_count == total_maps_expected else "⚠️ Partial Success"
+                        self.logger.info(f"    {status_msg} ({valid_count}/{total_maps_expected} passed). Committing valid maps.")
+                        
+                        # 1. COMMIT Valid Images
+                        for img_item in current_run_valid_images:
+                            tools.save_image_bytes(img_item['data'], output_dir, img_item['filename'], self.logger)
                             if "analysis_images" not in state: state["analysis_images"] = []
-                            state["analysis_images"].append({
-                                "label": f"Custom Analysis: {feature_name}", 
-                                "data": dashboard_bytes
-                            })
-
-                            # Collect Valid Data
-                            all_valid_maps.append(result_map)
-                            all_valid_meta.append({
-                                "name": feature_name,
-                                "units": current_unit,
-                                "description": desc,
-                                "stats": {
-                                    "min": float(np.nanmin(result_map)), 
-                                    "max": float(np.nanmax(result_map)),
-                                    "mean": float(np.nanmean(result_map))
-                                }
-                            })
-                            any_map_valid = True
-
-                    if not any_map_valid:
-                        raise ValueError("No valid maps generated from this script (QC or Shape failures).")
-                    
-                    task_success = True
-                    break # Break retry loop on success
+                            state["analysis_images"].append(img_item)
+                        
+                        # 2. COMMIT Data
+                        all_valid_maps.extend(current_run_valid_maps)
+                        all_valid_meta.extend(current_run_valid_meta)
+                        
+                        task_success = True
+                        break # Exit Retry Loop
+                    else:
+                        raise ValueError(f"Too many QC failures ({len(qc_failures)}/{total_maps_expected}). Critiques: {qc_failures}")
 
                 except Exception as e:
                     error_msg = traceback.format_exc()
-                    if "Visual QC" in str(e): error_msg = str(e) # Keep QC message clean
-                    self.logger.warning(f"    ❌ Code/QC failed for Task {i}: {str(e)}")
+                    if "QC failures" in str(e): error_msg = str(e) # Clean message for LLM
+                    
+                    self.logger.warning(f"    ❌ Attempt {retries+1} failed: {error_msg}")
                     retries += 1
-                    current_prompt = base_prompt + f"\n\n### ❌ PREVIOUS CODE FAILED\nCritique:\n```text\n{error_msg}\n```\nFix the logic/math to address this critique and regenerate JSON."
+                    current_prompt = base_prompt + f"\n\n### ❌ PREVIOUS ATTEMPT FAILED\nCritique:\n```text\n{error_msg}\n```\nFix the logic/math to address this critique."
 
             if not task_success:
                 self.logger.error(f"    ⚠️ Task {i} failed after {self.MAX_RETRIES} attempts.")
@@ -1505,33 +1517,38 @@ class RunDynamicAnalysisController:
 
     def _check_result_visually(self, dashboard_bytes: bytes, feature_desc: str) -> tuple[bool, str]:
         """
-        Judge the Dashboard (Map + Histogram)
+        Judge the Dashboard (Map + Histogram) with SPARSE SIGNAL AWARENESS.
         """
         check_prompt = [
             f"You are a Quality Assurance Scientist. You wrote code to model the feature: '{feature_desc}'.",
-            "Below is the resulting 'Feature Dashboard' generated by your code.",
-            "The **LEFT Panel** is the Spatial Map. The **RIGHT Panel** is the Statistical Histogram.",
+            "Below is the resulting 'Feature Dashboard'. Left=Map, Right=Histogram.",
             
             "\n### YOUR TASK",
-            "Determine if this result represents a REAL physical feature or an ALGORITHM FAILURE.",
+            "Determine if this result captures a REAL physical signal, even if that signal is rare or sparse.",
             
-            "\n### FAILURE CRITERIA (Reject if ANY are true):",
-            "1. **Map Failure (Left):** Is it pure 'salt-and-pepper' static noise with no structure? Is it completely empty/constant?",
-            "2. **Histogram Failure (Right):** Is it a single sharp spike (Dirac delta)? This means the code output a constant value.",
-            "3. **Complete Rail-Gazing:** The data is piled up at the min/max edges with **NO secondary distribution** visible. (i.e., The algorithm failed everywhere).",
-            "4. **Artifacts:** Are there distinct rectangular blocks of NaN/Zeros that look like processing errors?",
+            "\n### CRITICAL: HANDLING SPARSE SIGNALS",
+            "In spectroscopy, some features (like impurities) only exist in small regions.",
+            "If the Histogram shows a large pile-up at zero/bounds (background) BUT there is a distinct, smaller population distribution elsewhere, **THIS IS VALID.**",
+            
+            "\n### FAILURE CRITERIA (Reject ONLY if these are true):",
+            "1. **Total Noise:** The map is pure 'static' (salt-and-pepper) with ZERO recognizable structure.",
+            "2. **Total Algorithm Failure:** The histogram is a **SINGLE** sharp spike (Dirac delta) containing 100% of the data.",
+            "3. **Complete Rail-Gazing:** The data is piled up at the min/max edges with **NO secondary distribution** visible.",
+            
+            "\n### SUCCESS CRITERIA (Accept if present):",
+            "- **Structure:** Does the map show ANY structured domains, even if they are small?",
+            "- **Population:** Is there a visible distribution (bell curve, tail, or cluster) separate from the background spike?",
             
             "\n### OUTPUT FORMAT",
             "Return a JSON object with:",
             "- 'valid': boolean",
-            "- 'critique': string (If invalid, explain clear which panel failed and WHY, so the coder can fix the logic.)"
+            "- 'critique': string (Briefly explain decision)"
         ]
         
-        # Pass the bytes directly
         check_prompt.append({"mime_type": "image/jpeg", "data": dashboard_bytes})
         
         try:
-            # Use low temp for strictness
+            # Low temperature for strict consistency
             config = GenerationConfig(response_mime_type="application/json", temperature=0.1)
             resp = self.model.generate_content(
                 check_prompt, 
