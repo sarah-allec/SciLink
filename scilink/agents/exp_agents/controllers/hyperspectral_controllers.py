@@ -2,10 +2,16 @@ import logging
 import numpy as np
 import json
 import os
+import re
 from datetime import datetime
+import base64
 import cv2
 from typing import Callable
 from google.generativeai.types import GenerationConfig
+
+import traceback
+import matplotlib.pyplot as plt
+from io import BytesIO
 
 from ....tools import hyperspectral_tools as tools
 from ....tools.image_processor import load_image
@@ -13,8 +19,10 @@ from ..preprocess import HyperspectralPreprocessingAgent
 from ..instruct import (
     COMPONENT_INITIAL_ESTIMATION_INSTRUCTIONS,
     COMPONENT_SELECTION_WITH_ELBOW_INSTRUCTIONS,
-    SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS,
+    SPECTROSCOPY_REFINEMENT_INSTRUCTIONS,
     SPECTROSCOPY_HOLISTIC_SYNTHESIS_INSTRUCTIONS,
+    SPECTROSCOPY_REFLECTION_INSTRUCTIONS,
+    SPECTROSCOPY_REFLECTION_UPDATE_INSTRUCTIONS
 )
 
 AGENT_METADATA_KEYS_TO_STRIP = [
@@ -31,12 +39,78 @@ AGENT_METADATA_KEYS_TO_STRIP = [
     # Other potential non-tool keys
 ]
 
+def _sanitize_filename(text: str) -> str:
+    """Helper to create safe filenames from labels."""
+    # Replace spaces with underscores, remove non-alphanumeric chars except _ and -
+    safe_text = re.sub(r'[^\w\-\_]', '', text.replace(" ", "_"))
+    return safe_text
+
+def _create_grid_from_images(image_bytes_list: list, logger: logging.Logger) -> bytes:
+    """
+    Stitches a list of JPEG bytes into a single grid image using OpenCV.
+    Used to create a 'Validated Summary Grid' from individual validated plots.
+    """
+    if not image_bytes_list:
+        return None
+        
+    try:
+        # Decode all images
+        images = []
+        for b in image_bytes_list:
+            nparr = np.frombuffer(b, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                images.append(img)
+        
+        if not images:
+            return None
+
+        n_imgs = len(images)
+        
+        # If only one, return it directly (re-encoded)
+        if n_imgs == 1:
+            return image_bytes_list[0]
+
+        # Determine grid size (target ~2 columns)
+        cols = 2
+        rows = (n_imgs + cols - 1) // cols
+        
+        # Find max dimensions to standardize cells
+        max_h = max(img.shape[0] for img in images)
+        max_w = max(img.shape[1] for img in images)
+        
+        # Create blank canvas
+        grid_h = rows * max_h
+        grid_w = cols * max_w
+        grid_img = np.zeros((grid_h, grid_w, 3), dtype=np.uint8) + 255 # White background
+        
+        for idx, img in enumerate(images):
+            r = idx // cols
+            c = idx % cols
+            
+            # Resize current img to fit cell if needed (maintain aspect ratio logic could go here, 
+            # but usually plots are uniform size. We'll center it.)
+            h, w = img.shape[:2]
+            
+            y_offset = r * max_h
+            x_offset = c * max_w
+            
+            # Simple copy (top-left alignment for simplicity, or center)
+            grid_img[y_offset:y_offset+h, x_offset:x_offset+w] = img
+            
+        # Encode back to jpeg
+        retval, buf = cv2.imencode('.jpg', grid_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return buf.tobytes()
+
+    except Exception as e:
+        logger.warning(f"Failed to stitch validation grid: {e}")
+        return None
+
+
 class RunPreprocessingController:
     """
     [🛠️ Tool Step]
-    Runs the HyperspectralPreprocessingAgent *only if* settings['run_preprocessing'] is True.
-    If False (i.e., on a refinement iteration), it *only* calculates statistics
-    for the next step.
+    Runs the HyperspectralPreprocessingAgent.
     """
     def __init__(self, logger: logging.Logger, preprocessor: HyperspectralPreprocessingAgent):
         self.logger = logger
@@ -62,22 +136,20 @@ class RunPreprocessingController:
                     "snr_estimate": snr_value,
                     "reasoning": f"SNR of *current iteration* data: {snr_reasoning}"
                 }
-                # Set an all-true mask, since no masking was performed on this iter
                 state["preprocessing_mask"] = np.ones(state["hspy_data"].shape[:2], dtype=bool)
                 self.logger.info(f"✅ Tool Complete: Statistics calculated. SNR = {snr_value:.2f}")
-                return state # Skip the rest of the function
+                return state 
             except Exception as e:
                 self.logger.error(f"❌ Tool Failed: Stat calculation on refinement data failed: {e}", exc_info=True)
                 state["error_dict"] = {"error": "Stat calculation on refinement data failed", "details": str(e)}
                 return state
 
-        # This code now only runs for the *first* iteration (Global Analysis)
         try:
             processed_data, mask, data_quality = self.preprocessor.run_preprocessing(
                 state["hspy_data"], 
                 state["system_info"]
             )
-            state["hspy_data"] = processed_data # Overwrite with processed data
+            state["hspy_data"] = processed_data 
             state["preprocessing_mask"] = mask
             state["data_quality"] = data_quality
             self.logger.info("✅ Tool Complete: Full preprocessing finished.")
@@ -89,7 +161,7 @@ class RunPreprocessingController:
 class GetInitialComponentParamsController:
     """
     [🧠 LLM Step]
-    Asks LLM for initial n_components for spectral unmixing.
+    Asks LLM for initial n_components.
     """
     def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable):
         self.model = model
@@ -130,7 +202,7 @@ class GetInitialComponentParamsController:
             
             if error_dict:
                 self.logger.warning(f"LLM initial estimation failed: {error_dict}. Using default.")
-                n_components = 4 # Default fallback
+                n_components = 4 
             else:
                 n_components = result_json.get('estimated_components', 4)
                 reasoning = result_json.get('reasoning', 'No reasoning provided.')
@@ -151,15 +223,14 @@ class GetInitialComponentParamsController:
 
         except Exception as e:
             self.logger.error(f"❌ LLM Step Failed: Initial component estimation: {e}", exc_info=True)
-            state["initial_n_components"] = 4 # Default fallback
+            state["initial_n_components"] = 4 
             
         return state
 
 class RunComponentTestLoopController:
     """
     [🛠️ Tool Step]
-    Loops from min to max components, runs spectral unmixing, 
-    and stores reconstruction errors.
+    Loops from min to max components, runs spectral unmixing.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -169,7 +240,6 @@ class RunComponentTestLoopController:
         if state.get("error_dict"): return state
         self.logger.info("\n\n🛠️ --- CALLING TOOL: COMPONENT TEST LOOP --- 🛠️\n")
 
-        # Strip all non-tool metadata
         tool_settings = self.settings.copy()
         for key in AGENT_METADATA_KEYS_TO_STRIP:
             tool_settings.pop(key, None)
@@ -180,7 +250,7 @@ class RunComponentTestLoopController:
         component_range = list(range(min_c, max_c + 1))
         
         errors = []
-        visual_examples = [] # Store visuals for key component numbers
+        visual_examples = [] 
         
         for n_comp in component_range:
             try:
@@ -190,7 +260,6 @@ class RunComponentTestLoopController:
                 errors.append(error)
                 self.logger.info(f"  (Loop {n_comp}/{max_c}): Error = {error:.4f}")
 
-                # Generate visual examples for min, max, and initial estimate
                 if n_comp == min_c or n_comp == max_c or n_comp == initial_estimate:
                     summary_bytes = tools.create_nmf_summary_plot(
                         components, abundance_maps, n_comp, state["system_info"], self.logger
@@ -206,8 +275,11 @@ class RunComponentTestLoopController:
                             output_dir = self.settings.get('output_dir', 'spectroscopy_output')
                             os.makedirs(output_dir, exist_ok=True)
                             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            filename = f"component_test_summary_{n_comp}comp_{timestamp}.jpeg"
+                            
+                            iter_title = _sanitize_filename(state.get('iteration_title', 'iter'))
+                            filename = f"{iter_title}_TestLoop_{n_comp}comp_{timestamp}.jpeg"
                             filepath = os.path.join(output_dir, filename)
+                            
                             with open(filepath, 'wb') as f:
                                 f.write(summary_bytes)
                             self.logger.info(f"📸 Saved component test plot to: {filepath}")
@@ -226,7 +298,7 @@ class RunComponentTestLoopController:
 class CreateElbowPlotController:
     """
     [🛠️ Tool Step]
-    Generates the elbow plot from the test loop results.
+    Generates the elbow plot.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -248,8 +320,11 @@ class CreateElbowPlotController:
                 output_dir = self.settings.get('output_dir', 'spectroscopy_output')
                 os.makedirs(output_dir, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"elbow_plot_{timestamp}.jpeg"
+                
+                iter_title = _sanitize_filename(state.get('iteration_title', 'iter'))
+                filename = f"{iter_title}_Elbow_Plot_{timestamp}.jpeg"
                 filepath = os.path.join(output_dir, filename)
+                
                 with open(filepath, 'wb') as f:
                     f.write(plot_bytes)
                 self.logger.info(f"📸 Saved elbow plot to: {filepath}")
@@ -262,7 +337,7 @@ class CreateElbowPlotController:
 class GetFinalComponentSelectionController:
     """
     [🧠 LLM Step]
-    Asks LLM to pick the best n_components using the elbow plot and visual examples.
+    Asks LLM to pick the best n_components.
     """
     def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable):
         self.model = model
@@ -332,14 +407,14 @@ class GetFinalComponentSelectionController:
 
         except Exception as e:
             self.logger.error(f"❌ LLM Step Failed: Final component selection: {e}", exc_info=True)
-            state["final_n_components"] = initial_estimate # Default fallback
+            state["final_n_components"] = initial_estimate 
             
         return state
 
 class RunFinalSpectralUnmixingController:
     """
     [🛠️ Tool Step]
-    Runs spectral unmixing one last time with the final selected n_components.
+    Runs spectral unmixing one last time.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -351,12 +426,10 @@ class RunFinalSpectralUnmixingController:
         
         final_n_components = state.get("final_n_components")
         if not final_n_components:
-            # If auto-comp failed, try falling back to fixed component count
             final_n_components = self.settings.get('n_components', 4)
             self.logger.warning(f"Auto-selection failed. Using fixed component count: {final_n_components}")
             state["final_n_components"] = final_n_components
 
-        # Strip all non-tool metadata
         tool_settings = self.settings.copy()
         for key in AGENT_METADATA_KEYS_TO_STRIP:
             tool_settings.pop(key, None)
@@ -377,7 +450,7 @@ class RunFinalSpectralUnmixingController:
 class CreateAnalysisPlotsController:
     """
     [🛠️ Tool Step]
-    Generates all final visualizations for the LLM.
+    Generates high-quality visualization pairs for the Agent.
     """
     def __init__(self, logger: logging.Logger, settings: dict):
         self.logger = logger
@@ -385,88 +458,96 @@ class CreateAnalysisPlotsController:
 
     def execute(self, state: dict) -> dict:
         if state.get("error_dict"): return state
-        self.logger.info("\n\n🛠️ --- CALLING TOOL: CREATE FINAL PLOTS --- 🛠️\n")
+        self.logger.info("\n\n🛠️ --- CALLING TOOL: CREATE ANALYSIS PLOTS --- 🛠️\n")
         
         components = state.get("final_components")
         abundance_maps = state.get("final_abundance_maps")
         
+        iter_title_raw = state.get("iteration_title", "Global_Analysis")
+        iter_prefix = _sanitize_filename(iter_title_raw)
+
         if components is None or abundance_maps is None:
             self.logger.warning("Skipping plot creation: final components/maps not found.")
             return state
 
-        # 1. Create component/abundance pairs
-        pair_plots = tools.create_component_abundance_pairs(
-            components, abundance_maps, state["system_info"], self.logger
-        )
-        state["component_pair_plots"] = pair_plots # list of {'label':..., 'bytes':...}
+        output_dir = self.settings.get('output_dir', 'spectroscopy_output')
         
-        try:
-            output_dir = self.settings.get('output_dir', 'spectroscopy_output')
-            os.makedirs(output_dir, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            for i, plot in enumerate(pair_plots):
-                filename = f"component_pair_{i+1}_{timestamp}.jpeg"
-                filepath = os.path.join(output_dir, filename)
-                with open(filepath, 'wb') as f:
-                    f.write(plot['bytes'])
-            self.logger.info(f"📸 Saved {len(pair_plots)} component pair plots to: {output_dir}")
-        except Exception as e:
-            self.logger.warning(f"Failed to save component pair plots: {e}")
+        final_plots = []
+        validated_bytes_list = [] 
         
-        try:
-            self.logger.info("  (Tool Info: Creating final NMF summary plot...)")
-            n_comp = state.get("final_n_components", components.shape[0])
-            summary_bytes = tools.create_nmf_summary_plot(
-                components, abundance_maps, n_comp, state["system_info"], self.logger
+        # --- 1. Generate Validated Pairs ---
+        self.logger.info(f"Generating Validated Analysis Plots for {components.shape[0]} components...")
+        
+        for i in range(components.shape[0]):
+            plot_bytes = tools.create_validated_component_pair(
+                state["hspy_data"], 
+                components[i], 
+                abundance_maps[..., i], 
+                i, 
+                state["system_info"],
+                self.logger
             )
+            
+            if plot_bytes:
+                label = f"Component {i+1} Analysis"
+                final_plots.append({'label': label, 'bytes': plot_bytes})
+                validated_bytes_list.append(plot_bytes)
+                
+                # Save using tool
+                label_safe = _sanitize_filename(label)
+                tools.save_image_bytes(
+                    plot_bytes, output_dir, 
+                    f"{iter_prefix}_{label_safe}.jpeg", self.logger
+                )
+
+        state["component_pair_plots"] = final_plots
+        for plot in final_plots:
+            state["analysis_images"].append({"label": plot['label'], "data": plot['bytes']})
+
+        # --- 2. Create Summary Grid ---
+        try:
+            self.logger.info("  (Tool Info: Stitching validated plots into Summary Grid...)")
+            summary_bytes = tools.create_image_grid(validated_bytes_list, self.logger)
+
             if summary_bytes:
-                output_dir = self.settings.get('output_dir', 'spectroscopy_output')
-                os.makedirs(output_dir, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                # Add iteration title to filename if available
-                iter_title = state.get('iteration_title', 'iter').replace(" ", "_")
-                filename = f"final_nmf_summary_{iter_title}_{n_comp}comp_{timestamp}.jpeg"
-                filepath = os.path.join(output_dir, filename)
-                with open(filepath, 'wb') as f:
-                    f.write(summary_bytes)
-                self.logger.info(f"📸 Saved final NMF summary plot to: {filepath}")
+                label = "NMF Summary Grid"
+                tools.save_image_bytes(
+                    summary_bytes, output_dir, 
+                    f"{iter_prefix}_{_sanitize_filename(label)}.jpeg", self.logger
+                )
+                
+                state["analysis_images"].append({"label": label, "data": summary_bytes})
+
         except Exception as e:
-            self.logger.warning(f"Failed to save final NMF summary plot: {e}")
-        
-        # 2. Create structure overlays if structure image exists
+            self.logger.warning(f"Failed to create/save NMF summary plot: {e}")
+
+        # --- 3. Structure Overlays ---
         if state.get("structure_image_path"):
             try:
+                # Load image (Controller logic)
                 structure_img = load_image(state["structure_image_path"])
-                if len(structure_img.shape) == 3:
-                    structure_img_gray = cv2.cvtColor(structure_img, cv2.COLOR_RGB2GRAY)
-                else:
-                    structure_img_gray = structure_img
+                if structure_img.ndim == 3:
+                    structure_img = cv2.cvtColor(structure_img, cv2.COLOR_RGB2GRAY)
                 
+                # Create (Tool logic)
                 overlay_bytes = tools.create_multi_abundance_overlays(
-                    structure_img_gray, abundance_maps,
-                    threshold_percentile=85.0 # Use a high percentile for overlays
+                    structure_img, abundance_maps, threshold_percentile=85.0 
                 )
                 state["structure_overlay_bytes"] = overlay_bytes
                 
                 if overlay_bytes:
-                    try:
-                        output_dir = self.settings.get('output_dir', 'spectroscopy_output')
-                        os.makedirs(output_dir, exist_ok=True)
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"structure_overlays_{timestamp}.jpeg"
-                        filepath = os.path.join(output_dir, filename)
-                        with open(filepath, 'wb') as f:
-                            f.write(overlay_bytes)
-                        self.logger.info(f"📸 Saved structure overlay plot to: {filepath}")
-                    except Exception as e:
-                        self.logger.warning(f"Failed to save structure overlay plot: {e}")
+                    label = "Structure-Abundance Overlays"
+                    tools.save_image_bytes(
+                        overlay_bytes, output_dir, 
+                        f"{iter_prefix}_{_sanitize_filename(label)}.jpeg", self.logger
+                    )
+                    state["analysis_images"].append({"label": label, "data": overlay_bytes})
                 
             except Exception as e:
                 self.logger.warning(f"Failed to create structure overlays: {e}")
-                state["structure_overlay_bytes"] = None
-        
-        self.logger.info("✅ Tool Complete: Final analysis plots created.")
-        return state
+
+        self.logger.info("✅ Tool Complete: Final analysis plots created and saved.")
+        return state    
 
 class BuildHyperspectralPromptController:
     """
@@ -481,14 +562,15 @@ class BuildHyperspectralPromptController:
         if state.get("error_dict"): return state
         self.logger.info("\n\n📝 --- PREP STEP: BUILDING FINAL PROMPT --- 📝\n")
         
+        # 1. Base Instruction & Context
         prompt_parts = [state["instruction_prompt"]]
 
         if state.get("parent_refinement_reasoning"):
             prompt_parts.append("\n\n### 🔍 CONTEXT: Why are we performing this focused analysis?")
             prompt_parts.append(f"**Reasoning from previous step:** \"{state['parent_refinement_reasoning']}\"")
-            prompt_parts.append("Use this context to guide your interpretation of the specific features in this zoom.")
+            prompt_parts.append("Use this context to guide your interpretation.")
         
-        # Add data/unmixing info
+        # 2. Data Metadata
         h, w, e = state["hspy_data"].shape
         _, energy_xlabel, _ = tools.create_energy_axis(e, state["system_info"])
         
@@ -500,33 +582,62 @@ class BuildHyperspectralPromptController:
             prompt_parts.append(f"- Spectral unmixing method: {state['settings'].get('method', 'nmf').upper()}")
             prompt_parts.append(f"- Number of components: {state['final_n_components']}")
             prompt_parts.append(f"- Final Reconstruction Error: {state.get('final_reconstruction_error', 'N/A'):.4f}")
-        else:
-            prompt_parts.append("- No spectral unmixing performed.")
 
-        # Add structure overlay
-        if state.get("structure_overlay_bytes"):
-            prompt_parts.append("\n\n**Structure-Abundance Correlation Analysis:**")
-            prompt_parts.append("Overlays showing where NMF components (top 15%) are concentrated on the structural image.")
-            prompt_parts.append({"mime_type": "image/jpeg", "data": state["structure_overlay_bytes"]})
-            # Add to analysis_images for this iteration
-            state["analysis_images"].append({
-                "label": "Structure-Abundance Overlays",
-                "data": state["structure_overlay_bytes"]
-            })
-
-        # Add component-abundance pairs
+        # 3. Component Analysis (Dynamic Instructions)
+        current_depth = state.get("current_depth", 0)
+        
         if state.get("component_pair_plots"):
-            prompt_parts.append("\n\n**Spectral Component Analysis (Component-Abundance Pairs):**")
+            prompt_parts.append("\n\n**Spectral Component Analysis:**")
+            
+            if current_depth == 0:
+                # Standard Instructions for Depth 0
+                prompt_parts.append("Below are the NMF components extracted from the global dataset.")
+                prompt_parts.append("For each component, the LEFT image is the Spectral Signature and the RIGHT image is the Spatial Abundance.")
+            else:
+                # Validation Instructions for Depth > 0
+                prompt_parts.append("### 🧪 Quantitative Validation Mode (Split-Panel Analysis)")
+                prompt_parts.append("Because this is a focused refinement, the plots are more detailed to help you detect artifacts.")
+                prompt_parts.append("Each figure contains:")
+                
+                prompt_parts.append("\n**1. LEFT: Spatial Distribution**")
+                prompt_parts.append("- Shows where this component is located physically.")
+                
+                prompt_parts.append("\n**2. RIGHT (TOP PANEL): Spectral Fit & Variance**")
+                prompt_parts.append("- **Black Line (Mean):** The abundance-weighted average spectrum of the raw data (Ground Truth).")
+                prompt_parts.append("- **Red Dashed Line (Model):** The NMF component (Mathematical Model).")
+                prompt_parts.append("- **Blue Shaded Band:** The Weighted Standard Deviation ($\pm 1\sigma$). This represents the natural heterogeneity of the data in this region.")
+                
+                prompt_parts.append("\n**3. RIGHT (BOTTOM PANEL): Residuals**")
+                prompt_parts.append("- **Gray Area:** The difference between the Data and the Model.")
+
+                prompt_parts.append("\n### ⚠️ CRITICAL INTERPRETATION RULES")
+                prompt_parts.append("Use the **Blue Band** to distinguish between 'Messy Data' and 'Bad Model':")
+                prompt_parts.append("1. **Valid Fit:** If the Red Line (Model) stays mostly **INSIDE** the Blue Band, the component is valid, even if it doesn't match the Black Line perfectly. The mismatch is just natural variation.")
+                prompt_parts.append("2. **Hallucination (Artifact):** If the Red Line creates a peak that goes significantly **OUTSIDE** the Blue Band (and the Black Line is flat there), NMF has 'invented' a feature. **Reject this feature.**")
+                prompt_parts.append("3. **Missed Physics:** If the Bottom Panel (Residual) shows a large, structured peak, NMF failed to capture a real physical/chemical feature present in the data.")
+
+            # Append the plots
             for plot in state["component_pair_plots"]:
                 prompt_parts.append(f"\n{plot['label']}:")
                 prompt_parts.append({"mime_type": "image/jpeg", "data": plot['bytes']})
-                
+
+        # 4. Structure Overlays (if available)
+        if state.get("structure_overlay_bytes"):
+            prompt_parts.append("\n\n**Structure-Abundance Correlation Analysis:**")
+            prompt_parts.append("Overlays showing where components are concentrated on the structural image.")
+            prompt_parts.append({"mime_type": "image/jpeg", "data": state["structure_overlay_bytes"]})
+            
+            # Ensure storage for synthesis
+            found = False
+            for img in state.get("analysis_images", []):
+                if img.get("label") == "Structure-Abundance Overlays": found = True
+            if not found:
                 state["analysis_images"].append({
-                    "label": plot['label'],
-                    "data": plot['bytes']
+                    "label": "Structure-Abundance Overlays",
+                    "data": state["structure_overlay_bytes"]
                 })
 
-        # Add system info
+        # 5. System Metadata & Formatting
         if state.get("system_info"):
             sys_info_str = json.dumps(state["system_info"], indent=2)
             prompt_parts.append(f"\n\nAdditional System Information (Metadata):\n{sys_info_str}")
@@ -549,7 +660,7 @@ class SelectRefinementTargetController:
         self.generation_config = generation_config
         self.safety_settings = safety_settings
         self._parse_llm_response = parse_fn
-        self.instructions = SPECTROSCOPY_REFINEMENT_SELECTION_INSTRUCTIONS
+        self.instructions = SPECTROSCOPY_REFINEMENT_INSTRUCTIONS
 
     def execute(self, state: dict) -> dict:
         if state.get("error_dict"): return state
@@ -571,8 +682,8 @@ class SelectRefinementTargetController:
             prompt_parts.append("(No visual results available)")
         
         for img in analysis_images:
-            # This is the line that was failing
-            image_bytes = img.get('data') or img.get('bytes') # Robustly get bytes
+            # Robustly get bytes
+            image_bytes = img.get('data') or img.get('bytes') 
             if image_bytes:
                 prompt_parts.append(f"\n{img['label']}:")
                 prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
@@ -595,14 +706,35 @@ class SelectRefinementTargetController:
                 state["refinement_decision"] = {"refinement_needed": False, "reasoning": "LLM selection failed."}
                 return state
 
-            targets = result_json.get("targets", [])
+            # Get Raw Targets
+            raw_targets = result_json.get("targets", [])
             is_needed = result_json.get("refinement_needed", False)
 
-            # Store the final decision including the list of targets
+            # Priority Filtering (Custom Code vs Standard)
+            custom_code_targets = [t for t in raw_targets if t.get('type') == 'custom_code']
+            standard_targets = [t for t in raw_targets if t.get('type') != 'custom_code']
+            
+            final_targets = []
+            requires_custom_code = False
+            
+            if custom_code_targets:
+                # Winner-Takes-All: If code is needed, focus ONLY on that.
+                # We pick the first custom target and ignore standard zooms for this turn.
+                top_target = custom_code_targets[0] 
+                self.logger.info(f"🎯 Priority Target Selected (Custom Code): {top_target.get('description')}")
+                final_targets = [top_target]
+                requires_custom_code = True
+            else:
+                # Otherwise, proceed with standard targets
+                final_targets = standard_targets
+                requires_custom_code = False
+
+            # Store the final decision with the filtered targets and the FLAG
             state["refinement_decision"] = {
                 "refinement_needed": is_needed,
                 "reasoning": result_json.get("reasoning", "No reasoning provided."),
-                "targets": targets
+                "targets": final_targets,                
+                "requires_custom_code": requires_custom_code 
             }
 
             self.logger.info(f"✅ LLM Step Complete: Refinement decision: {state['refinement_decision']['reasoning']}")
@@ -610,10 +742,11 @@ class SelectRefinementTargetController:
             print("\n" + "="*80)
             print("🧠 LLM REASONING (SelectRefinementTargetController)")
             print(f"  Refinement Needed: {is_needed}")
+            print(f"  Custom Code Triggered: {requires_custom_code}")
             print(f"  Explanation: {state['refinement_decision']['reasoning']}")
-            print(f"  Targets Found: {len(targets)}")
-            if targets:
-                for i, t in enumerate(targets):
+            print(f"  Targets Found: {len(final_targets)}")
+            if final_targets:
+                for i, t in enumerate(final_targets):
                     print(f"    Target {i+1} ({t.get('type')}): {t.get('description')}")
             print("="*80 + "\n")
 
@@ -622,12 +755,12 @@ class SelectRefinementTargetController:
             state["refinement_decision"] = {"refinement_needed": False, "reasoning": f"Exception: {e}"}
             
         return state
+    
 
 class GenerateRefinementTasksController:
     """
     [🛠️ Tool Step]
-    Takes the list of targets from the LLM, slices the data for each,
-    and generates a list of 'New Task' dictionaries.
+    Takes the list of targets from the LLM and generates new tasks.
     """
     MIN_SPECTRAL_CHANNELS = 10 
 
@@ -643,21 +776,27 @@ class GenerateRefinementTasksController:
             return state
 
         new_tasks = []
+        current_depth = state.get("current_depth", 0)
+        next_depth = current_depth + 1
         
-        # Iterate through ALL requested targets
-        for target in decision["targets"]:
+        # Iterate through targets with an index (1-based for humans)
+        for i, target in enumerate(decision["targets"], 1):
             try:
                 t_type = target.get("type")
                 t_value = target.get("value")
                 t_desc = target.get("description", "refinement")
                 
+                # Create the Structured ID
+                # D = Depth, T = Target Number
+                short_title = f"Focused_Analysis_D{next_depth}_T{i}"
+                
                 new_data = None
                 new_sys_info = state["system_info"]
 
                 if t_type == "spatial":
-                    self.logger.info(f"Processing Spatial Task: {t_desc}")
+                    self.logger.info(f"Processing Spatial Task {i}: {t_desc}")
                     component_index = int(t_value)
-                    if component_index > 0: component_index -= 1 # 1-based to 0-based
+                    if component_index > 0: component_index -= 1 
                     else: component_index = 0
                     
                     new_data = tools.apply_spatial_mask(
@@ -665,23 +804,58 @@ class GenerateRefinementTasksController:
                     )
 
                 elif t_type == "spectral":
-                    self.logger.info(f"Processing Spectral Task: {t_desc}")
-                    new_data, new_sys_info = tools.apply_spectral_slice(
-                        state["original_hspy_data"], state["system_info"], list(t_value)
-                    )
+                    self.logger.info(f"Processing Spectral Task {i}: {t_desc}")
                     
+                    # t_value comes from LLM as physical units, e.g., [0.6, 1.0]
+                    target_start_ev, target_end_ev = t_value[0], t_value[1]
+                    
+                    # 1. Reconstruct the full energy axis for the ORIGINAL data
+                    h, w, e = state["original_hspy_data"].shape
+                    # (Assuming you have access to create_energy_axis from tools)
+                    energy_axis, _, _ = tools.create_energy_axis(e, state["system_info"])
+                    
+                    # 2. Find the closest integer indices for these physical values
+                    start_idx, end_idx = tools.convert_energy_to_indices(
+                        energy_axis, 
+                        target_start_ev, 
+                        target_end_ev, 
+                        min_channels=self.MIN_SPECTRAL_CHANNELS
+                    )
+
+                    # 3. Perform the slicing using INDICES
+                    # Note: We pass the indices to the tool, NOT the physical values
+                    # Use the calculated safe indices to get safe physical range for the tool
+                    safe_physical_range = [energy_axis[start_idx], energy_axis[end_idx]]
+
+                    new_data, _ = tools.apply_spectral_slice(
+                        state["original_hspy_data"], 
+                        state["system_info"], 
+                        safe_physical_range
+                    )
+
+                    # 4. Update System Info with the NEW Physical Range
+                    new_sys_info = state["system_info"].copy()
+                    new_sys_info['energy_range'] = {
+                        'start': float(energy_axis[start_idx]),
+                        'end': float(energy_axis[end_idx]),
+                        'units': state["system_info"].get('energy_range', {}).get('units', 'units')
+                    }
+                    
+                    self.logger.info(f"Recalibrated axis: {state['system_info']['energy_range']['start']:.2f}-{state['system_info']['energy_range']['end']:.2f} -> {new_sys_info['energy_range']['start']:.2f}-{new_sys_info['energy_range']['end']:.2f}")
+
                     if new_data.shape[-1] < self.MIN_SPECTRAL_CHANNELS:
-                        self.logger.warning(f"Skipping spectral task '{t_desc}': too few channels.")
+                        self.logger.warning(f"Skipping spectral task '{short_title}': too few channels.")
                         continue
 
                 if new_data is not None:
-                    # Create a Task Bundle
                     task = {
                         "data": new_data,
                         "system_info": new_sys_info,
-                        "title": f"Focused Analysis: {t_desc}",
-                        "parent_reasoning": t_desc, # Why did we create this?
-                        "source_depth": state.get("current_depth", 0) + 1
+                        # SHORT TITLE for Reports/Files
+                        "title": short_title, 
+                        # LONG DESCRIPTION for LLM Context (Re-injected later)
+                        "parent_reasoning": t_desc, 
+                        "source_depth": next_depth
                     }
                     new_tasks.append(task)
 
@@ -691,6 +865,7 @@ class GenerateRefinementTasksController:
         state["new_tasks"] = new_tasks
         self.logger.info(f"✅ Generated {len(new_tasks)} new analysis tasks.")
         return state
+    
 
 class BuildHolisticSynthesisPromptController:
     """
@@ -713,44 +888,821 @@ class BuildHolisticSynthesisPromptController:
             state["error_dict"] = {"error": "No iteration results found for synthesis."}
             return state
 
-        # Add system info first
+        # 1. System Info
         if state.get("system_info"):
             sys_info_str = json.dumps(state["system_info"], indent=2)
             prompt_parts.append(f"\n\n--- System Information ---\n{sys_info_str}")
 
-        # Loop through each iteration's results
+        # 2. Build Context for Each Iteration
+        all_images = []
+
         for i, iter_result in enumerate(all_results):
-            title = iter_result.get('iteration_title', f'Iteration {i}')
-            prompt_parts.append(f"\n\n--- {title} ---")
+            raw_title = iter_result.get('iteration_title', f'Iteration_{i}')
+            iter_ref_id = _sanitize_filename(raw_title)
             
-            # Add text summary for this iteration
-            iter_analysis = iter_result.get('iteration_analysis_text', 'No text summary.')
-            prompt_parts.append(f"**Analysis Summary:**\n{iter_analysis}")
+            prompt_parts.append(f"\n\n### SECTION {i+1}: {raw_title}")
             
-            # Add plots for this iteration
+            # Context: Why did we do this?
+            context_desc = iter_result.get('parent_refinement_reasoning') 
+            if context_desc:
+                prompt_parts.append(f"**Target Description:** \"{context_desc}\"")
+
+            # --- DYNAMIC ANALYSIS INJECTION
+            # Retrieve the list of features generated by the custom code
+            custom_meta_list = iter_result.get("custom_analysis_metadata_list")
+            
+            if custom_meta_list:
+                prompt_parts.append(f"\n**🔍 DYNAMIC ANALYSIS FINDINGS (Physics-Based Mapping):**")
+                prompt_parts.append("The following features were mathematically modeled using custom Python code:")
+                
+                # Loop through every feature in the list
+                for idx, meta in enumerate(custom_meta_list, 1):
+                    name = meta.get('name', 'Custom Feature')
+                    desc = meta.get('description', 'N/A')
+                    units = meta.get('units', 'a.u.')
+                    stats = meta.get('stats', {})
+                    
+                    prompt_parts.append(f"\n   **Feature {idx}: {name}**")
+                    prompt_parts.append(f"   - Physical Interpretation: {desc}")
+                    prompt_parts.append(f"   - Units: {units}")
+                    
+                    # Crash Fix: Use .get(key, 0.0) to handle missing stats gracefully
+                    if stats:
+                        s_min = stats.get('min', 0.0)
+                        s_max = stats.get('max', 0.0)
+                        s_mean = stats.get('mean', 0.0)
+                        prompt_parts.append(f"   - Statistics: Min {s_min:.2f}, Max {s_max:.2f}, Mean {s_mean:.2f}")
+                
+                prompt_parts.append("\n-> **INSTRUCTION:** Use these specific physical maps to validate or correct the NMF results.")
+            
+            # Text Summary (Standard NMF Analysis)
+            iter_analysis = iter_result.get('iteration_analysis_text')
+            if iter_analysis:
+                prompt_parts.append(f"\n**Previous NMF Analysis Summary:**\n{iter_analysis}")
+            
+            # Visual Evidence
             iter_images = iter_result.get('analysis_images', [])
             if iter_images:
-                prompt_parts.append("\n**Analysis Plots:**")
+                prompt_parts.append(f"\n**Visual Evidence for {raw_title}:**")
                 for img in iter_images:
-                    # Robustly get bytes, as in the other controller
-                    image_bytes = img.get('data') or img.get('bytes') 
+                    image_bytes = img.get('data') or img.get('bytes')
+                    raw_label = img.get('label', 'Unknown_Plot')
+                    
                     if image_bytes:
-                        prompt_parts.append(f"\n{img['label']}:")
+                        # Create a unique semantic ID for citation
+                        unique_ref = f"[{iter_ref_id}] {raw_label}"
+                        
+                        prompt_parts.append(f"\n**{unique_ref}**")
                         prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
-            
-            # Add the refinement decision that *followed* this iteration
-            ref_decision = iter_result.get('refinement_decision', {})
-            if ref_decision:
-                prompt_parts.append(f"\n**Refinement Decision from this Step:**\n{ref_decision.get('reasoning')}")
+                        
+                        # Update label in the image object itself for the Report Generation step
+                        # (This ensures the HTML report filters correctly)
+                        img['label'] = unique_ref 
+                        all_images.append(img)
+
+        # 3. EXPLICIT REPORTING INSTRUCTIONS
+        prompt_parts.append("\n\n### 📝 CRITICAL REPORTING INSTRUCTIONS")
+        prompt_parts.append("1. **AT THE END of your 'detailed_analysis' text**, you MUST append a section titled **'### Key Evidence'**.")
+        prompt_parts.append("2. In that section, you MUST list the supporting figures using their **EXACT bolded titles** provided above.")
+        prompt_parts.append("\n**Required Format for Evidence Section:**")
+        prompt_parts.append("### Key Evidence")
+        prompt_parts.append("- **[Exact_ID_From_Above] Image Title**: Explanation of evidence.")
 
         prompt_parts.append("\n\nProvide your final, synthesized analysis in the requested JSON format.")
         
         state["final_prompt_parts"] = prompt_parts
-        # Store all iteration images for the final feedback step
-        all_images = []
-        for r in all_results:
-            all_images.extend(r.get('analysis_images', []))
-        state["analysis_images"] = all_images # Overwrite with the full list
+        state["analysis_images"] = all_images 
         
         self.logger.info("✅ Prep Step Complete: Final synthesis prompt is ready.")
+        return state
+    
+
+class GenerateHTMLReportController:
+    """
+    [🛠️ Tool Step]
+    Generates a beautiful, human-readable HTML report.
+    
+    - Citation-Based Filtering: Scans the 'detailed_analysis' text. 
+      Only displays images that the LLM explicitly referenced by name.
+    - Fallback: If the LLM references nothing, falls back to 'Smart Filtering' 
+      (showing Grids and hiding redundant components) to ensure the report isn't empty.
+    """
+    def __init__(self, logger: logging.Logger, settings: dict):
+        self.logger = logger
+        self.settings = settings
+
+    def _image_to_base64(self, image_bytes: bytes) -> str:
+        """Helper to convert bytes to base64 string for HTML embedding."""
+        return base64.b64encode(image_bytes).decode('utf-8')
+
+    def _filter_by_citations(self, text: str, all_images: list) -> list:
+        """
+        Selects images based on 'Concept Triggers' rather than strict string matching.
+        If the text discusses a scientific method (e.g., NMF), the relevant summary plots are forced to display.
+        """
+        cited_images = []
+        lower_text = text.lower()
+        
+        for img in all_images:
+            raw_label = img.get('label', '')
+            label_lower = raw_label.lower()
+            
+            # --- 1. Exact & Direct Match ---
+            if raw_label in text:
+                cited_images.append(img)
+                continue
+            
+            # Check for label without the [ID] prefix
+            # e.g. Label: "[Global_Analysis] NMF Summary Grid" -> Match: "NMF Summary Grid"
+            clean_name = re.sub(r'\[.*?\]', '', label_lower).strip()
+            if clean_name and clean_name in lower_text:
+                cited_images.append(img)
+                continue
+
+            # --- 2. Concept Triggers (The Safety Net) ---
+            
+            # TRIGGER: NMF / Spectral Unmixing
+            # If the plot is an NMF Grid and the text mentions "NMF" or "Components", show it.
+            if "nmf summary grid" in label_lower:
+                if "nmf" in lower_text or "component" in lower_text or "unmixing" in lower_text:
+                    cited_images.append(img)
+                    continue
+
+            # TRIGGER: Custom / Dynamic Analysis
+            # If the plot is a Custom Analysis, check if the specific feature name (e.g. "Peak Center") is mentioned.
+            if "custom analysis" in label_lower and ":" in label_lower:
+                # Extract feature name: "[ID] Custom Analysis: Peak Center" -> "peak center"
+                try:
+                    feature_name = label_lower.split(":", 1)[1].strip()
+                    if feature_name and feature_name in lower_text:
+                        cited_images.append(img)
+                        continue
+                except IndexError:
+                    pass
+
+            # TRIGGER: Structure / Morphology
+            # If the plot is a Structure Overlay and text mentions Structure/Correlation, show it.
+            if "structure" in label_lower and "overlay" in label_lower:
+                if "structure" in lower_text or "morphology" in lower_text or "correlation" in lower_text:
+                    cited_images.append(img)
+                    continue
+
+            # --- 3. Iteration Context Match ---
+            # If the text explicitly names an iteration (e.g. "Global Analysis"), 
+            # ensure the main summary grid for that iteration is shown.
+            match = re.match(r"\[(.*?)\]", raw_label)
+            if match:
+                iter_id_clean = match.group(1).replace("_", " ").lower() # e.g. "global analysis"
+                if iter_id_clean in lower_text and ("grid" in label_lower or "custom" in label_lower):
+                    cited_images.append(img)
+                    continue
+
+        # --- Deduplicate ---
+        unique_images = []
+        seen = set()
+        for img in cited_images:
+            if img['label'] not in seen:
+                unique_images.append(img)
+                seen.add(img['label'])
+
+        # --- 4. Final Fail-Safe ---
+        # If the filter returned <= 1 image, force the Global NMF Summary to appear 
+        # to ensure the report always has context.
+        if len(unique_images) <= 1:
+            for img in all_images:
+                if "global" in img['label'].lower() and "nmf summary" in img['label'].lower():
+                    if img['label'] not in seen:
+                        unique_images.insert(0, img) # Insert at top
+                        seen.add(img['label'])
+
+        return unique_images
+
+    def _filter_redundant_heuristic(self, all_images: list) -> list:
+        """
+        Backup Strategy: If LLM fails to cite images, use logic to pick the best ones.
+        Hides individual components if a Grid exists.
+        """
+        iterations_with_grid = set()
+        for img in all_images:
+            label = img.get('label', '')
+            if "NMF Summary Grid" in label:
+                match = re.match(r"\[(.*?)\]", label)
+                if match: iterations_with_grid.add(match.group(1))
+
+        filtered_images = []
+        for img in all_images:
+            label = img.get('label', '')
+            match = re.match(r"\[(.*?)\]", label)
+            if match and match.group(1) in iterations_with_grid:
+                if "Component" in label and "Analysis" in label:
+                    continue # Skip component if grid exists
+            filtered_images.append(img)
+        return filtered_images
+
+    def execute(self, state: dict) -> dict:
+        self.logger.info("\n\n📄 --- TOOL STEP: GENERATING HTML REPORT --- 📄\n")
+        
+        result_json = state.get("result_json")
+        if not result_json:
+            self.logger.warning("Skipping report generation: No result_json found.")
+            return state
+
+        # Extract Data
+        detailed_analysis = result_json.get("detailed_analysis", "No analysis provided.")
+        scientific_claims = result_json.get("scientific_claims", [])
+        system_info = state.get("system_info", {})
+        all_images = state.get("analysis_images", [])
+        
+        # --- SELECTION LOGIC ---
+        # 1. Try Strict Citation
+        display_images = self._filter_by_citations(detailed_analysis, all_images)
+        selection_method = "Strict Text Citation"
+
+        # 2. Fallback to Heuristic if strict failed (LLM didn't follow instructions)
+        if not display_images:
+            self.logger.warning("LLM did not explicitly cite any images. Falling back to heuristic filter.")
+            display_images = self._filter_redundant_heuristic(all_images)
+            selection_method = "Heuristic (Backup)"
+
+        self.logger.info(f"Report Generation: Selected {len(display_images)} images using method: {selection_method}")
+
+        # Output Setup
+        output_dir = self.settings.get('output_dir', 'spectroscopy_output')
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Hyperspectral_Report_{file_timestamp}.html"
+        filepath = os.path.join(output_dir, filename)
+
+        # --- HTML CONSTRUCTION ---
+        html_content = f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Hyperspectral Analysis Report</title>
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; background-color: #f4f4f9; }}
+                .container {{ background-color: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                h1 {{ color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+                h2 {{ color: #2980b9; margin-top: 30px; }}
+                h3 {{ color: #16a085; }}
+                .metadata-box {{ background-color: #ecf0f1; padding: 15px; border-radius: 5px; border-left: 5px solid #bdc3c7; margin-bottom: 20px; }}
+                .analysis-text {{ white-space: pre-wrap; background-color: #fafafa; padding: 20px; border-radius: 5px; border: 1px solid #eee; }}
+                .claim-card {{ background-color: #e8f6f3; border-left: 5px solid #1abc9c; padding: 15px; margin-bottom: 15px; }}
+                .claim-title {{ font-weight: bold; font-size: 1.1em; color: #0e6655; }}
+                .image-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 25px; margin-top: 20px; }}
+                .image-card {{ background: white; border: 1px solid #ddd; padding: 15px; border-radius: 5px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
+                .image-card img {{ max-width: 100%; height: auto; border-radius: 3px; cursor: pointer; transition: transform 0.2s; }}
+                .image-card img:hover {{ transform: scale(1.01); }}
+                .image-label {{ margin-top: 12px; font-weight: bold; color: #444; font-size: 1em; border-top: 1px solid #eee; padding-top: 10px; }}
+                .footer {{ margin-top: 50px; text-align: center; color: #7f8c8d; font-size: 0.8em; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🔬 Hyperspectral Analysis Report</h1>
+                <div class="metadata-box">
+                    <p><strong>Date:</strong> {timestamp}</p>
+                    <p><strong>Data Source:</strong> {state.get('image_path', 'N/A')}</p>
+                    <p><strong>System Info:</strong> {json.dumps(system_info)}</p>
+                </div>
+
+                <h2>1. Synthesized Scientific Analysis</h2>
+                <div class="analysis-text">{detailed_analysis}</div>
+
+                <h2>2. Key Evidence (Visual Gallery)</h2>
+                <p>These figures are explicitly cited in the analysis above.</p>
+                <div class="image-grid">
+        """
+
+        for img in display_images:
+            label = img.get('label', 'Unknown Figure')
+            data = img.get('data') or img.get('bytes')
+            
+            if data:
+                b64_str = self._image_to_base64(data)
+                safe_id = _sanitize_filename(label)
+                
+                html_content += f"""
+                    <div class="image-card" id="{safe_id}">
+                        <img src="data:image/jpeg;base64,{b64_str}" alt="{label}" loading="lazy">
+                        <div class="image-label">{label}</div>
+                    </div>
+                """
+
+        html_content += """
+                </div>
+                <h2>3. Key Scientific Claims</h2>
+        """
+
+        if not scientific_claims:
+            html_content += "<p>No specific claims generated.</p>"
+        else:
+            for i, claim in enumerate(scientific_claims, 1):
+                html_content += f"""
+                <div class="claim-card">
+                    <div class="claim-title">Claim {i}: {claim.get('claim', 'N/A')}</div>
+                    <p><strong>Impact:</strong> {claim.get('scientific_impact', 'N/A')}</p>
+                    <p><strong>Research Question:</strong> <em>{claim.get('has_anyone_question', 'N/A')}</em></p>
+                </div>
+                """
+
+        html_content += """
+                <div class="footer">
+                    Generated by SciLink Hyperspectral Analysis Agent
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            self.logger.info(f"✅ REPORT GENERATED: {filepath}")
+            if "result_paths" not in state: state["result_paths"] = []
+            state["result_paths"].append(filepath)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to write HTML report: {e}")
+
+        return state
+    
+
+class RunDynamicAnalysisController:
+    """
+    [🧠 + 💻] The 'Code Interpreter' / 'Dynamic Analyst'.
+    Generates, executes, and validates Python code to model spectral features.
+    """
+    MAX_RETRIES = 5
+    SUCCESS_THRESHOLD = 0.5  # If >50% of maps in a script pass QC, accept the run.
+
+    def __init__(self, model, logger, generation_config, safety_settings, parse_fn):
+        self.model = model
+        self.logger = logger
+        self.generation_config = generation_config
+        self.safety_settings = safety_settings
+        self._parse_llm_response = parse_fn
+
+    def execute(self, state: dict) -> dict:
+        decision = state.get("refinement_decision", {})
+        targets = decision.get("targets", [])
+        
+        # Filter strictly for custom code requests
+        custom_targets = [t for t in targets if t.get('type') == 'custom_code']
+        
+        # Gatekeeping: If no code requested, skip
+        if not custom_targets and not decision.get("requires_custom_code", False):
+            return state
+
+        self.logger.info(f"\n\n💻 --- DYNAMIC ANALYSIS: PROCESSING {len(custom_targets)} TASKS --- 💻\n")
+
+        # --- SETUP OUTPUT PATHS ---
+        output_dir = state.get("settings", {}).get("output_dir", "spectroscopy_output")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        iter_title = _sanitize_filename(state.get("iteration_title", "iter"))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # --- PREPARE DATA CONTEXT ---
+        h, w, e = state["hspy_data"].shape
+        
+        # Axis & Unit Detection
+        sys_info = state.get("system_info", {})
+        axis_units = "unknown units"
+        
+        if "energy_axis" not in state:
+            if sys_info.get("energy_range"):
+                start = sys_info["energy_range"]["start"]
+                end = sys_info["energy_range"]["end"]
+                state["energy_axis"] = np.linspace(start, end, e)
+                axis_units = sys_info["energy_range"].get("units", "arbitrary units")
+            else:
+                state["energy_axis"] = np.arange(e)
+                axis_units = "channels"
+        else:
+            # Try to grab units if existing
+            axis_units = sys_info.get("energy_range", {}).get("units", "arbitrary units")
+
+        self.logger.info(f"Data Axis Units detected as: {axis_units}")
+
+        # Master containers for ALL scripts run in this session
+        all_valid_maps = []
+        all_valid_meta = []
+
+        optimal_data, processing_note = tools.get_optimal_analysis_data(state["hspy_data"])
+        self.logger.info(f"📊 Dynamic Analysis Prep: {processing_note}")
+        
+        # --- MAIN LOOP: Process each target description separately ---
+        for i, target in enumerate(custom_targets, 1):
+            target_desc = target.get("description", "Analyze feature")
+            self.logger.info(f"👉 Task {i}/{len(custom_targets)}: {target_desc}")
+
+            # 1. Define Prompt for this specific task
+            base_prompt = f"""
+            You are a Python Data Scientist specialized in Spectroscopy. 
+            The standard NMF tool failed to model a spectral feature described as: "{target_desc}".
+            
+            Your task: Write a Python function to mathematically model this feature. 
+            Since complex features often require multiple parameters (e.g., Peak Position AND Peak Width), your function must be able to return MULTIPLE maps.
+
+            ### 1. DATA CONTEXT
+            - Input Data `hspy_data`: Shape ({h}, {w}, {e}) (Numpy array)
+            - X-Axis `axis`: Shape ({e},) (Numpy array). **Units: {axis_units}**
+            - **Axis Range:** {state['energy_axis'][0]:.2f} to {state['energy_axis'][-1]:.2f} {axis_units}
+
+            ### 2. EXECUTION ENVIRONMENT (STRICT)
+            Your code will run in a restricted `exec()` sandbox. 
+            
+            **PRE-IMPORTED LIBRARIES (Available Globally):**
+            - `np`: The full NumPy library.
+            - `scipy`: The top-level SciPy module.
+            - `sklearn`: The top-level Scikit-Learn module.
+            
+            **PRE-IMPORTED FUNCTIONS (Direct Shortcuts):**
+            - `curve_fit`, `nnls` (from scipy.optimize)
+            - `linregress` (from scipy.stats)
+            - `find_peaks` (from scipy.signal)
+            - `gaussian_filter` (from scipy.ndimage)
+
+            ### 3. CODING CONSTRAINTS
+            1. **NO External Imports:** Do not import `os`, `sys`, `matplotlib`, or `warnings`. The sandbox does not support them.
+            2. **SciPy Submodules:** If you need a specific SciPy submodule that is NOT in the shortcuts list (e.g., `scipy.interpolate` or `scipy.integrate`), you MUST write `import scipy.interpolate` **inside** your function definition before using it.
+            3. **Standard Math:** Use `np.exp`, `np.log`, etc., instead of the `math` library.
+            4. **Return Format:** You must return a dictionary, not a print statement or a plot.
+
+
+            ### 4. YOUR GOAL
+            Write a function `analyze_feature(data, axis)` that:
+            1. Reshapes data to (pixels, energy).
+            2. Implements the specific math required.
+            3. Returns a DICTIONARY containing the results.
+
+            ### ADDITIONAL NOTES
+            The variable `hspy_data` passed to your function contains: **{processing_note}**.
+            However, even with pre-processing, experimental data often contains high-frequency shot noise (jitter).
+            If you are performing derivative-based operations (like `find_peaks` or `curve_fit`), it is advisable to apply a light smoothing filter
+            (e.g., `gaussian_filter(..., sigma=1-2)`) to ensure convergence.
+
+            ### REQUIRED RETURN FORMAT
+            {{
+                "maps": {{
+                    "Feature_Name_1": np.ndarray, 
+                    "Feature_Name_2": np.ndarray
+                }},
+                "units": {{                 
+                    "Feature_Name_1": "{axis_units}",
+                    "Feature_Name_2": "a.u."
+                }},    
+                "description": "Brief physics explanation"
+            }}
+
+            ### RESPONSE FORMAT
+            Return a JSON object with:
+            - "code": The valid Python code string.
+            - "explanation": Brief logic summary.
+            """
+
+            current_prompt = base_prompt
+            retries = 0
+            task_success = False
+
+            while retries < self.MAX_RETRIES:
+                try:
+                    # --- A. CLEAN SLATE FOR THIS ATTEMPT ---
+                    # Prevents "Ghost Data" from failed previous attempts accumulating
+                    current_run_valid_images = []
+                    current_run_valid_maps = []
+                    current_run_valid_meta = []
+                    qc_failures = []
+
+                    # --- B. GENERATE CODE ---
+                    self.logger.info(f"    (Attempt {retries+1}) Asking LLM to write code...")
+                    response = self.model.generate_content(current_prompt, generation_config=self.generation_config)
+                    result_json, _ = self._parse_llm_response(response)
+                    code_str = result_json.get("code", "")
+                    
+                    # --- C. SANDBOX SETUP ---
+                    local_scope = {}
+                    global_scope = {
+                        "np": np,
+                        "scipy": __import__("scipy"),
+                        "sklearn": __import__("sklearn"),
+                        "curve_fit": __import__("scipy.optimize", fromlist=["curve_fit"]).curve_fit,
+                        "nnls": __import__("scipy.optimize", fromlist=["nnls"]).nnls,
+                        "linregress": __import__("scipy.stats", fromlist=["linregress"]).linregress,
+                        "find_peaks": __import__("scipy.signal", fromlist=["find_peaks"]).find_peaks,
+                        "gaussian_filter": __import__("scipy.ndimage", fromlist=["gaussian_filter"]).gaussian_filter
+                    }
+                    
+                    # Execute Code
+                    exec(code_str, global_scope, local_scope)
+                    
+                    if "analyze_feature" not in local_scope:
+                        raise ValueError("Function 'analyze_feature' was not found in generated code.")
+                    
+                    # --- D. RUN ON DATA ---
+                    self.logger.info("    Executing generated code...")
+                    func = local_scope["analyze_feature"]
+                    result_dict = func(optimal_data, state["energy_axis"])
+                    
+                    # Validation
+                    if not isinstance(result_dict, dict): raise ValueError("Function return must be a dict.")
+                    maps_dict = result_dict.get("maps")
+                    if not maps_dict or not isinstance(maps_dict, dict):
+                        raise ValueError("Return dict must contain a 'maps' key.")
+
+                    # Save Script (for debugging)
+                    safe_task_name = _sanitize_filename(target_desc)[:30]
+                    script_filename = f"{iter_title}_T{i}_{safe_task_name}_{timestamp}.py"
+                    try:
+                        with open(os.path.join(output_dir, script_filename), "w", encoding="utf-8") as f:
+                            f.write(f"# Auto-generated Script\n# Task: {target_desc}\n\n{code_str}")
+                    except: pass
+
+                    # --- E. PROCESS MAPS (Dashboard + QC) ---
+                    total_maps_expected = len(maps_dict)
+                    raw_units = result_dict.get("units", "a.u.")
+                    desc = result_dict.get("description", "")
+
+                    for feature_name, result_map in maps_dict.items():
+                        # Shape/NaN Check
+                        if result_map.shape != (h, w): 
+                            self.logger.warning(f"    Skipping {feature_name}: Shape mismatch.")
+                            continue
+                        if np.all(np.isnan(result_map)):
+                            self.logger.warning(f"    Skipping {feature_name}: Map contains only NaNs.")
+                            continue
+
+                        # 1. Determine Units (Fixes UnboundLocalError)
+                        current_unit = "a.u."
+                        if isinstance(raw_units, dict):
+                            current_unit = raw_units.get(feature_name, "a.u.")
+                        elif isinstance(raw_units, str):
+                            current_unit = raw_units
+
+                        safe_feat = _sanitize_filename(feature_name)
+
+                        # 2. Generate Dashboard (Map + Histogram)
+                        # Assumes tools.create_feature_dashboard exists (as defined in previous turns)
+                        dashboard_bytes = tools.create_feature_dashboard(result_map, feature_name, current_unit)
+
+                        if dashboard_bytes:
+                            # 3. Visual QC (Generator-Judge Loop)
+                            self.logger.info(f"    👀 Performing Visual QC on {feature_name}...")
+                            is_valid, critique = self._check_result_visually(dashboard_bytes, f"{target_desc} ({feature_name})")
+                            
+                            if is_valid:
+                                # STAGE DATA (Do not commit to state yet)
+                                current_run_valid_images.append({
+                                    "label": f"Custom Analysis: {feature_name}", 
+                                    "data": dashboard_bytes,
+                                    "filename": f"{iter_title}_T{i}_{safe_feat}_Dashboard_{timestamp}.jpeg"
+                                })
+                                current_run_valid_maps.append(result_map)
+                                current_run_valid_meta.append({
+                                    "name": feature_name,
+                                    "units": current_unit,
+                                    "description": f"{desc}. [Data Source: {processing_note}]",
+                                    "stats": {
+                                        "min": float(np.nanmin(result_map)), 
+                                        "max": float(np.nanmax(result_map)),
+                                        "mean": float(np.nanmean(result_map))
+                                    }
+                                })
+                            else:
+                                self.logger.warning(f"    ❌ Visual QC rejected {feature_name}: {critique}")
+                                qc_failures.append(f"{feature_name}: {critique}")
+
+                    # --- F. SUCCESS DECISION (Threshold Logic) ---
+                    valid_count = len(current_run_valid_maps)
+                    success_rate = valid_count / total_maps_expected if total_maps_expected > 0 else 0
+
+                    if valid_count > 0 and success_rate >= self.SUCCESS_THRESHOLD:                        
+                        status_msg = "✅ Success" if valid_count == total_maps_expected else "⚠️ Partial Success"
+                        self.logger.info(f"    {status_msg} ({valid_count}/{total_maps_expected} passed). Committing valid maps.")
+                        
+                        # 1. COMMIT Valid Images
+                        for img_item in current_run_valid_images:
+                            tools.save_image_bytes(img_item['data'], output_dir, img_item['filename'], self.logger)
+                            if "analysis_images" not in state: state["analysis_images"] = []
+                            state["analysis_images"].append(img_item)
+                        
+                        # 2. COMMIT Data
+                        all_valid_maps.extend(current_run_valid_maps)
+                        all_valid_meta.extend(current_run_valid_meta)
+                        
+                        task_success = True
+                        break # Exit Retry Loop
+                    else:
+                        raise ValueError(f"Too many QC failures ({len(qc_failures)}/{total_maps_expected}). Critiques: {qc_failures}")
+
+                except Exception as e:
+                    error_msg = traceback.format_exc()
+                    if "QC failures" in str(e): error_msg = str(e) # Clean message for LLM
+                    
+                    self.logger.warning(f"    ❌ Attempt {retries+1} failed: {error_msg}")
+                    retries += 1
+                    current_prompt = base_prompt + f"\n\n### ❌ PREVIOUS ATTEMPT FAILED\nCritique:\n```text\n{error_msg}\n```\nFix the logic/math to address this critique."
+
+            if not task_success:
+                self.logger.error(f"    ⚠️ Task {i} failed after {self.MAX_RETRIES} attempts.")
+
+        # --- FINAL AGGREGATION ---
+        if not all_valid_maps:
+            self.logger.warning("⚠️ All dynamic analysis tasks failed.")
+            state["dynamic_analysis_failed"] = True
+            return state
+
+        # Stack maps from ALL scripts into one 3D array (H, W, N)
+        state["final_abundance_maps"] = np.stack(all_valid_maps, axis=-1)
+        state["custom_analysis_metadata_list"] = all_valid_meta
+        state["method_used"] = "Dynamic Code Generation"
+        state["new_tasks"] = [] 
+
+        self.logger.info(f"✅ Dynamic Analysis Complete. Total unique maps generated: {len(all_valid_maps)}")
+        return state
+
+    def _check_result_visually(self, dashboard_bytes: bytes, feature_desc: str) -> tuple[bool, str]:
+        """
+        Judge the Dashboard (Map + Histogram) with SPARSE SIGNAL AWARENESS.
+        """
+        check_prompt = [
+            f"You are a Quality Assurance Scientist. You wrote code to model the feature: '{feature_desc}'.",
+            "Below is the resulting 'Feature Dashboard'. Left=Map, Right=Histogram.",
+            
+            "\n### YOUR TASK",
+            "Determine if this result captures a REAL physical signal, even if that signal is rare or sparse.",
+            
+            "\n### CRITICAL: HANDLING SPARSE SIGNALS",
+            "In spectroscopy, some features (like impurities) only exist in small regions.",
+            "If the Histogram shows a large pile-up at zero/bounds (background) BUT there is a distinct, smaller population distribution elsewhere, **THIS IS VALID.**",
+            
+            "\n### FAILURE CRITERIA (Reject ONLY if these are true):",
+            "1. **Total Noise:** The map is pure 'static' (salt-and-pepper) with ZERO recognizable structure.",
+            "2. **Total Algorithm Failure:** The histogram is a **SINGLE** sharp spike (Dirac delta) containing 100% of the data.",
+            "3. **Complete Rail-Gazing:** The data is piled up at the min/max edges with **NO secondary distribution** visible.",
+            
+            "\n### SUCCESS CRITERIA (Accept if present):",
+            "- **Structure:** Does the map show ANY structured domains, even if they are small?",
+            "- **Population:** Is there a visible distribution (bell curve, tail, or cluster) separate from the background spike?",
+            
+            "\n### OUTPUT FORMAT",
+            "Return a JSON object with:",
+            "- 'valid': boolean",
+            "- 'critique': string (Briefly explain decision)"
+        ]
+        
+        check_prompt.append({"mime_type": "image/jpeg", "data": dashboard_bytes})
+        
+        try:
+            # Low temperature for strict consistency
+            config = GenerationConfig(response_mime_type="application/json", temperature=0.1)
+            resp = self.model.generate_content(
+                check_prompt, 
+                generation_config=config,
+                safety_settings=self.safety_settings
+            )
+            result, _ = self._parse_llm_response(resp)
+            return result.get("valid", True), result.get("critique", "")
+        except Exception as e:
+            self.logger.warning(f"QC check crashed: {e}")
+            return True, ""
+    
+
+class RunSelfReflectionController:
+    """
+    [🧠 CRITIC Step]
+    Reviews the Draft 1 analysis against the images to catch hallucinations.
+    """
+    def __init__(self, model, logger, generation_config, safety_settings, parse_fn):
+        self.model = model
+        self.logger = logger
+        self.generation_config = generation_config
+        self.safety_settings = safety_settings
+        self._parse_llm_response = parse_fn
+        self.instructions = SPECTROSCOPY_REFLECTION_INSTRUCTIONS
+
+    def execute(self, state: dict) -> dict:
+        if state.get("error_dict"): return state
+        self.logger.info("\n\n🧠 --- SELF-REFLECTION: REVIEWING ANALYSIS --- 🧠\n")
+
+        # 1. Get the Draft 1 Analysis
+        current_result = state.get("result_json")
+        if not current_result:
+            self.logger.warning("No analysis found to review.")
+            return state
+            
+        draft_text = current_result.get("detailed_analysis", "")
+        claims = current_result.get("scientific_claims", [])
+
+        # 2. Build the Review Prompt
+        prompt_parts = [self.instructions]
+        prompt_parts.append("\n\n### DRAFT ANALYSIS TO REVIEW:")
+        prompt_parts.append(f"{draft_text}")
+        prompt_parts.append(f"\n\n### GENERATED CLAIMS:\n{json.dumps(claims, indent=2)}")
+
+        # 3. Add Evidence (Images)
+        # The critic needs to see the data to know if the text is lying.
+        prompt_parts.append("\n\n### VISUAL EVIDENCE:")
+        analysis_images = state.get("analysis_images", [])
+        if not analysis_images:
+            prompt_parts.append("(No images available for verification)")
+        
+        for img in analysis_images:
+            image_bytes = img.get('data') or img.get('bytes')
+            label = img.get('label', 'Unknown Plot')
+            if image_bytes:
+                prompt_parts.append(f"\n**{label}**")
+                prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
+
+        # 4. Run Model
+        try:
+            param_gen_config = GenerationConfig(response_mime_type="application/json")
+            response = self.model.generate_content(
+                contents=prompt_parts,
+                generation_config=param_gen_config,
+                safety_settings=self.safety_settings,
+            )
+            review_json, error = self._parse_llm_response(response)
+            
+            if error:
+                self.logger.warning("Reflection failed to parse. Assuming approval.")
+                state["reflection_result"] = {"status": "approved"}
+            else:
+                state["reflection_result"] = review_json
+                self.logger.info(f"✅ Reflection Complete. Status: {review_json.get('status')}")
+                if review_json.get('status') != 'approved':
+                    self.logger.info(f"   Critique: {review_json.get('critique')}")
+
+        except Exception as e:
+            self.logger.error(f"Reflection step crashed: {e}")
+            state["reflection_result"] = {"status": "approved"} # Fail open
+
+        return state
+
+
+class ApplyReflectionUpdatesController:
+    """
+    [🧠 EDITOR Step]
+    Applies the changes suggested by the critic, if any.
+    """
+    def __init__(self, model, logger, generation_config, safety_settings, parse_fn):
+        self.model = model
+        self.logger = logger
+        self.generation_config = generation_config
+        self.safety_settings = safety_settings
+        self._parse_llm_response = parse_fn
+        self.instructions = SPECTROSCOPY_REFLECTION_UPDATE_INSTRUCTIONS
+
+    def execute(self, state: dict) -> dict:
+        if state.get("error_dict"): return state
+        
+        review = state.get("reflection_result", {})
+        if review.get("status") == "approved":
+            self.logger.info("⏩ No revisions needed. Proceeding to report generation.")
+            return state
+
+        self.logger.info("\n\n🧠 --- REFINEMENT: APPLYING CRITICAL UPDATES --- 🧠\n")
+
+        # 1. Setup Context
+        original_result = state.get("result_json")
+        critique_text = review.get("critique", "No critique provided.")
+        
+        prompt_parts = [self.instructions]
+        prompt_parts.append(f"\n\n### CRITICAL REVIEW:\n{critique_text}")
+        prompt_parts.append(f"\n\n### ORIGINAL DRAFT:\n{json.dumps(original_result, indent=2)}")
+        
+        # We re-attach images so the editor can verify what needs to be changed
+        # (e.g., "Remove discussion of Component 3")
+        prompt_parts.append("\n\n### VISUAL CONTEXT (For Reference):")
+        for img in state.get("analysis_images", []):
+            image_bytes = img.get('data') or img.get('bytes')
+            label = img.get('label', 'Unknown Plot')
+            if image_bytes:
+                prompt_parts.append(f"\n**{label}**")
+                prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
+
+        # 2. Run Model
+        try:
+            param_gen_config = GenerationConfig(response_mime_type="application/json")
+            response = self.model.generate_content(
+                contents=prompt_parts,
+                generation_config=param_gen_config,
+                safety_settings=self.safety_settings,
+            )
+            updated_json, error = self._parse_llm_response(response)
+            
+            if not error and updated_json:
+                # OVERWRITE the result
+                state["result_json"] = updated_json
+                self.logger.info("✅ Analysis updated based on self-reflection.")
+            else:
+                self.logger.warning("Failed to parse updated analysis. Keeping original draft.")
+
+        except Exception as e:
+            self.logger.error(f"Refinement step crashed: {e}")
+            # Do not overwrite state['result_json'], just keep the old one
+
         return state

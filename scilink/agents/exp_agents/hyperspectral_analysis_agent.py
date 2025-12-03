@@ -20,23 +20,17 @@ from ...tools.image_processor import load_image, convert_numpy_to_jpeg_bytes # F
 
 class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
     """
-    Refactored agent for analyzing hyperspectral data using a modular,
-    controller-based pipeline.
-    
-    This agent now implements a recursive "survey-then-focus" loop.
-    It runs an analysis, uses an LLM to select a region to "zoom in" on,
-    and re-runs the analysis on that subset. It continues this loop
-    until no further refinement is needed, then synthesizes all results.
+    This agent implements a recursive "survey-then-focus" loop for hyperspectral data analysis.
     """
     
-    MAX_REFINEMENT_ITERATIONS = 4 # Global + 3 zoom-ins
+    MAX_REFINEMENT_ITERATIONS = 2 # Global + 2 zoom-ins
 
     def __init__(self, google_api_key: str | None = None, model_name: str = "gemini-2.5-pro-preview-06-05",
                  local_model: str = None,
                  spectral_unmixing_settings: dict | None = None,
                  run_preprocessing: bool = True,
                  output_dir: str = "spectroscopy_output",
-                 enable_human_feedback: bool = False):
+                 enable_human_feedback: bool = True):
         
         BaseAnalysisAgent.__init__(self, google_api_key, model_name, local_model)
         SimpleFeedbackMixin.__init__(self, enable_human_feedback=enable_human_feedback)
@@ -156,7 +150,7 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             initial_task = {
                 "data": original_hspy_data,           # The data chunk to analyze
                 "system_info": system_info,           # Metadata specific to this chunk
-                "title": "Global Analysis",           # Display title
+                "title": "Global_Analysis",           # Display title
                 "parent_reasoning": None,             # Context: Why are we looking at this?
                 "depth": 0                            # Recursion depth
             }
@@ -231,7 +225,8 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
                     "iteration_analysis_text": iteration_state.get("result_json", {}).get("detailed_analysis", "Analysis text not found."),
                     "analysis_images": iteration_state.get("analysis_images", []),
                     "refinement_decision": iteration_state.get("refinement_decision", {}),
-                    "depth": current_task["depth"]
+                    "depth": current_task["depth"],
+                    "custom_analysis_metadata": iteration_state.get("custom_analysis_metadata")
                 }
                 all_completed_results.append(result_summary)
 
@@ -290,19 +285,19 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
         """
         Analyze hyperspectral data to generate scientific claims.
         """
+        # 1. Run the Pipeline (Generates Draft 1 Report)
         result_json, error_dict = self._run_analysis_pipeline(
             data_path=data_path,
             system_info=metadata_path,
-            instruction_prompt=SPECTROSCOPY_CLAIMS_INSTRUCTIONS, # This will be used by the *synthesis* controller
+            instruction_prompt=SPECTROSCOPY_CLAIMS_INSTRUCTIONS, 
             structure_image_path=structure_image_path,
             structure_system_info=structure_system_info
         )
         
-        if error_dict:
-            return error_dict
-        if result_json is None:
-            return {"error": "Spectroscopy analysis for claims failed unexpectedly."}
+        if error_dict: return error_dict
+        if result_json is None: return {"error": "Spectroscopy analysis failed unexpectedly."}
 
+        # 2. Get Valid Claims (Draft 1)
         valid_claims = self._validate_scientific_claims(result_json.get("scientific_claims", []))
         
         initial_result = {
@@ -310,10 +305,35 @@ class HyperspectralAnalysisAgent(SimpleFeedbackMixin, BaseAnalysisAgent):
             "scientific_claims": valid_claims
         }
         
-        return self._apply_feedback_if_enabled(
+        # 3. Apply Feedback (Generates Draft 2 Text)
+        final_result = self._apply_feedback_if_enabled(
             initial_result,
-            system_info=self._handle_system_info(metadata_path) # Ensure it's a dict for feedback
+            system_info=self._handle_system_info(metadata_path)
         )
+
+        # 4. Check if feedback changed the result. If so, regenerate the HTML report.
+        if self.enable_human_feedback and final_result != initial_result:
+            self.logger.info("🔄 Feedback applied. Regenerating HTML report with refined analysis...")
+            
+            # Reconstruct the state required by the Controller
+            # We fetch images from the BaseAgent's storage
+            stored_images = self._get_stored_analysis_images() 
+            
+            repot_state = {
+                "result_json": final_result,  # Use the REFINED text
+                "system_info": self._handle_system_info(metadata_path),
+                "analysis_images": stored_images,
+                "image_path": data_path
+            }
+            
+            # Manually instantiate and run the controller
+            from .controllers.hyperspectral_controllers import GenerateHTMLReportController
+            report_gen = GenerateHTMLReportController(self.logger, self.spectral_settings)
+            report_gen.execute(repot_state)
+            
+            self.logger.info("✅ Refined HTML report generated.")
+        
+        return final_result
         
     def analyze_hyperspectral_data(self, data_path: str, metadata_path: str,
                                    structure_image_path: str = None,

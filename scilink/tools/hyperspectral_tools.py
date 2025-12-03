@@ -3,8 +3,10 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO
-from atomai.stat import SpectralUnmixer
+from .spectral_unmixer import SpectralUnmixer
 from .image_processor import create_multi_abundance_overlays
+import matplotlib.gridspec as gridspec
+from sklearn.decomposition import PCA
 import cv2
 
 def run_spectral_unmixing(
@@ -304,3 +306,419 @@ def apply_spectral_slice(
     }
     
     return sliced_data, new_system_info
+
+
+def compare_component_with_weighted_raw(
+    hspy_data: np.ndarray, 
+    component_spectrum: np.ndarray, 
+    abundance_map: np.ndarray, 
+    component_idx: int,
+    logger
+) -> bytes:
+    """
+    Calculates the Abundance-Weighted Average Spectrum of the raw data
+    and plots it against the NMF component for validation.
+    """
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    
+    try:
+        h, w, e = hspy_data.shape
+        
+        # Flatten
+        flat_data = hspy_data.reshape(-1, e) 
+        flat_abundance = abundance_map.ravel() 
+        
+        # Weighted Average
+        total_weight = np.sum(flat_abundance)
+        if total_weight < 1e-10:
+            return None
+
+        weighted_raw_spectrum = np.dot(flat_abundance, flat_data) / total_weight
+        
+        # Scale NMF to match raw data max
+        scale_factor = np.max(weighted_raw_spectrum) / (np.max(component_spectrum) + 1e-6)
+        scaled_nmf = component_spectrum * scale_factor
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(weighted_raw_spectrum, color='black', linewidth=2, alpha=0.8, label='Mean Spectrum')
+        ax.plot(scaled_nmf, color='red', linestyle='--', linewidth=1.5, label=f'NMF Comp {component_idx+1} (Model)')
+        
+        residual = weighted_raw_spectrum - scaled_nmf
+        ax.fill_between(range(len(residual)), residual, 0, color='gray', alpha=0.2, label='Residual')
+
+        ax.set_title(f"Validation: Component {component_idx+1} vs. Abundance-Weighted Mean Spectrum")
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        buf = BytesIO()
+        plt.savefig(buf, format='jpeg', dpi=150, bbox_inches='tight')
+        plt.close()
+        buf.seek(0)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to create weighted comparison plot: {e}")
+        return None
+    
+
+def create_validated_component_pair(
+    hspy_data: np.ndarray, 
+    component_spectrum: np.ndarray, 
+    abundance_map: np.ndarray, 
+    component_idx: int,
+    system_info: dict,
+    logger
+) -> bytes:
+    """
+    Generates a Split-Panel visualization:
+    - Left: Spatial Map
+    - Right Top: Spectrum (Mean ± StdDev vs Model)
+    - Right Bottom: Residual
+    """
+    try:
+        h, w, e = hspy_data.shape
+        energy_axis, xlabel, _ = create_energy_axis(e, system_info)
+        
+        # --- Data Calculation ---
+        flat_data = hspy_data.reshape(-1, e)
+        flat_abundance = abundance_map.ravel()
+        total_weight = np.sum(flat_abundance)
+        
+        if total_weight < 1e-10: return None
+
+        weighted_raw_spectrum = np.dot(flat_abundance, flat_data) / total_weight
+        variance_sq = np.average((flat_data - weighted_raw_spectrum)**2, axis=0, weights=flat_abundance)
+        std_dev = np.sqrt(variance_sq)
+        
+        scale_factor = np.max(weighted_raw_spectrum) / (np.max(component_spectrum) + 1e-6)
+        scaled_nmf = component_spectrum * scale_factor
+        residual = weighted_raw_spectrum - scaled_nmf
+
+        # --- PLOTTING SETUP ---
+        fig = plt.figure(figsize=(12, 6))
+        gs = gridspec.GridSpec(2, 2, height_ratios=[3, 1], width_ratios=[1, 1.5])
+        
+        # 1. Spatial Map (Takes up the whole Left column)
+        ax_map = fig.add_subplot(gs[:, 0])
+        im = ax_map.imshow(abundance_map, cmap='viridis')
+        ax_map.set_title(f"Component {component_idx+1} Distribution", fontsize=12, fontweight='bold')
+        ax_map.axis('off')
+        plt.colorbar(im, ax=ax_map, fraction=0.046, pad=0.04)
+
+        # 2. Main Spectrum (Top Right)
+        ax_spec = fig.add_subplot(gs[0, 1])
+        
+        # Plot Variance Band (Background)
+        ax_spec.fill_between(energy_axis, 
+                             weighted_raw_spectrum - std_dev, 
+                             weighted_raw_spectrum + std_dev, 
+                             color='blue', alpha=0.15, label='Raw Variance (±1σ)')
+        
+        # Plot Mean and Model
+        ax_spec.plot(energy_axis, weighted_raw_spectrum, color='black', linewidth=2, label='Weighted Mean')
+        ax_spec.plot(energy_axis, scaled_nmf, color='red', linestyle='--', linewidth=1.5, label='NMF Model')
+        
+        ax_spec.set_title("Validation: Spectrum & Model Fit", fontsize=12, fontweight='bold')
+        ax_spec.legend(loc='best', fontsize=9)
+        ax_spec.grid(True, alpha=0.3)
+        ax_spec.set_ylabel("Intensity")
+        # Hide x-labels on top plot to avoid clutter
+        plt.setp(ax_spec.get_xticklabels(), visible=False)
+
+        # 3. Residual Plot (Bottom Right)
+        ax_res = fig.add_subplot(gs[1, 1], sharex=ax_spec)
+        
+        # Plot Zero line
+        ax_res.axhline(0, color='black', linewidth=1, alpha=0.5)
+        
+        # Plot Residual
+        ax_res.plot(energy_axis, residual, color='gray', linewidth=1)
+        ax_res.fill_between(energy_axis, residual, 0, color='gray', alpha=0.3)
+        
+        ax_res.set_ylabel("Residual")
+        ax_res.set_xlabel(xlabel)
+        ax_res.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        
+        buf = BytesIO()
+        plt.savefig(buf, format='jpeg', dpi=150, bbox_inches='tight')
+        plt.close()
+        buf.seek(0)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to create validated pair: {e}")
+        return None
+    
+
+def save_image_bytes(image_bytes: bytes, output_dir: str, filename: str, logger: logging.Logger = None) -> str:
+    """
+    Helper to save image bytes to disk. Returns the full filepath.
+    """
+    if not image_bytes:
+        return None
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, filename)
+        with open(filepath, 'wb') as f:
+            f.write(image_bytes)
+        if logger:
+            logger.info(f"📸 Saved image to: {filepath}")
+        return filepath
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to save image {filename}: {e}")
+        return None
+
+def create_image_grid(image_bytes_list: list, logger: logging.Logger = None) -> bytes:
+    """
+    Stitches a list of JPEG bytes into a single grid image using OpenCV.
+    """
+    if not image_bytes_list:
+        return None
+        
+    try:
+        # Decode all images
+        images = []
+        for b in image_bytes_list:
+            nparr = np.frombuffer(b, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                images.append(img)
+        
+        if not images:
+            return None
+
+        n_imgs = len(images)
+        
+        # If only one, return it directly (re-encoded to ensure consistency)
+        if n_imgs == 1:
+            return image_bytes_list[0]
+
+        # Determine grid size (target ~2 columns)
+        cols = 2
+        rows = (n_imgs + cols - 1) // cols
+        
+        # Find max dimensions to standardize cells
+        max_h = max(img.shape[0] for img in images)
+        max_w = max(img.shape[1] for img in images)
+        
+        # Create blank canvas (White background)
+        grid_h = rows * max_h
+        grid_w = cols * max_w
+        grid_img = np.zeros((grid_h, grid_w, 3), dtype=np.uint8) + 255 
+        
+        for idx, img in enumerate(images):
+            r = idx // cols
+            c = idx % cols
+            
+            # Resize current img to fit cell (centering logic)
+            h, w = img.shape[:2]
+            y_offset = r * max_h + (max_h - h) // 2
+            x_offset = c * max_w + (max_w - w) // 2
+            
+            grid_img[y_offset:y_offset+h, x_offset:x_offset+w] = img
+            
+        # Encode back to jpeg
+        retval, buf = cv2.imencode('.jpg', grid_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return buf.tobytes()
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"Failed to stitch validation grid: {e}")
+        return None
+
+def create_annotated_heatmap(data_map: np.ndarray, title: str, units: str) -> bytes:
+    """
+    Creates a clean, publication-quality heatmap.
+    Moved from RunDynamicAnalysisController.
+    """
+    # Slightly larger figure for clarity
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Robust scaling to handle outliers (2nd to 98th percentile)
+    vmin = np.nanpercentile(data_map, 2)
+    vmax = np.nanpercentile(data_map, 98)
+    
+    # Plot Data
+    im = ax.imshow(data_map, cmap='plasma', vmin=vmin, vmax=vmax, origin='upper')
+    
+    # Clean Colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label(f"{units}", rotation=270, labelpad=15, fontsize=12)
+    cbar.ax.tick_params(labelsize=10)
+    
+    # Title only (Large and bold)
+    clean_title = title.replace("_", " ")
+    ax.set_title(f"{clean_title}", fontsize=14, fontweight='bold', pad=12)
+    
+    # Remove axes ticks for a cleaner look
+    ax.set_xticks([])
+    ax.set_yticks([])
+    
+    # Remove the border spine for a modern look
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    buf = BytesIO()
+    plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
+    plt.close()
+    return buf.getvalue()
+
+def convert_energy_to_indices(
+    energy_axis: np.ndarray, 
+    target_start: float, 
+    target_end: float, 
+    min_channels: int = 10
+) -> tuple[int, int]:
+    """
+    Calculates array indices from physical energy values.
+    """
+    start_idx = (np.abs(energy_axis - target_start)).argmin()
+    end_idx = (np.abs(energy_axis - target_end)).argmin()
+    
+    if start_idx > end_idx:
+        start_idx, end_idx = end_idx, start_idx
+        
+    # Guardrail: Padding
+    if end_idx - start_idx < min_channels:
+        padding = min_channels // 2
+        start_idx = max(0, start_idx - padding)
+        end_idx = min(len(energy_axis), end_idx + padding)
+        
+    return start_idx, end_idx
+
+
+def create_feature_dashboard(data_map: np.ndarray, feature_name: str, units: str) -> bytes:
+    """
+    Creates a combined dashboard: Spatial Heatmap (Left) + Statistical Histogram (Right).
+    """
+
+    # 1. Clean Data for Histogram
+    flat_data = data_map.ravel()
+    valid_data = flat_data[~np.isnan(flat_data)]
+    
+    if len(valid_data) == 0:
+        return None
+
+    # 2. Setup Figure (2 Columns)
+    fig = plt.figure(figsize=(12, 5))
+    gs = gridspec.GridSpec(1, 2, width_ratios=[1.5, 1]) # Map is slightly wider
+    
+    # --- LEFT PANEL: Spatial Heatmap ---
+    ax_map = fig.add_subplot(gs[0])
+    
+    # Robust scaling (2nd-98th percentile) to ignore hot pixels
+    vmin = np.nanpercentile(data_map, 2)
+    vmax = np.nanpercentile(data_map, 98)
+    
+    im = ax_map.imshow(data_map, cmap='plasma', vmin=vmin, vmax=vmax, origin='upper')
+    ax_map.set_title(f"Spatial Map: {feature_name}", fontsize=12, fontweight='bold')
+    ax_map.axis('off') # Clean look
+    
+    # Colorbar attached to map
+    cbar = plt.colorbar(im, ax=ax_map, fraction=0.046, pad=0.04)
+    cbar.set_label(units, rotation=270, labelpad=15)
+
+    # --- RIGHT PANEL: Histogram ---
+    ax_hist = fig.add_subplot(gs[1])
+    
+    # Dynamic binning
+    n_bins = min(50, max(15, int(len(valid_data)**0.4)))
+    ax_hist.hist(valid_data, bins=n_bins, color='#2c3e50', alpha=0.75, edgecolor='white', linewidth=0.5)
+    
+    # Statistics Box
+    mu = np.mean(valid_data)
+    sigma = np.std(valid_data)
+    stats_text = f"Mean: {mu:.2f}\nStd Dev: {sigma:.2f}"
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.3)
+    ax_hist.text(0.95, 0.95, stats_text, transform=ax_hist.transAxes, fontsize=10,
+                 verticalalignment='top', horizontalalignment='right', bbox=props)
+    
+    ax_hist.set_xlabel(f"{feature_name} ({units})")
+    ax_hist.set_ylabel("Pixel Count")
+    ax_hist.set_title("Population Statistics")
+    ax_hist.grid(True, linestyle=':', alpha=0.6)
+    ax_hist.spines['top'].set_visible(False)
+    ax_hist.spines['right'].set_visible(False)
+
+    plt.tight_layout()
+    
+    # 3. Save
+    buf = BytesIO()
+    plt.savefig(buf, format='jpeg', bbox_inches='tight', dpi=150)
+    plt.close()
+    return buf.getvalue()
+
+
+def estimate_global_snr(hspy_data: np.ndarray) -> float:
+    """
+    Estimates SNR using the standard deviation of spectral derivatives.
+    Returns a float (e.g., 50.0 is clean, 3.0 is noisy).
+    """
+    # Flatten spatial dims: (Pixels, Energy)
+    h, w, c = hspy_data.shape
+    flat_data = hspy_data.reshape(-1, c)
+    
+    # 1. Estimate Signal Strength (Mean of global average spectrum)
+    # We take the mean of the data (simple approximation)
+    signal_mean = np.mean(flat_data)
+    if signal_mean <= 0: return 0.0
+
+    # 2. Estimate Noise (Std Dev of the derivative)
+    # diff(axis=1) removes slow-moving signal, leaving mostly high-freq noise
+    noise_est = np.std(np.diff(flat_data, axis=1)) / np.sqrt(2)
+    
+    if noise_est <= 0: return 100.0 # Perfect signal
+
+    return float(signal_mean / noise_est)
+
+def get_optimal_analysis_data(hspy_data: np.ndarray) -> tuple[np.ndarray, str]:
+    """
+    Decides between Raw vs. PCA-Cleaned data based on SNR.
+    """
+    snr = estimate_global_snr(hspy_data)
+    
+    # 1. PRISTINE DATA (SNR > 50)
+    # If the signal is 50x stronger than noise, curve_fit usually works fine on Raw.
+    # We trust the physics here.
+    if snr >= 50.0:
+        return hspy_data, f"Raw Data (High Quality, SNR={snr:.1f})"
+        
+    # 2. THE MIDDLE GROUND (SNR 15 - 50) 
+    # Data is good, but has 'shot noise' (jitter). 
+    # We keep 99.9% variance. This deletes the "fuzz" but keeps all signal shapes.
+    elif snr >= 15.0:
+        threshold = 0.999 
+        method = "PCA (Gentle)"
+        
+    # 3. STANDARD NOISE (SNR 5 - 15)
+    # Needs standard cleaning to prevent fit failures.
+    elif snr >= 5.0:
+        threshold = 0.99
+        method = "PCA (Standard)"
+
+    # 4. HIGH NOISE (SNR < 5)
+    # Garbage in, garbage out. We must scrub hard to get anything useful.
+    else:
+        threshold = 0.90
+        method = "PCA (Aggressive)"
+        
+    try:
+        h, w, c = hspy_data.shape
+        flat = hspy_data.reshape(-1, c)
+        
+        # Determine N components dynamically based on variance
+        pca = PCA(n_components=threshold)
+        transformed = pca.fit_transform(flat)
+        reconstructed = pca.inverse_transform(transformed).reshape(h, w, c)
+        
+        n_kept = pca.n_components_
+        note = f"Denoised (SNR={snr:.1f}). Applied {method} (Kept {n_kept} comps, {threshold*100}% variance)."
+        return reconstructed, note
+        
+    except Exception as e:
+        return hspy_data, f"Raw Data (Denoising failed: {e})"

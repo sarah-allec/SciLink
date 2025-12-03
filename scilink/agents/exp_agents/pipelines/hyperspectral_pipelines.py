@@ -9,9 +9,13 @@ from ..controllers.hyperspectral_controllers import (
     RunFinalSpectralUnmixingController,
     CreateAnalysisPlotsController,
     BuildHyperspectralPromptController,
+    RunDynamicAnalysisController,
     SelectRefinementTargetController,
     GenerateRefinementTasksController,
-    BuildHolisticSynthesisPromptController
+    BuildHolisticSynthesisPromptController,
+    GenerateHTMLReportController,
+    RunSelfReflectionController,      
+    ApplyReflectionUpdatesController   
 )
 from ..controllers.base_controllers import (
     RunFinalInterpretationController,
@@ -19,6 +23,8 @@ from ..controllers.base_controllers import (
     IterativeFeedbackController
 )
 from ..preprocess import HyperspectralPreprocessingAgent
+
+from ..instruct import SPECTROSCOPY_REFINEMENT_INSTRUCTIONS
 
 def create_hyperspectral_iteration_pipeline(
     model,
@@ -74,17 +80,23 @@ def create_hyperspectral_iteration_pipeline(
         model, logger, generation_config, safety_settings, parse_fn
     ))
 
-    # 3c. [🧠 LLM] Decide if we need to zoom
+    # 3c. [🧠 LLM] Decide if we need to zoom (Draft the plan)
     pipeline.append(SelectRefinementTargetController(
         model, logger, generation_config, safety_settings, parse_fn
     ))
     
-    # 3d. [🧠/👤 User] Immediate Feedback step
+    # 3d. [🧠/👤 User] FEEDBACK STEP
     pipeline.append(IterativeFeedbackController(
-        model, logger, generation_config, safety_settings, parse_fn, settings
+        model, logger, generation_config, safety_settings, 
+        parse_fn, settings, refinement_instruction=SPECTROSCOPY_REFINEMENT_INSTRUCTIONS
+    ))
+
+    # 3e. [🧠/💻] Dynamic Analysis
+    pipeline.append(RunDynamicAnalysisController(
+        model, logger, generation_config, safety_settings, parse_fn
     ))
     
-    # 3e. [🛠️ Tool] Prepare data for next loop (if needed)
+    # 3f. [🛠️ Tool] Prepare data for next loop (Standard NMF tasks)
     pipeline.append(GenerateRefinementTasksController(logger))
 
     logger.info(f"Hyperspectral *iteration* pipeline created with {len(pipeline)} steps.")
@@ -99,18 +111,31 @@ def create_hyperspectral_synthesis_pipeline(
     parse_fn: Callable,
     store_fn: Callable
 ) -> List:
-    # ... (Implementation of synthesis pipeline remains unchanged)
+
     pipeline = []
 
     # 1. [📝 Prep] Build the holistic synthesis prompt
     pipeline.append(BuildHolisticSynthesisPromptController(logger))
 
-    # 2. [🧠 LLM] Run final synthesis interpretation
+    # 2. [🧠 LLM] Run final synthesis interpretation (DRAFT 1)
     pipeline.append(RunFinalInterpretationController(
         model, logger, generation_config, safety_settings, parse_fn
     ))
+    
+    # 3. [🧠 Critic] Review for hallucinations/overfitting
+    pipeline.append(RunSelfReflectionController(
+        model, logger, generation_config, safety_settings, parse_fn
+    ))
 
-    # 3. [🛠️ Tool] Store all images from all iterations
+    # 4. [🧠 Editor] Apply fixes if needed
+    pipeline.append(ApplyReflectionUpdatesController(
+        model, logger, generation_config, safety_settings, parse_fn
+    ))
+    
+    # 5. [📄 Report] Generate HTML Report
+    pipeline.append(GenerateHTMLReportController(logger, settings))
+
+    # 6. [🛠️ Tool] Store all images
     pipeline.append(StoreAnalysisResultsController(logger, store_fn))
     
     logger.info(f"Hyperspectral *synthesis* pipeline created with {len(pipeline)} steps.")

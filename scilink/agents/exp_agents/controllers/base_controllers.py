@@ -4,8 +4,6 @@ import json
 
 from google.generativeai.types import GenerationConfig
 
-from ..instruct import ITERATION_REFINEMENT_INSTRUCTIONS
-
 
 class RunFinalInterpretationController:
     """
@@ -86,25 +84,23 @@ class StoreAnalysisResultsController:
 
 class IterativeFeedbackController:
     """
-    [🧠 LLM/User Step] Facilitates human-in-the-loop validation and refinement 
-    of LLM-generated analysis plans (e.g., refinement targets).
-    
-    It requests LLM refinement based on human feedback on a structured decision JSON.
-    """
-    def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable, settings: dict):
+    [🧠 LLM/User Step] 
+    Facilitates human-in-the-loop validation and refinement.
+        """
+    def __init__(self, model, logger, generation_config, safety_settings, parse_fn: Callable, settings: dict, refinement_instruction: str):
         self.model = model
         self.logger = logger
         self.generation_config = generation_config
         self.safety_settings = safety_settings
         self._parse_llm_response = parse_fn
-        self.refinement_instruction = ITERATION_REFINEMENT_INSTRUCTIONS 
-        # Default is [0] (Global Analysis only)
+        
+        # The pipeline MUST provide the logic prompt
+        self.refinement_instruction = refinement_instruction 
+            
         self.feedback_depths = settings.get('feedback_depths', [0])
-        # If a future agent needs feedback EVERY time, it sets feedback_depths = [0, 1, 2, 3, ...] or just a list containing all integers.
 
     def execute(self, state: dict) -> dict:
         # Check if human feedback is globally enabled (via agent settings)
-        # Note: 'enable_human_feedback' must be passed into the 'settings' key in state.
         if not state.get('settings', {}).get('enable_human_feedback', False):
              self.logger.info("Feedback skipped: Human feedback not enabled for this agent.")
              return state
@@ -147,7 +143,7 @@ class IterativeFeedbackController:
             t_desc = t.get('description', 'No description provided.')
             
             print(f"  {i}. Type: {t_type:<15} | Value: {str(t_value):<15}")            
-            print(f"     Description: {t_desc}")
+            print(f"      Description: {t_desc}")
         
         print("-" * 80)
         
@@ -184,31 +180,21 @@ class IterativeFeedbackController:
                 prompt_parts.append(f"\n{img['label']}:")
                 prompt_parts.append({"mime_type": "image/jpeg", "data": image_bytes})
         
-        # Append the refinement instruction (which defines the output JSON structure)
-        #prompt_parts.append(f"\n\nProvide your final, REVISED plan strictly adhering to the format defined in the instruction below. {self.refinement_instruction}")
+        # Inject mandatory instructions here
+        prompt_parts.append(f"\n\n### DECISION RULES\n{self.refinement_instruction}")
+
         prompt_parts.append("""
 
-### REVISED OUTPUT REQUIREMENT
+### REVISION REQUIREMENTS
 You MUST re-analyze the original targets and the human feedback, then generate a single, complete, and definitive JSON object.
 
 Your task is to provide the FINAL list of executable tasks. Do NOT embed descriptions or reasonings outside of the specified keys.
-
-Output must strictly adhere to the original JSON format:
-
-```json
-{
-  "refinement_needed": [true/false],
-  "reasoning": "[String explaining how you integrated the human feedback.]",
-  "targets": [
-    {
-      "type": "[spatial/spectral/data_subset/...]",
-      "description": "[A concise description of the task]",
-      "value": "[The specific technical parameter, e.g., component index (integer) or energy range ([65, 100])]"
-    }
-    // ... all other executable targets
-  ]
-}
+                            
+You are FORBIDDEN from returning `refinement_needed: true` with an empty `targets` list. If refinement is needed, at least one target is required.
+                            
+Output must strictly adhere to the JSON format defined above.
 """)
+
         
         # Call LLM for structured revision
         param_gen_config = GenerationConfig(response_mime_type="application/json")
@@ -223,7 +209,10 @@ Output must strictly adhere to the original JSON format:
             if refined_json and not error_dict:
                 state["refinement_decision"] = refined_json
                 self.logger.info(f"✅ Refinement success. Final decision: {refined_json.get('reasoning', 'No reasoning').strip()}")
-                print(f"\n✅ REFINED: New plan established based on feedback.")
+                
+                # Debug print to confirm targets were created
+                new_targets = refined_json.get("targets", [])
+                print(f"\n✅ REFINED: New plan established based on feedback. ({len(new_targets)} targets created)")
             else:
                 self.logger.error("❌ LLM failed to produce a valid refinement JSON. Retaining original decision.")
                 print("\n❌ Refinement failed due to bad LLM output. Retaining original plan.")
