@@ -1,13 +1,18 @@
 import google.generativeai as genai
 import json
 import logging
+import shutil
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 from .knowledge_base import KnowledgeBase
 from .pdf_parser import extract_pdf_two_pass, chunk_text
 from .excel_parser import parse_adaptive_excel
-from .parser_utils import get_files_from_directory, generate_repo_map
+from .parser_utils import (
+    get_files_from_directory, 
+    generate_repo_map, 
+    write_experiments_to_disk # <--- NEW IMPORT
+)
 from .repo_loader import clone_git_repository
 
 from .instruct import (
@@ -22,6 +27,7 @@ from .rag_engine import (
     perform_science_rag, 
     perform_code_rag, 
     refine_plan_with_feedback,
+    refine_code_with_feedback,
     verify_plan_relevance
 )
 from .user_interface import display_plan_summary, get_user_feedback
@@ -328,8 +334,7 @@ class PlanningAgent:
                 ctx_string += f"## {header}\n{content}\n\n"
         
         ctx_string = ctx_string.strip() if ctx_string else None
-        
-        # This generates the Plan, Steps, and Hypothesis (No Code)
+        # This generates the Plan, Steps, and Hypothesis (No Code)        
         res = perform_science_rag(
             objective=objective,
             instructions=HYPOTHESIS_GENERATION_INSTRUCTIONS,
@@ -340,7 +345,7 @@ class PlanningAgent:
             primary_data_set=primary_data_set,
             image_paths=image_paths,
             image_descriptions=image_descriptions,
-            additional_context=ctx_string # Pass the formatted string
+            additional_context=ctx_string
         )
 
         # Self-reflection and correction
@@ -397,7 +402,57 @@ class PlanningAgent:
                  generation_config=self.generation_config
              )
 
+        # =====================================================
+        # PHASE 4: HUMAN CODE REVIEW
+        # =====================================================
+        if enable_human_feedback:
+            temp_dir = Path("./temp_code_review")
+            print(f"\n--- Phase 4: Human Code Review ---")
+            print(f"  - 💾 Saving generated code to temporary folder: {temp_dir}")
+            
+            if temp_dir.exists(): shutil.rmtree(temp_dir)
+            
+            # CALL UTILITY FUNCTION
+            files = write_experiments_to_disk(res, str(temp_dir))
+            
+            if not files:
+                print("  - ⚠️ No code generated to review.")
+            else:
+                while True:
+                    print("\n" + "="*60)
+                    print(f"👀 ACTION REQUIRED: Code Review")
+                    print("="*60)
+                    print(f"1. Open the folder: {temp_dir.resolve()}")
+                    print(f"2. Inspect the {len(files)} generated Python file(s).")
+                    print("3. Return here to Approve or Request Changes.")
+                    print("-" * 60)
+                    
+                    code_feedback = get_user_feedback()
+                    
+                    if not code_feedback:
+                        print("✅ Code accepted.")
+                        break
+                    
+                    print(f"\n🛠️  Refining code based on: '{code_feedback}'...")
+                    res = refine_code_with_feedback(
+                    result=res,
+                    feedback=code_feedback,
+                    model=self.model,
+                    generation_config=self.generation_config
+                    )
+                    
+                    print(f"  - 💾 Overwriting files in {temp_dir} with refined code...")
+                    files = write_experiments_to_disk(res, str(temp_dir))
+                    print("  - ✅ Files updated. Please re-review.")
+
+        # --- Save & Return ---
         if output_json_path: self._save_results_to_json(res, output_json_path)
+        
+        # FINAL SAVE using Utility
+        final_out = "./output_scripts"
+        print(f"\n--- Saving Final Scripts to: {final_out} ---")
+        write_experiments_to_disk(res, final_out)
+        
         return res
 
     def perform_technoeconomic_analysis(self, objective: str,
@@ -427,62 +482,3 @@ class PlanningAgent:
 
         if output_json_path: self._save_results_to_json(res, output_json_path)
         return res
-    
-    def save_implementation_scripts(self, result_json: Dict[str, Any], base_output_dir: str):
-        """
-        Reads the LLM's structured JSON output and saves any generated 
-        'implementation_code' strings as separate .py files.
-        """
-        if result_json.get("error"):
-            print("  - ⚠️ Skipping code script saving: LLM output contained an error.")
-            return
-
-        experiments = result_json.get("proposed_experiments", [])
-        if not experiments:
-            print("  - ⚠️ Skipping code script saving: No experiments found in JSON output.")
-            return
-
-        base_path = Path(base_output_dir)
-        base_path.mkdir(parents=True, exist_ok=True)
-        num_saved = 0
-
-        print(f"\n--- Saving Generated Code Scripts to: {base_output_dir} ---")
-
-        for i, exp in enumerate(experiments):
-            code_content = exp.get("implementation_code")
-            exp_name = exp.get("experiment_name", f"Experiment_{i+1}")
-            
-            # Clean filename
-            safe_name = "".join(c for c in exp_name if c.isalnum() or c in (' ', '_')).rstrip()
-            safe_name = safe_name.replace(' ', '_')
-            if not safe_name: safe_name = f"experiment_code_{i+1}"
-            
-            filename = f"{safe_name}.py"
-            file_path = base_path / filename
-
-            if code_content and "No relevant code found" not in code_content:
-                try:
-                    # Strip markdown ```
-                    code_lines = code_content.splitlines()
-                    start_index = next((j for j, line in enumerate(code_lines) if line.strip().startswith('```')), -1)
-                    end_index = next((j for j, line in enumerate(code_lines[start_index+1:]) if line.strip().endswith('```')), -1)
-                    
-                    if start_index != -1 and end_index != -1:
-                        extracted_code = "\n".join(code_lines[start_index + 1 : end_index + start_index + 1]).strip()
-                    else:
-                        extracted_code = code_content.strip()
-
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(extracted_code)
-                    
-                    print(f"  - ✅ Saved script for '{exp_name}' to: {file_path.name}")
-                    num_saved += 1
-                except Exception as e:
-                    logging.error(f"  - ❌ Failed to save code script {filename}: {e}")
-            else:
-                 print(f"  - ℹ️ Experiment {i+1} has no executable code content. Skipping save.")
-
-        if num_saved > 0:
-            print(f"--- Successfully saved {num_saved} executable script(s). ---")
-        else:
-             print("--- No executable scripts were generated or saved. ---")
