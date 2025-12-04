@@ -248,7 +248,7 @@ class PlanningAgent:
                             science_paths: Optional[List[str]] = None, 
                             code_paths: Optional[List[str]] = None,
                             structured_data_sets: Optional[List[Dict[str, str]]] = None,
-                            tea_summary: Optional[str] = None,
+                            additional_context: Optional[Dict[str, str]] = None,
                             primary_data_set: Optional[Dict[str, str]] = None,
                             image_paths: Optional[List[str]] = None,
                             image_descriptions: Optional[List[str]] = None,
@@ -276,8 +276,12 @@ class PlanningAgent:
                   automatically cloned/updated and ingested.
             structured_data_sets (List[Dict], optional): List of Excel/CSV metadata for general context. 
                 Format: `[{'file_path': '...', 'metadata_path': '...'}]`.
-            tea_summary (str, optional): A text summary of a Technoeconomic Analysis to constrain 
-                the plan (e.g., "Avoid platinum catalysts due to cost").
+            additional_context (Dict[str, str], optional): A dictionary of extra text context.
+                The keys will be used as headers and values as content in the prompt.
+                Example: {
+                    "TEA Findings": "Platinum is too expensive.", 
+                    "Safety Constraints": "Do not use HF."
+                }
             primary_data_set (Dict, optional): A specific dataset that is the focus of this experiment.
             image_paths (List[str], optional): Paths to relevant images (charts, diagrams) for multimodal analysis.
             image_descriptions (List[str], optional): Contextual text descriptions for the provided images.
@@ -317,7 +321,13 @@ class PlanningAgent:
         # =====================================================
         print(f"\n--- Phase 1: Generating Experimental Strategy ---")
         
-        ctx = f"TEA Findings:\n{tea_summary}" if tea_summary else None
+        # Iterate through the dictionary to create a structured string
+        ctx_string = ""
+        if additional_context:
+            for header, content in additional_context.items():
+                ctx_string += f"## {header}\n{content}\n\n"
+        
+        ctx_string = ctx_string.strip() if ctx_string else None
         
         # This generates the Plan, Steps, and Hypothesis (No Code)
         res = perform_science_rag(
@@ -330,7 +340,7 @@ class PlanningAgent:
             primary_data_set=primary_data_set,
             image_paths=image_paths,
             image_descriptions=image_descriptions,
-            additional_context=ctx
+            additional_context=ctx_string # Pass the formatted string
         )
 
         # Self-reflection and correction
@@ -341,7 +351,7 @@ class PlanningAgent:
             if not is_relevant:
                 print(f"\n🔄 Self-Reflection triggered: {critique}")
                 print("    - Attempting autonomous plan correction...")
-  
+   
                 res = refine_plan_with_feedback(
                     original_result=res,
                     feedback=f"CRITICAL CORRECTION NEEDED: {critique}. Ensure the plan directly addresses the objective: {objective}",
@@ -378,7 +388,6 @@ class PlanningAgent:
         # =====================================================
         # PHASE 3: CODE IMPLEMENTATION (Code KB Only)
         # =====================================================
-        # Now we generate code for the *Finalized* steps
         if self.kb_code.index and self.kb_code.index.ntotal > 0 and not res.get("error"):
              print(f"\n--- Phase 3: Mapping to Implementation Code ---")
              res = perform_code_rag(
@@ -388,7 +397,6 @@ class PlanningAgent:
                  generation_config=self.generation_config
              )
 
-        # --- Save & Return ---
         if output_json_path: self._save_results_to_json(res, output_json_path)
         return res
 
