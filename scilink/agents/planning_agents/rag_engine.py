@@ -375,3 +375,72 @@ def refine_plan_with_feedback(original_result: Dict[str, Any],
     except Exception as e:
         print(f"    - ⚠️ Error during refinement: {e}")
         return original_result
+    
+
+def refine_code_with_feedback(result: Dict[str, Any], 
+                              feedback: str, 
+                              model: Any, 
+                              generation_config: Any) -> Dict[str, Any]:
+    """
+    Refines the implementation code based on user feedback.
+    """
+    experiments = result.get("proposed_experiments", [])
+    if not experiments:
+        return result
+
+    # Context construction: We dump the current code so the LLM knows what to fix
+    current_code_state = ""
+    for i, exp in enumerate(experiments):
+        name = exp.get('experiment_name', f'Experiment {i+1}')
+        code = exp.get("implementation_code", "# No code generated")
+        current_code_state += f"--- CODE FOR: {name} ---\n{code}\n\n"
+
+    prompt = f"""
+    You are a Senior Research Software Engineer.
+    
+    **TASK:** Refine the Python implementation code based on User Feedback.
+    
+    **CURRENT CODE STATE:**
+    {current_code_state}
+    
+    **USER FEEDBACK / ERROR REPORT:**
+    "{feedback}"
+    
+    **INSTRUCTIONS:**
+    1. Apply the user's fixes to the relevant code blocks.
+    2. If the user refers to a specific experiment, only update that one.
+    3. You must return a JSON object with a list of "updated_codes". 
+       Each item in the list must match the order of the experiments above.
+    4. Provide the FULL updated code for each script, not just the diffs.
+    
+    **OUTPUT FORMAT:**
+    {{
+        "updated_codes": [
+            "FULL_PYTHON_SCRIPT_1...",
+            "FULL_PYTHON_SCRIPT_2..."
+        ]
+    }}
+    """
+    
+    print(f"    - ↻ Refine Code RAG: Generating updates based on feedback...")
+    try:
+        response = model.generate_content([prompt], generation_config=generation_config)
+        updates, error = _parse_json_from_response(response)
+        
+        if updates and "updated_codes" in updates:
+            new_codes = updates["updated_codes"]
+            # Map back to the result structure
+            if len(new_codes) == len(experiments):
+                for i, code in enumerate(new_codes):
+                    experiments[i]["implementation_code"] = code
+                print("    - ✅ Code successfully refined.")
+            else:
+                print("    - ⚠️ Warning: LLM returned wrong number of code blocks. Skipping update.")
+        elif error:
+            print(f"    - ⚠️ JSON Error during refinement: {error}")
+        
+        return result
+        
+    except Exception as e:
+        print(f"    - ❌ Error during code refinement: {e}")
+        return result
