@@ -1,0 +1,826 @@
+"""
+LAMMPS utilities for the MDSimulationAgent.
+
+Provides:
+  - Data file parsing and system analysis
+  - Script validation (structural checks)
+  - Script cleaning and fixing
+  - Force field file integration
+
+Called by MDSimulationAgent when the LAMMPS skill is active.
+Decoupled from the skill so they can be tested independently.
+"""
+
+import os
+import re
+import shutil
+import logging
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple
+
+import ase.data
+
+logger = logging.getLogger(__name__)
+
+
+# ─── Mass-to-Element Lookup (from ASE) ───────────────────────────────
+
+def _build_mass_lookup() -> List[Tuple[float, str]]:
+    """
+    Build a sorted list of (mass, symbol) from ASE's periodic table.
+    Used for nearest-mass matching when data file comments are absent.
+    """
+    pairs = []
+    for Z in range(1, len(ase.data.atomic_masses)):
+        symbol = ase.data.chemical_symbols[Z]
+        mass = ase.data.atomic_masses[Z]
+        if mass > 0:
+            pairs.append((mass, symbol))
+    pairs.sort(key=lambda x: x[0])
+    return pairs
+
+_ASE_MASS_TABLE = _build_mass_lookup()
+
+
+def element_from_mass(mass: float, tolerance: float = 1.5) -> Optional[str]:
+    """
+    Identify element symbol from atomic mass using ASE data.
+
+    Args:
+        mass: Atomic mass in amu.
+        tolerance: Maximum allowed deviation from standard mass.
+
+    Returns:
+        Element symbol, or None if no match within tolerance.
+    """
+    best_symbol = None
+    best_delta = tolerance
+    for ref_mass, symbol in _ASE_MASS_TABLE:
+        delta = abs(ref_mass - mass)
+        if delta < best_delta:
+            best_delta = delta
+            best_symbol = symbol
+    return best_symbol
+
+
+# ─── System Classification Constants ─────────────────────────────────
+
+_METALS = {
+    "Li", "Be", "Na", "Mg", "Al", "K", "Ca", "Sc", "Ti", "V", "Cr",
+    "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Rb", "Sr", "Y", "Zr",
+    "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Cs",
+    "Ba", "La", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Tl", "Pb", "Bi",
+}
+_SEMICONDUCTORS = {"Si", "Ge", "Ga", "As", "In", "Sb", "P"}
+_HALIDES = {"F", "Cl", "Br", "I"}
+
+# Pair styles that must NOT have kspace
+_NO_KSPACE_STYLES = {
+    "eam", "eam/alloy", "eam/fs", "meam", "meam/c",
+    "tersoff", "tersoff/zbl", "sw", "airebo", "airebo-m",
+    "rebo", "lcbop", "bop", "snap", "comb3",
+}
+# Pair styles that REQUIRE kspace
+_REQUIRES_KSPACE = {
+    "lj/cut/coul/long", "lj/charmm/coul/long", "buck/coul/long",
+    "lj/long/coul/long", "coul/long", "tip4p/long",
+}
+
+
+# ─── Tool Availability ───────────────────────────────────────────────
+
+def check_lammps() -> Dict[str, Any]:
+    """
+    Check if LAMMPS is available and what packages are installed.
+
+    Returns:
+        {"available": bool, "path": str|None, "packages": [...]}
+    """
+    lmp_path = (
+        shutil.which("lmp")
+        or shutil.which("lmp_serial")
+        or shutil.which("lmp_mpi")
+    )
+    result = {"available": lmp_path is not None, "path": lmp_path, "packages": []}
+    if lmp_path:
+        try:
+            import subprocess
+            proc = subprocess.run(
+                [lmp_path, "-h"], capture_output=True, text=True, timeout=10,
+            )
+            in_packages = False
+            for line in proc.stdout.split("\n"):
+                if "Installed packages:" in line:
+                    in_packages = True
+                    continue
+                if in_packages and line.strip():
+                    result["packages"].extend(line.strip().split())
+                elif in_packages:
+                    break
+        except Exception:
+            pass
+    return result
+
+
+# ─── Data File Parsing ───────────────────────────────────────────────
+
+def _detect_atom_style(atoms_lines: List[str], has_bonds: bool) -> str:
+    """
+    Detect atom_style from the column count of the first data line.
+
+      atomic:    id type x y z              (5 cols min)
+      charge:    id type q x y z            (6 cols min)
+      molecular: id mol type x y z          (6 cols min)
+      full:      id mol type q x y z        (7 cols min)
+
+    Image flags may add 3 extra columns. Uses has_bonds to
+    disambiguate charge (no bonds) from molecular (bonds).
+    """
+    for line in atoms_lines:
+        parts = line.split()
+        ncols = len(parts)
+        # Core columns (excluding possible image flags)
+        # Image flags: 3 trailing integers, so core = ncols or ncols-3
+        if ncols >= 10 and has_bonds:
+            return "full"       # 7 core + 3 image
+        elif ncols >= 9 and not has_bonds:
+            return "charge"     # 6 core + 3 image
+        elif ncols >= 9 and has_bonds:
+            return "molecular"  # 6 core + 3 image (or full without q)
+        elif ncols >= 7 and has_bonds:
+            return "full"
+        elif ncols == 6:
+            return "molecular" if has_bonds else "charge"
+        elif ncols >= 5:
+            return "atomic"
+        break
+    return "full"  # conservative default
+
+
+def _type_column_index(atom_style: str) -> int:
+    """Return the 0-based column index of atom type."""
+    if atom_style in ("full", "molecular"):
+        return 2  # id mol type ...
+    return 1      # id type ... (atomic, charge)
+
+
+def _detect_vacuum_gap(
+    box_dims: List[float],
+    atoms_lines: List[str],
+    atom_style: str,
+) -> Dict[str, Any]:
+    """
+    Detect vacuum gaps indicating surface/slab geometry.
+    Reports axis with largest vacuum fraction if > 25%.
+    """
+    result = {"has_vacuum": False, "vacuum_axis": None, "vacuum_fraction": 0.0}
+
+    # Coordinate column offset
+    offsets = {"full": 4, "charge": 3, "molecular": 3, "atomic": 2}
+    xyz_start = offsets.get(atom_style, 2)
+
+    coords: Dict[int, List[float]] = {0: [], 1: [], 2: []}
+    for line in atoms_lines[:5000]:
+        parts = line.split()
+        try:
+            for dim in range(3):
+                coords[dim].append(float(parts[xyz_start + dim]))
+        except (IndexError, ValueError):
+            continue
+
+    if not coords[0]:
+        return result
+
+    axis_names = ["x", "y", "z"]
+    for dim in range(3):
+        if not coords[dim] or box_dims[dim] <= 0:
+            continue
+        span = max(coords[dim]) - min(coords[dim])
+        vac = 1.0 - (span / box_dims[dim])
+        if vac > 0.25 and vac > result["vacuum_fraction"]:
+            result["has_vacuum"] = True
+            result["vacuum_axis"] = axis_names[dim]
+            result["vacuum_fraction"] = round(vac, 3)
+
+    return result
+
+
+def parse_data_file(data_file: str) -> Dict[str, Any]:
+    """
+    Parse a LAMMPS data file to extract system information.
+
+    Handles atom_style atomic, charge, molecular, and full.
+    Detects system category and vacuum gaps.
+    """
+    info: Dict[str, Any] = {
+        "atom_count": 0,
+        "bond_count": 0,
+        "angle_count": 0,
+        "atom_types": 0,
+        "bond_types": 0,
+        "angle_types": 0,
+        "dihedral_types": 0,
+        "improper_types": 0,
+        "box_dimensions": [0.0, 0.0, 0.0],
+        "has_pair_coeffs": False,
+        "has_bond_coeffs": False,
+        "atom_style": "unknown",
+        "atom_type_labels": {},
+        "mass_map": {},
+        "elements": [],
+        "element_counts": {},
+        "has_bonds": False,
+        "has_water": False,
+        "has_ions": False,
+        "has_organic": False,
+        "has_metal": False,
+        "has_semiconductor": False,
+        "system_category": "unknown",
+        "has_vacuum": False,
+        "vacuum_axis": None,
+    }
+
+    try:
+        with open(data_file, "r") as f:
+            lines = f.readlines()
+    except Exception as e:
+        logger.error(f"Cannot read data file: {e}")
+        return info
+
+    # ── Parse header ──
+    _HEADER_PATTERNS = {
+        " atoms": "atom_count",
+        " bonds": "bond_count",
+        " angles": "angle_count",
+        "atom types": "atom_types",
+        "bond types": "bond_types",
+        "angle types": "angle_types",
+        "dihedral types": "dihedral_types",
+        "improper types": "improper_types",
+    }
+    for line in lines[:40]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split()
+        try:
+            n = int(parts[0])
+        except (ValueError, IndexError):
+            # Box bounds
+            lower = stripped.lower()
+            try:
+                if "xlo" in lower and "xhi" in lower:
+                    info["box_dimensions"][0] = float(parts[1]) - float(parts[0])
+                elif "ylo" in lower and "yhi" in lower:
+                    info["box_dimensions"][1] = float(parts[1]) - float(parts[0])
+                elif "zlo" in lower and "zhi" in lower:
+                    info["box_dimensions"][2] = float(parts[1]) - float(parts[0])
+            except (ValueError, IndexError):
+                pass
+            continue
+
+        lower = stripped.lower()
+        for pattern, key in _HEADER_PATTERNS.items():
+            if pattern in lower:
+                info[key] = n
+                break
+
+    info["has_bonds"] = info["bond_count"] > 0
+
+    # ── Detect coefficient sections ──
+    section_names = {l.strip() for l in lines}
+    info["has_pair_coeffs"] = "Pair Coeffs" in section_names
+    info["has_bond_coeffs"] = "Bond Coeffs" in section_names
+
+    # ── Parse Masses ──
+    in_masses = False
+    _SECTION_HEADERS = {
+        "Atoms", "Pair Coeffs", "Bond Coeffs", "Velocities",
+        "Bonds", "Angles", "Dihedrals", "Impropers",
+    }
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "Masses":
+            in_masses = True
+            continue
+        if in_masses:
+            if not stripped or stripped in _SECTION_HEADERS or stripped.startswith("Atoms"):
+                break
+            if stripped.startswith("#"):
+                continue
+            parts = stripped.split()
+            if len(parts) < 2:
+                continue
+            try:
+                type_id = int(parts[0])
+                mass = float(parts[1])
+            except (ValueError, IndexError):
+                continue
+
+            # Element from comment label
+            label = ""
+            if "#" in stripped:
+                label = stripped.split("#", 1)[1].strip()
+
+            element = None
+            if label:
+                match = re.match(r'[A-Z][a-z]?', label)
+                if match:
+                    element = match.group()
+
+            # Fallback: nearest mass via ASE
+            if not element:
+                element = element_from_mass(mass)
+
+            if not element:
+                element = f"X{type_id}"
+
+            info["mass_map"][type_id] = (mass, element)
+            info["atom_type_labels"][type_id] = label or element
+
+    # ── Extract Atoms section ──
+    atoms_lines: List[str] = []
+    in_atoms = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "Atoms" or stripped.startswith("Atoms #"):
+            in_atoms = True
+            continue
+        if in_atoms:
+            if stripped in _SECTION_HEADERS or stripped in (
+                "Velocities", "Bonds", "Angles", "Dihedrals", "Impropers",
+            ):
+                break
+            if stripped and not stripped.startswith("#"):
+                atoms_lines.append(stripped)
+
+    # ── Detect atom_style and count types ──
+    info["atom_style"] = _detect_atom_style(atoms_lines, info["has_bonds"])
+    type_col = _type_column_index(info["atom_style"])
+
+    type_counts: Dict[int, int] = {}
+    for line in atoms_lines:
+        parts = line.split()
+        try:
+            atom_type = int(parts[type_col])
+            type_counts[atom_type] = type_counts.get(atom_type, 0) + 1
+        except (IndexError, ValueError):
+            pass
+
+    for type_id, count in type_counts.items():
+        element = info["mass_map"].get(type_id, (0.0, f"Type{type_id}"))[1]
+        info["element_counts"][element] = (
+            info["element_counts"].get(element, 0) + count
+        )
+    info["elements"] = sorted(info["element_counts"].keys())
+
+    # ── Vacuum detection ──
+    vacuum = _detect_vacuum_gap(info["box_dimensions"], atoms_lines, info["atom_style"])
+    info.update({
+        "has_vacuum": vacuum["has_vacuum"],
+        "vacuum_axis": vacuum.get("vacuum_axis"),
+    })
+
+    # ── System classification ──
+    ec = info["element_counts"]
+    elems = set(info["elements"])
+
+    info["has_water"] = (
+        "O" in ec and "H" in ec
+        and ec.get("H", 0) >= 2 * ec.get("O", 0)
+        and info["has_bonds"]
+    )
+    info["has_ions"] = bool(elems & _HALIDES) or bool(
+        elems & {"Na", "K", "Ca", "Mg", "Li", "Rb", "Cs"}
+    )
+    info["has_organic"] = "C" in ec and info["has_bonds"]
+    info["has_metal"] = bool(elems & _METALS) and not info["has_bonds"]
+    info["has_semiconductor"] = bool(elems & _SEMICONDUCTORS) and not info["has_bonds"]
+
+    # Category (ordered by specificity)
+    if info["has_bonds"] and ("C" in ec or "N" in ec):
+        info["system_category"] = "biomolecular"
+    elif info["has_bonds"] and info["has_water"] and not info["has_organic"]:
+        info["system_category"] = "liquid"
+    elif not info["has_bonds"] and elems <= _METALS:
+        info["system_category"] = "metal"
+    elif not info["has_bonds"] and elems & _SEMICONDUCTORS and "O" not in ec:
+        info["system_category"] = "semiconductor"
+    elif not info["has_bonds"] and "O" in ec and elems & _METALS:
+        info["system_category"] = "oxide"
+    elif not info["has_bonds"] and info["has_ions"]:
+        info["system_category"] = "ionic"
+    else:
+        info["system_category"] = "unknown"
+
+    return info
+
+
+def format_type_info(data_file: str) -> str:
+    """Format data file contents for LLM prompts."""
+    info = parse_data_file(data_file)
+    lines = [
+        "DATA FILE ANALYSIS:",
+        f"  Atoms: {info['atom_count']} ({info['atom_types']} types)",
+        f"  Bonds: {info['bond_count']} ({info['bond_types']} types)",
+        f"  Angles: {info['angle_count']} ({info['angle_types']} types)",
+        f"  Dihedrals: {info['dihedral_types']} types, Impropers: {info['improper_types']} types",
+        f"  Box: {[f'{d:.2f}' for d in info['box_dimensions']]}",
+        f"  Detected atom_style: {info['atom_style']}",
+        f"  Coefficients in data file: {'Yes' if info['has_pair_coeffs'] else 'No'}",
+        f"  System category: {info['system_category']}",
+    ]
+    if info["has_vacuum"]:
+        lines.append(f"  Vacuum gap: {info['vacuum_axis']} axis (surface/slab)")
+    lines.append("")
+    lines.append("MASS-ELEMENT MAPPING:")
+    for tid in sorted(info["mass_map"]):
+        mass, element = info["mass_map"][tid]
+        label = info["atom_type_labels"].get(tid, "")
+        lines.append(f"  type {tid} = {element} (mass {mass:.3f}) {label}")
+    lines.append("")
+    lines.append("ELEMENT COUNTS:")
+    for el in sorted(info["element_counts"]):
+        lines.append(f"  {el}: {info['element_counts'][el]}")
+    return "\n".join(lines)
+
+
+# ─── Script Validation ───────────────────────────────────────────────
+
+def validate_script(
+    script_path: str,
+    system_info: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Validate a LAMMPS input script structurally.
+
+    Checks: required commands, ordering, forbidden combinations,
+    unit-aware parameter ranges, potential file existence.
+    """
+    result: Dict[str, Any] = {
+        "valid": True,
+        "errors": [],
+        "warnings": [],
+        "has_minimize": False,
+        "has_run": False,
+        "has_shake": False,
+        "timestep": None,
+        "units": None,
+        "atom_style": None,
+        "pair_style": None,
+        "boundary": None,
+    }
+
+    try:
+        content = Path(script_path).read_text()
+    except Exception as e:
+        return {**result, "valid": False, "errors": [f"Cannot read: {e}"]}
+
+    lines = content.split("\n")
+    commands_seen: set = set()
+    command_order: List[str] = []
+
+    # Track thermostat/barostat per group
+    npt_groups: set = set()
+    nvt_groups: set = set()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        keyword = parts[0].lower()
+        commands_seen.add(keyword)
+        command_order.append(keyword)
+
+        if keyword == "units" and len(parts) >= 2:
+            result["units"] = parts[1].lower()
+        elif keyword == "atom_style" and len(parts) >= 2:
+            result["atom_style"] = parts[1].lower()
+        elif keyword == "pair_style" and len(parts) >= 2:
+            result["pair_style"] = parts[1].lower()
+        elif keyword == "boundary" and len(parts) >= 4:
+            result["boundary"] = parts[1:4]
+        elif keyword == "timestep" and len(parts) >= 2:
+            try:
+                result["timestep"] = float(parts[1])
+            except ValueError:
+                pass
+        elif keyword == "minimize":
+            result["has_minimize"] = True
+        elif keyword == "run":
+            result["has_run"] = True
+        elif keyword == "fix" and len(parts) >= 4:
+            group = parts[2]
+            style = parts[3].lower()
+            if "shake" in style or "rattle" in style:
+                result["has_shake"] = True
+            if style in ("npt", "nph"):
+                npt_groups.add(group)
+            elif style == "nvt":
+                nvt_groups.add(group)
+
+    errors = result["errors"]
+    warnings = result["warnings"]
+
+    # ── Required commands ──
+    if "units" not in commands_seen:
+        errors.append("Missing 'units' command")
+    if "atom_style" not in commands_seen:
+        errors.append("Missing 'atom_style' command")
+    if "read_data" not in commands_seen and "read_restart" not in commands_seen:
+        errors.append("Missing 'read_data' or 'read_restart'")
+    if not result["has_run"] and not result["has_minimize"]:
+        errors.append("No 'run' or 'minimize' — script does nothing")
+
+    # ── Command ordering ──
+    def _before(a: str, b: str, msg: str):
+        if a in command_order and b in command_order:
+            if command_order.index(a) > command_order.index(b):
+                errors.append(msg)
+
+    _before("units", "read_data", "'read_data' before 'units'")
+    _before("pair_style", "pair_coeff", "'pair_coeff' before 'pair_style'")
+    _before("bond_style", "bond_coeff", "'bond_coeff' before 'bond_style'")
+
+    # ── Forbidden combinations ──
+    pair_style = result["pair_style"] or ""
+    atom_style = result["atom_style"] or ""
+    boundary = result["boundary"]
+    units = result["units"]
+
+    # kspace with many-body potential
+    if pair_style in _NO_KSPACE_STYLES and "kspace_style" in commands_seen:
+        errors.append(
+            f"kspace_style with {pair_style} — "
+            f"this potential has no Coulomb term"
+        )
+
+    # coul/long without kspace (check both direct and hybrid)
+    if pair_style in _REQUIRES_KSPACE and "kspace_style" not in commands_seen:
+        errors.append(f"{pair_style} requires kspace_style")
+    elif "kspace_style" not in commands_seen:
+        for line in lines:
+            s = line.strip()
+            if not s.startswith("#") and "pair_style" in s and "coul/long" in s:
+                errors.append("pair_style uses coul/long but no kspace_style")
+                break
+
+    # bond_style / fix shake with atom_style atomic
+    if atom_style == "atomic":
+        if "bond_style" in commands_seen:
+            errors.append("bond_style with atom_style atomic — no bonds")
+        if result["has_shake"]:
+            errors.append("fix shake with atom_style atomic — no bonds to constrain")
+
+    # ReaxFF without qeq
+    if "reaxff" in pair_style:
+        has_qeq = any(
+            "qeq" in l.lower()
+            for l in lines
+            if l.strip() and not l.strip().startswith("#")
+        )
+        if not has_qeq:
+            errors.append("reaxff without fix qeq/reaxff — charge equilibration required")
+
+    # NPT on non-periodic dimension
+    if boundary:
+        non_periodic = [i for i, b in enumerate(boundary) if b != "p"]
+        if non_periodic:
+            for line in lines:
+                s = line.strip()
+                if not s.startswith("fix") or s.startswith("#"):
+                    continue
+                lower = s.lower()
+                if ("npt" in lower or "nph" in lower) and ("iso" in lower or "aniso" in lower):
+                    dims = ["x", "y", "z"]
+                    bad = [dims[i] for i in non_periodic]
+                    warnings.append(
+                        f"NPT iso/aniso with boundary {' '.join(boundary)} — "
+                        f"barostat acts on non-periodic dim(s) {bad}"
+                    )
+                    break
+
+    # nvt + npt on same group
+    overlap = npt_groups & nvt_groups
+    if overlap:
+        errors.append(f"fix nvt and fix npt both on group(s): {overlap}")
+
+    # ── Unit-aware parameter ranges ──
+    ts = result["timestep"]
+    _TS_RANGES = {
+        "metal": (0.0001, 0.01,  "ps"),
+        "real":  (0.1,    4.0,   "fs"),
+        "lj":    (0.001,  0.02,  "τ"),
+    }
+    if ts is not None and units and units in _TS_RANGES:
+        lo, hi, label = _TS_RANGES[units]
+        if ts < lo or ts > hi:
+            errors.append(
+                f"Timestep {ts} outside sane range for 'units {units}' "
+                f"({lo}–{hi} {label})"
+            )
+
+    if units == "real" and ts is not None and ts >= 2.0 and not result["has_shake"]:
+        if atom_style in ("full", "molecular"):
+            warnings.append(
+                f"Timestep {ts} fs without SHAKE — may be unstable with flexible H bonds"
+            )
+
+    # Tdamp sanity
+    _TDAMP_WARN = {
+        "metal": (10.0, "too large for 'units metal' (expect 0.05–0.5 ps)"),
+        "real":  (1.0,  "too small for 'units real' (expect 50–500 fs)"),  # threshold: <1 is suspicious
+    }
+    for line in lines:
+        s = line.strip()
+        if not s.startswith("fix") or s.startswith("#"):
+            continue
+        parts = s.split()
+        if len(parts) < 4 or parts[3].lower() not in ("nvt", "npt"):
+            continue
+        if "temp" in parts:
+            try:
+                idx = parts.index("temp")
+                tdamp = float(parts[idx + 3])
+                if units == "metal" and tdamp > _TDAMP_WARN["metal"][0]:
+                    warnings.append(f"Tdamp={tdamp} {_TDAMP_WARN['metal'][1]}")
+                elif units == "real" and tdamp < _TDAMP_WARN["real"][0]:
+                    warnings.append(f"Tdamp={tdamp} {_TDAMP_WARN['real'][1]}")
+            except (ValueError, IndexError):
+                pass
+
+    # ── Unresolved templates ──
+    templates = re.findall(r'\$\{[a-z_]+\}|\{[a-z_]+\}', content, re.IGNORECASE)
+    if templates:
+        errors.append(f"Unresolved template variables: {sorted(set(templates))}")
+
+    # ── Force field completeness ──
+    if system_info:
+        if (
+            not system_info.get("has_pair_coeffs")
+            and "pair_coeff" not in commands_seen
+            and pair_style not in _NO_KSPACE_STYLES
+        ):
+            warnings.append("No Pair Coeffs in data file and no pair_coeff in script")
+
+    # ── Potential file existence ──
+    working_dir = Path(script_path).parent
+    _POTENTIAL_EXTS = (
+        ".eam", ".alloy", ".fs", ".meam", ".tersoff", ".sw",
+        ".airebo", ".reax", ".comb", ".snap", ".table", ".poly",
+    )
+    for line in lines:
+        s = line.strip()
+        if s.startswith("#") or not s.startswith("pair_coeff"):
+            continue
+        parts = s.split()
+        for part in parts[3:]:
+            if "." in part and not part.replace(".", "").replace("-", "").replace("+", "").replace("e", "").isdigit():
+                if any(ext in part.lower() for ext in _POTENTIAL_EXTS):
+                    if not (working_dir / part).exists():
+                        warnings.append(f"Potential file '{part}' not found in {working_dir}")
+
+    result["valid"] = len(errors) == 0
+    return result
+
+
+# ─── Script Cleaning ─────────────────────────────────────────────────
+
+def clean_script(text: str) -> str:
+    """Remove markdown fences and LLM artifacts."""
+    text = re.sub(r'```(?:lammps|bash|text)?', '', text)
+    text = text.replace('```', '')
+    return text.strip()
+
+
+def substitute_variables(
+    script: str,
+    temperature: float = 300.0,
+    pressure: float = 1.0,
+    timestep: float = 2.0,
+    data_filename: str = "system.data",
+) -> str:
+    """Replace common template placeholders with actual values."""
+    subs = {
+        "${temperature}": temperature, "{temperature}": temperature,
+        "${temp}": temperature, "{temp}": temperature,
+        "${t}": temperature, "${T}": temperature,
+        "${pressure}": pressure, "{pressure}": pressure,
+        "${press}": pressure, "{press}": pressure,
+        "${p}": pressure, "${P}": pressure,
+        "${timestep}": timestep, "{timestep}": timestep,
+        "${dt}": timestep, "{dt}": timestep,
+        "${data_file}": data_filename, "{data_file}": data_filename,
+        "${data_filename}": data_filename, "{data_filename}": data_filename,
+    }
+    for pattern, value in subs.items():
+        script = script.replace(pattern, str(value))
+    return script
+
+
+# ─── Force Field Integration ─────────────────────────────────────────
+
+_FF_STYLE_COMMANDS = {
+    "units", "atom_style", "dimension", "boundary",
+    "pair_style", "bond_style", "angle_style",
+    "dihedral_style", "improper_style",
+    "kspace_style", "special_bonds", "pair_modify",
+}
+_FF_COEFF_COMMANDS = {
+    "pair_coeff", "bond_coeff", "angle_coeff",
+    "dihedral_coeff", "improper_coeff", "set", "mass",
+}
+
+
+def integrate_force_field_files(
+    script: str,
+    force_field_files: Dict[str, str],
+    working_dir: str,
+) -> str:
+    """
+    Integrate force field files into a LAMMPS script.
+
+    Style-only files → include BEFORE read_data.
+    Coefficient files → inline AFTER read_data.
+    """
+    if not force_field_files:
+        return script
+
+    styles_files: List[str] = []
+    coeff_lines: List[str] = []
+
+    for name, ff_path in force_field_files.items():
+        resolved = ff_path
+        if not os.path.exists(resolved):
+            local = os.path.join(working_dir, os.path.basename(resolved))
+            if os.path.exists(local):
+                resolved = local
+            else:
+                logger.warning(f"FF file not found: {ff_path}")
+                continue
+
+        try:
+            ff_lines = Path(resolved).read_text().splitlines()
+        except Exception as e:
+            logger.warning(f"Cannot read {resolved}: {e}")
+            continue
+
+        has_styles = has_coeffs = False
+        for line in ff_lines:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            kw = s.split()[0].lower()
+            if kw in _FF_STYLE_COMMANDS:
+                has_styles = True
+            elif kw in _FF_COEFF_COMMANDS:
+                has_coeffs = True
+
+        if has_styles and not has_coeffs:
+            dest = Path(working_dir) / os.path.basename(resolved)
+            if str(Path(resolved).resolve()) != str(dest.resolve()):
+                shutil.copy2(resolved, dest)
+            styles_files.append(dest.name)
+        elif has_coeffs:
+            for line in ff_lines:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if s.split()[0].lower() in _FF_COEFF_COMMANDS:
+                    coeff_lines.append(s)
+
+    if not styles_files and not coeff_lines:
+        return script
+
+    lines = script.split("\n")
+
+    if styles_files:
+        lines = [
+            l for l in lines
+            if l.strip().startswith("#")
+            or not l.strip()
+            or l.strip().split()[0].lower() not in _FF_STYLE_COMMANDS
+        ]
+
+    read_data_pos = next(
+        (i for i, l in enumerate(lines) if l.strip().startswith("read_data")),
+        None,
+    )
+    if read_data_pos is None:
+        return script
+
+    new_lines: List[str] = []
+    for i, line in enumerate(lines):
+        if i == read_data_pos and styles_files:
+            new_lines += ["", "# ── Force field styles ──"]
+            new_lines += [f"include {f}" for f in styles_files]
+            new_lines.append("")
+        new_lines.append(line)
+        if i == read_data_pos and coeff_lines:
+            new_lines += ["", "# ── Force field parameters ──"]
+            new_lines += coeff_lines
+            new_lines.append("")
+
+    return "\n".join(new_lines)
