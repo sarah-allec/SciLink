@@ -161,7 +161,7 @@ ReaxFF:
 | temperature   | 1-5000 K       | 1-5000 K          | 0.1-10.0      |
 
 
-## Implementation examples
+## Implementation
 
 ### Metal (EAM, bulk)
 ``` 

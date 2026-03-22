@@ -169,14 +169,20 @@ def _detect_vacuum_gap(
     box_dims: List[float],
     atoms_lines: List[str],
     atom_style: str,
+    min_gap_angstrom: float = 8.0,
 ) -> Dict[str, Any]:
     """
     Detect vacuum gaps indicating surface/slab geometry.
-    Reports axis with largest vacuum fraction if > 25%.
+
+    A gap is flagged only if BOTH:
+      - vacuum fraction > 25% of box dimension
+      - absolute gap size > min_gap_angstrom (default 8 Å)
+
+    This prevents false positives on small unit cells where atoms
+    sit at lattice sites that don't span the full box.
     """
     result = {"has_vacuum": False, "vacuum_axis": None, "vacuum_fraction": 0.0}
 
-    # Coordinate column offset
     offsets = {"full": 4, "charge": 3, "molecular": 3, "atomic": 2}
     xyz_start = offsets.get(atom_style, 2)
 
@@ -197,14 +203,14 @@ def _detect_vacuum_gap(
         if not coords[dim] or box_dims[dim] <= 0:
             continue
         span = max(coords[dim]) - min(coords[dim])
-        vac = 1.0 - (span / box_dims[dim])
-        if vac > 0.25 and vac > result["vacuum_fraction"]:
+        gap = box_dims[dim] - span
+        vac_frac = gap / box_dims[dim]
+        if vac_frac > 0.25 and gap > min_gap_angstrom and vac_frac > result["vacuum_fraction"]:
             result["has_vacuum"] = True
             result["vacuum_axis"] = axis_names[dim]
-            result["vacuum_fraction"] = round(vac, 3)
+            result["vacuum_fraction"] = round(vac_frac, 3)
 
     return result
-
 
 def parse_data_file(data_file: str) -> Dict[str, Any]:
     """
@@ -305,9 +311,12 @@ def parse_data_file(data_file: str) -> Dict[str, Any]:
             in_masses = True
             continue
         if in_masses:
-            if not stripped or stripped in _SECTION_HEADERS or stripped.startswith("Atoms"):
+            # Section headers end the block
+            if stripped in _SECTION_HEADERS or stripped.startswith("Atoms"):
                 break
-            if stripped.startswith("#"):
+            # Skip blank lines and comments (LAMMPS always has a blank
+            # line between the section header and the data)
+            if not stripped or stripped.startswith("#"):
                 continue
             parts = stripped.split()
             if len(parts) < 2:
@@ -318,7 +327,6 @@ def parse_data_file(data_file: str) -> Dict[str, Any]:
             except (ValueError, IndexError):
                 continue
 
-            # Element from comment label
             label = ""
             if "#" in stripped:
                 label = stripped.split("#", 1)[1].strip()
@@ -329,7 +337,6 @@ def parse_data_file(data_file: str) -> Dict[str, Any]:
                 if match:
                     element = match.group()
 
-            # Fallback: nearest mass via ASE
             if not element:
                 element = element_from_mass(mass)
 
