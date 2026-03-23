@@ -1,4 +1,4 @@
-# agents/sim_agents/base_simulation_agent.py
+# agents/sim_agents/base_agent.py
 """
 Base class for all simulation agents.
 
