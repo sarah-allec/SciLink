@@ -24,6 +24,11 @@ from scilink.hpc.scheduler import (
     detect_scheduler,
 )
 
+from scilink.ui.components.job_monitor import (
+    merge_agent_tracked_jobs,
+    render_job_monitor,
+    render_job_selector,
+)
 from scilink.ui.components.sim_workflow import render_agent_workflow
 
 import logging
@@ -210,7 +215,7 @@ def _render_dashboard() -> None:
             jobs = sched.queue()
             st.session_state.hpc_queue_cache = jobs
             st.session_state.hpc_queue_time = datetime.now()
-            # Merge into tracked jobs
+            # Merge queue jobs into tracked jobs
             tracked: dict[str, HPCJob] = st.session_state.get(
                 "hpc_tracked_jobs", {},
             )
@@ -220,6 +225,9 @@ def _render_dashboard() -> None:
         except Exception as exc:
             st.error(f"Failed to query queue: {exc}")
             return
+
+    # Also merge any agent-tracked jobs (SimulationOrchestratorAgent)
+    merge_agent_tracked_jobs()
 
     jobs: list[HPCJob] = st.session_state.get("hpc_queue_cache", [])
     if not jobs:
@@ -367,7 +375,8 @@ def _render_monitor() -> None:
         st.warning("No scheduler detected.")
         return
 
-    tracked: dict[str, HPCJob] = st.session_state.get("hpc_tracked_jobs", {})
+    # Merge agent-tracked jobs so they appear in the selector
+    tracked = merge_agent_tracked_jobs()
 
     # Allow manually adding a job ID
     if not tracked:
@@ -390,125 +399,19 @@ def _render_monitor() -> None:
     if not tracked:
         return
 
-    # Job selector
-    jids = list(tracked.keys())
-    labels = [
-        f"{jid} — {tracked[jid].name} "
-        f"({tracked[jid].status.emoji} {tracked[jid].status.value})"
-        for jid in jids
-    ]
-    cur_mon = st.session_state.get("hpc_monitored_job_id")
-    sel_idx = jids.index(cur_mon) if cur_mon in jids else 0
+    # Job selector (shared widget)
+    job_id = render_job_selector(tracked, key_prefix="hpc")
+    if not job_id:
+        return
 
-    chosen = st.selectbox(
-        "Select job",
-        range(len(labels)),
-        index=sel_idx,
-        format_func=lambda i: labels[i],
-        key="hpc_mon_sel",
+    # Shared monitoring fragment
+    render_job_monitor(
+        job_id,
+        poll_interval="3s",
+        show_output_files=True,
+        show_details_tab=True,
+        key_prefix="hpc_gen",
     )
-    job_id = jids[chosen]
-    st.session_state.hpc_monitored_job_id = job_id
-    job = tracked[job_id]
-
-    # Metrics row
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric("Status", f"{job.status.emoji} {job.status.value}")
-    with m2:
-        st.metric("Runtime", job.time_used or "—")
-    with m3:
-        st.metric("Nodes", job.node_list or str(job.nodes))
-    with m4:
-        if not job.status.is_terminal:
-            if st.button("🛑 Cancel job", key="hpc_cancel_job"):
-                try:
-                    sched.cancel(job_id)
-                    st.toast("Cancel signal sent.")
-                except Exception as exc:
-                    st.error(str(exc))
-
-    # ── live output fragment (polls every 3 s while job is active) ──
-    _poll_interval = "3s" if not job.status.is_terminal else None
-
-    @st.fragment(run_every=_poll_interval)
-    def _live_output() -> None:
-        _sched: Optional[Scheduler] = st.session_state.get("hpc_scheduler")
-        _tracked: dict[str, HPCJob] = st.session_state.get("hpc_tracked_jobs", {})
-        _jid = st.session_state.get("hpc_monitored_job_id")
-        if not _sched or not _jid or _jid not in _tracked:
-            return
-
-        # Refresh status
-        try:
-            fresh = _sched.status(_jid)
-            old_status = _tracked[_jid].status
-            _tracked[_jid] = fresh
-            st.session_state.hpc_tracked_jobs = _tracked
-        except Exception:
-            fresh = _tracked[_jid]
-            old_status = fresh.status
-
-        out_tab, err_tab, detail_tab = st.tabs(["stdout", "stderr", "Details"])
-        with out_tab:
-            try:
-                stdout = _sched.tail_output(fresh, "stdout", lines=250)
-                if stdout.strip():
-                    # Auto-scrolling code block
-                    import html as _html
-
-                    escaped = _html.escape(stdout)
-                    st.iframe(
-                        f'<pre id="so" style="height:350px;overflow-y:auto;'
-                        f"margin:0;background:#0e1117;padding:10px;"
-                        f"border-radius:6px;border:1px solid #333;"
-                        f"font-family:monospace;font-size:13px;"
-                        f'white-space:pre-wrap;color:#e0e0e0">'
-                        f"{escaped}</pre>"
-                        f"<script>var e=document.getElementById('so');"
-                        f"e.scrollTop=e.scrollHeight;</script>",
-                        height=370,
-                    )
-                else:
-                    st.caption("(no output yet)")
-            except Exception as exc:
-                st.caption(f"Cannot read stdout: {exc}")
-
-        with err_tab:
-            try:
-                stderr = _sched.tail_output(fresh, "stderr", lines=100)
-                if stderr.strip():
-                    st.code(stderr, language="text")
-                else:
-                    st.caption("(no stderr)")
-            except Exception as exc:
-                st.caption(f"Cannot read stderr: {exc}")
-
-        with detail_tab:
-            details = {
-                "Job ID": fresh.job_id,
-                "Name": fresh.name,
-                "Partition": fresh.partition,
-                "Nodes": fresh.node_list or str(fresh.nodes),
-                "Tasks": str(fresh.ntasks),
-                "Submit time": fresh.submit_time,
-                "Start time": fresh.start_time,
-                "End time": fresh.end_time,
-                "Time limit": fresh.time_limit,
-                "Work dir": fresh.work_dir,
-                "stdout file": fresh.stdout_file,
-                "stderr file": fresh.stderr_file,
-                "Exit code": str(fresh.exit_code) if fresh.exit_code is not None else "—",
-            }
-            for k, v in details.items():
-                if v:
-                    st.text(f"{k:>14}: {v}")
-
-        # Trigger full rerun when job transitions to terminal
-        if fresh.status.is_terminal and not old_status.is_terminal:
-            st.rerun(scope="app")
-
-    _live_output()
 
 
 # ── Terminal ──────────────────────────────────────────────────

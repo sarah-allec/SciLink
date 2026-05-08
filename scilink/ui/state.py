@@ -65,6 +65,7 @@ def init_session_state() -> None:
         "hpc_mon_downloaded_images": {},         # {remote_path: bytes}
         "hpc_remote_origins": {},           # {local_filename: remote_path}
         "hpc_env_probe": None,              # HPCEnvironment from probe_remote()
+        "hpc_available_software": {},        # {software_name: [modules/binaries]}
         # Theme
         "theme_mode": "dark",
     }

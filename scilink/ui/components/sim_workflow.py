@@ -12,6 +12,12 @@ from typing import Any, Dict, List, Optional, Set
 
 import streamlit as st
 
+from scilink.ui.components.job_monitor import (
+    render_job_monitor,
+    render_remote_output_files,
+    fmt_size,
+)
+
 
 # ══════════════════════════════════════════════════════════════
 # Script templates
@@ -297,11 +303,7 @@ def _parse_stage(log_text: str) -> tuple[str, float]:
     return current, progress
 
 
-def _count_errors_warnings(log_text: str) -> tuple[int, int]:
-    """Count error and warning lines in log output."""
-    errors = len(re.findall(r"^.*(?:ERROR|FAILED|FATAL).*$", log_text, re.M | re.I))
-    warnings = len(re.findall(r"^.*(?:WARNING|WARN).*$", log_text, re.M | re.I))
-    return errors, warnings
+# _count_errors_warnings moved to job_monitor.py
 
 
 # ══════════════════════════════════════════════════════════════
@@ -450,12 +452,7 @@ def _render_remote_file_picker(
     return selected
 
 
-def _fmt_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(n) < 1024:
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
+_fmt_size = fmt_size  # backward compat alias for remote file picker
 
 
 def _q(s: str) -> str:
@@ -1060,130 +1057,23 @@ def _render_monitoring() -> None:
 
     job_id = st.session_state.get("hpc_monitored_job_id")
     tracked = st.session_state.get("hpc_tracked_jobs", {})
-    sched = st.session_state.get("hpc_scheduler")
-    conn = st.session_state.get("hpc_connection")
 
     if not job_id or job_id not in tracked:
         st.warning("No job to monitor.")
-        if st.button("← Back",key="mon_back_nojob"):
+        if st.button("← Back", key="mon_back_nojob"):
             st.session_state.hpc_workflow_phase = "configure"
             st.rerun()
         return
 
-    job = tracked[job_id]
-    is_terminal = job.status.is_terminal if hasattr(job.status, "is_terminal") else False
-    poll_interval = None if is_terminal else "5s"
-
-    @st.fragment(run_every=poll_interval)
-    def _monitor_fragment():
-        _conn = st.session_state.get("hpc_connection")
-        _sched = st.session_state.get("hpc_scheduler")
-        _tracked = st.session_state.get("hpc_tracked_jobs", {})
-        _jid = st.session_state.get("hpc_monitored_job_id")
-
-        if not _conn or not _sched or not _jid or _jid not in _tracked:
-            return
-
-        _job = _tracked[_jid]
-
-        # ── Refresh status ────────────────────────────────
-        try:
-            fresh = _sched.status(_jid)
-            old_status = _job.status
-            # Preserve our stdout/stderr paths
-            fresh.stdout_file = fresh.stdout_file or _job.stdout_file
-            fresh.stderr_file = fresh.stderr_file or _job.stderr_file
-            fresh.work_dir = fresh.work_dir or _job.work_dir
-            _tracked[_jid] = fresh
-            st.session_state.hpc_tracked_jobs = _tracked
-            _job = fresh
-        except Exception:
-            old_status = _job.status
-
-        # ── Tail stdout ───────────────────────────────────
-        stdout_text = ""
-        if _job.stdout_file:
-            try:
-                stdout_text = _conn.read_text(_job.stdout_file, tail=500)
-            except Exception:
-                # File may not exist yet (job pending)
-                pass
-
-        stderr_text = ""
-        if _job.stderr_file:
-            try:
-                stderr_text = _conn.read_text(_job.stderr_file, tail=100)
-            except Exception:
-                pass
-
-        # ── Parse stage progress ──────────────────────────
-        stage, progress = _parse_stage(stdout_text)
-        n_errors, n_warnings = _count_errors_warnings(stdout_text)
-
-        # ── Metrics row────────────────────────────────
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric("Status", f"{_job.status.emoji} {_job.status.value}")
-        with m2:
-            st.metric("Stage", stage)
-        with m3:
-            runtime = _job.time_used or "—"
-            st.metric("Runtime", runtime)
-        with m4:
-            if n_errors:
-                st.metric("Issues", f"🔴 {n_errors} errors")
-            elif n_warnings:
-                st.metric("Issues", f"🟡 {n_warnings} warnings")
-            else:
-                st.metric("Issues", "✅ None")
-
-        # ── Progress bar ──────────────────────────────────
-        st.progress(progress, text=f"{stage} — {progress:.0%}")
-
-        # ── Cancel button ─────────────────────────────────
-        if not _job.status.is_terminal:
-            if st.button("🛑 Cancel job", key="mon_cancel"):
-                try:
-                    _sched.cancel(_jid)
-                    st.toast("Cancel signal sent.")
-                except Exception as e:
-                    st.error(str(e))
-
-        # ── Tabs: stdout / stderr / output files ──────────
-        t_out, t_err, t_files = st.tabs(["stdout", "stderr", "Output Files"])
-
-        with t_out:
-            if stdout_text.strip():
-                import html as _html
-                escaped = _html.escape(stdout_text[-8000:])
-                st.iframe(
-                    f'<pre id="so" style="height:320px;overflow-y:auto;'
-                    f"margin:0;background:#0e1117;padding:10px;"
-                    f"border-radius:6px;border:1px solid #333;"
-                    f"font-family:monospace;font-size:13px;"
-                    f'white-space:pre-wrap;color:#e0e0e0">'
-                    f"{escaped}</pre>"
-                    f"<script>var e=document.getElementById('so');"
-                    f"e.scrollTop=e.scrollHeight;</script>",
-                    height=340,
-                )
-            else:
-                st.caption("(no output yet — job may be queued)")
-
-        with t_err:
-            if stderr_text.strip():
-                st.code(stderr_text[-3000:], language="text")
-            else:
-                st.caption("(no stderr)")
-
-        with t_files:
-            _render_remote_output_files(_conn, _job)
-
-        # ── Transition to results when terminal ───────────
-        if _job.status.is_terminal and not old_status.is_terminal:
-            st.rerun(scope="app")
-
-    _monitor_fragment()
+    # Shared monitoring fragment with LAMMPS stage parser
+    render_job_monitor(
+        job_id,
+        poll_interval="5s",
+        show_output_files=True,
+        show_details_tab=True,
+        stage_parser=_parse_stage,
+        key_prefix="wf_mon",
+    )
 
     # ── Bottom actions (outside fragment) ─────────────────
     job = tracked[job_id]
@@ -1207,88 +1097,6 @@ def _render_monitoring() -> None:
             ):
                 st.session_state.hpc_workflow_phase = "configure"
                 st.rerun()
-
-
-def _render_remote_output_files(conn, job) -> None:
-    """List and display new output files from the remote working directory."""
-    if not job.work_dir:
-        st.caption("No working directory known.")
-        return
-
-    known: Set[str] = st.session_state.get("hpc_mon_known_files", set())
-    downloaded_images: Dict[str, bytes] = st.session_state.get(
-        "hpc_mon_downloaded_images", {},
-    )
-    IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
-
-    try:
-        entries = conn.listdir(job.work_dir)
-    except Exception as exc:
-        st.caption(f"Cannot list remote dir: {exc}")
-        return
-
-    files = [
-        e for e in entries
-        if not (stat_mod.S_ISDIR(e.st_mode) if e.st_mode else False)
-        and not e.filename.startswith(".")
-    ]
-    files.sort(key=lambda e: e.filename)
-
-    if not files:
-        st.caption("(no output files yet)")
-        return
-
-    # Discover new image files and download them
-    for entry in files:
-        ext = PurePosixPath(entry.filename).suffix.lower()
-        full = f"{job.work_dir}/{entry.filename}"
-        if ext in IMAGE_EXTS and full not in downloaded_images:
-            try:
-                data = conn.read_bytes(full)
-                downloaded_images[full] = data
-                st.session_state.hpc_mon_downloaded_images = downloaded_images
-            except Exception:
-                pass
-
-    # Show images
-    new_images = {
-        k: v for k, v in downloaded_images.items()
-        if PurePosixPath(k).suffix.lower() in IMAGE_EXTS
-    }
-    if new_images:
-        st.markdown("**Generated plots:**")
-        for path, data in new_images.items():
-            st.image(data, caption=PurePosixPath(path).name)
-
-    # File listing with download
-    st.markdown("**All files:**")
-    for entry in files:
-        name = entry.filename
-        size = _fmt_size(entry.st_size) if entry.st_size else ""
-        icon = _REMOTE_ICONS.get(PurePosixPath(name).suffix.lower(), "📄")
-        full = f"{job.work_dir}/{name}"
-
-        c_n, c_s, c_dl = st.columns([4, 1.5, 1])
-        with c_n:
-            st.caption(f"{icon} {name}")
-        with c_s:
-            st.caption(size)
-        with c_dl:
-            if full in downloaded_images:
-                st.download_button(
-                    "⬇", data=downloaded_images[full],
-                    file_name=name,
-                    key=f"mon_dl_{name}",
-                )
-            else:
-                if st.button("⬇", key=f"mon_fetch_{name}"):
-                    try:
-                        data = conn.read_bytes(full)
-                        downloaded_images[full] = data
-                        st.session_state.hpc_mon_downloaded_images = downloaded_images
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(str(exc))
 
 
 # ══════════════════════════════════════════════════════════════
