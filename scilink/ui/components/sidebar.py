@@ -153,9 +153,38 @@ def _render_hpc_connection() -> None:
                     profiles.append(profile)
                     st.session_state.hpc_saved_profiles = profiles
 
+                # Wire HPC into SimulationOrchestratorAgent if already running
+                _wire_hpc_to_agent(c, sched)
+
                 st.rerun()
             except Exception as exc:
                 st.error(f"Connection failed: {exc}")
+
+def _wire_hpc_to_agent(conn=None, sched=None) -> None:
+    """
+    Attach HPC connection and scheduler to the SimulationOrchestratorAgent
+    if one is already running in this session.
+
+    Safe to call speculatively — does nothing if the agent isn't a
+    SimulationOrchestratorAgent or doesn't have the expected attributes.
+    """
+    agent = st.session_state.get("agent")
+    if agent is None:
+        return
+    try:
+        from scilink.agents.sim_agents.simulation_orchestrator import (
+            SimulationOrchestratorAgent,
+        )
+        if not isinstance(agent, SimulationOrchestratorAgent):
+            return
+    except ImportError:
+        return
+
+    if conn is not None:
+        agent.hpc_connection = conn
+    if sched is not None:
+        agent.hpc_scheduler = sched
+
 
 def render_sidebar() -> None:
     with st.sidebar:
@@ -1004,6 +1033,13 @@ def _start_simulate_session(
     }
     st.session_state.chat_messages = []
     st.session_state.known_images = set()
+
+    # If HPC was already connected before session start, wire it in now
+    _conn = st.session_state.get("hpc_connection")
+    _sched = st.session_state.get("hpc_scheduler")
+    if _conn and _conn.is_connected:
+        _wire_hpc_to_agent(_conn, _sched)
+
     st.rerun()
 
 

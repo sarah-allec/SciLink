@@ -564,27 +564,45 @@ def _render_configure() -> None:
         with st.spinner("Probing remote environment…"):
             env = probe_remote(conn)
         st.session_state.hpc_env_probe = env
+        # Store software inventory for agent context
+        st.session_state.hpc_available_software = env.available_software
 
-    # Show what was detected
+    # ── Software inventory expander ────────────────────────
+    _SOFTWARE_LABELS = {
+        "vasp": "VASP", "lammps": "LAMMPS", "gromacs": "GROMACS",
+        "quantum_espresso": "Quantum ESPRESSO", "cp2k": "CP2K",
+        "nwchem": "NWChem", "orca": "ORCA", "gaussian": "Gaussian",
+    }
     with st.expander("🔍 Detected environment"):
         det_c1, det_c2 = st.columns(2)
         with det_c1:
             st.caption(f"**Home:** `{env.home}`")
             if env.scratch:
                 st.caption(f"**Scratch:** `{env.scratch}`")
-            if env.lammps_binaries:
-                st.caption(f"**LAMMPS binaries:** {', '.join(f'`{b}`' for b in env.lammps_binaries)}")
+            # Show all detected software (modules + binaries)
+            all_sw = set(env.available_software) | set(env.available_binaries)
+            if all_sw:
+                st.caption("**Simulation software:**")
+                for sw in sorted(all_sw):
+                    label = _SOFTWARE_LABELS.get(sw, sw.upper())
+                    mods = env.available_software.get(sw, [])
+                    bins = env.available_binaries.get(sw, [])
+                    detail = mods[0] if mods else (bins[0] if bins else "")
+                    st.caption(f"  ✅ {label}" + (f" — `{detail}`" if detail else ""))
             else:
-                st.caption("**LAMMPS binaries:** none found in PATH")
+                st.caption("**Simulation software:** none detected in modules or PATH")
         with det_c2:
-            if env.lammps_modules:
-                st.caption(f"**LAMMPS modules:** {', '.join(f'`{m}`' for m in env.lammps_modules)}")
             if env.container_runtimes:
                 st.caption(f"**Container runtimes:** {', '.join(f'`{r}`' for r in env.container_runtimes)}")
             else:
                 st.caption("**Container runtimes:** none found")
+            if env.python_path:
+                st.caption(f"**Python:** `{env.python_path}`")
+            if env.scheduler_type:
+                st.caption(f"**Scheduler:** {env.scheduler_type}")
         if st.button("🔄 Re-probe", key="hpc_reprobe"):
             st.session_state.hpc_env_probe = None
+            st.session_state.hpc_available_software = {}
             st.rerun()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -599,7 +617,7 @@ def _render_configure() -> None:
     mode_options.append("Custom script")
 
     exec_mode = st.radio(
-        "How to run LAMMPS + SciLink on the cluster",
+        "How to run simulations on the cluster",
         mode_options,
         horizontal=True,
         key="hpc_exec_mode",
@@ -611,7 +629,7 @@ def _render_configure() -> None:
     if exec_mode.startswith("Direct"):
         st.markdown("##### LAMMPS setup")
 
-        # Module load commands
+        # Module load commands — auto-fill from detected LAMMPS modules
         module_default = ""
         if env.lammps_modules:
             module_default = f"module load {env.lammps_modules[0]}"
@@ -623,7 +641,7 @@ def _render_configure() -> None:
             key="hpc_module_cmds",
         )
 
-        # LAMMPS binary
+        # LAMMPS binary — auto-fill from detected binaries
         lmp_default = ""
         if env.lammps_binaries:
             lmp_default = f"mpirun {env.lammps_binaries[0]}"
@@ -647,6 +665,7 @@ def _render_configure() -> None:
     elif exec_mode == "Container":
         st.markdown("##### Container setup")
 
+        # ── Core fields (always visible) ──────────────────
         ct_c1, ct_c2 = st.columns(2)
         with ct_c1:
             runtime = st.selectbox(
@@ -656,65 +675,10 @@ def _render_configure() -> None:
             )
         with ct_c2:
             image = st.text_input(
-                "Image (name, path, or .tar to load)",
+                "Image (name or path)",
                 placeholder="localhost/my_image:latest  or  /path/to/image.sif",
                 key="hpc_container_image",
             )
-
-        image_tar = ""
-        if runtime in ("podman", "docker"):
-            image_tar = st.text_input(
-                "Image tar file to load (optional, blank if already loaded)",
-                placeholder="/path/to/image.tar",
-                key="hpc_image_tar",
-            )
-
-        # ── Volume mounts (dynamic list) ──────────────────
-        st.markdown("**Volume mounts**")
-        st.caption("Map host directories into the container")
-
-        MOUNTS_KEY = "_hpc_mounts"
-        if MOUNTS_KEY not in st.session_state:
-            # Start with one empty mount
-            st.session_state[MOUNTS_KEY] = [{"host": "", "container": "", "mode": "rw"}]
-
-        mounts: list[dict] = st.session_state[MOUNTS_KEY]
-
-        mounts_to_remove = []
-        for i, mnt in enumerate(mounts):
-            mc1, mc2, mc3, mc4 = st.columns([3, 3, 1, 0.5])
-            with mc1:
-                mnt["host"] = st.text_input(
-                    "Host path", value=mnt["host"],
-                    placeholder="/home/user/project",
-                    key=f"mnt_h_{i}", label_visibility="collapsed",
-                )
-            with mc2:
-                mnt["container"] = st.text_input(
-                    "Container path", value=mnt["container"],
-                    placeholder="/workspace",
-                    key=f"mnt_c_{i}", label_visibility="collapsed",
-                )
-            with mc3:
-                mnt["mode"] = st.selectbox(
-                    "Mode", ["rw", "ro"],
-                    index=0 if mnt.get("mode", "rw") == "rw" else 1,
-                    key=f"mnt_m_{i}", label_visibility="collapsed",
-                )
-            with mc4:
-                if st.button("✕", key=f"mnt_rm_{i}"):
-                    mounts_to_remove.append(i)
-
-        if mounts_to_remove:
-            for idx in reversed(mounts_to_remove):
-                mounts.pop(idx)
-            st.session_state[MOUNTS_KEY] = mounts
-            st.rerun()
-
-        if st.button("＋ Add mount", key="mnt_add"):
-            mounts.append({"host": "", "container": "", "mode": "rw"})
-            st.session_state[MOUNTS_KEY] = mounts
-            st.rerun()
 
         lammps_command = st.text_input(
             "LAMMPS command (inside container)",
@@ -722,19 +686,72 @@ def _render_configure() -> None:
             key="hpc_lammps_cmd",
         )
 
-        module_commands = st.text_area(
-            "Host-side module commands (before container launch)",
-            placeholder=f"module load {runtime}",
-            height=60,
-            key="hpc_module_cmds",
-        )
+        # ── Advanced container settings ───────────────────
+        MOUNTS_KEY = "_hpc_mounts"
+        # Auto-populate suggested mounts from probed environment
+        if MOUNTS_KEY not in st.session_state:
+            suggested = []
+            if env.home:
+                suggested.append({"host": env.home, "container": env.home, "mode": "rw"})
+            if env.scratch and env.scratch != env.home:
+                suggested.append({"host": env.scratch, "container": env.scratch, "mode": "rw"})
+            if not suggested:
+                suggested = [{"host": "", "container": "", "mode": "rw"}]
+            st.session_state[MOUNTS_KEY] = suggested
 
-        extra_runtime_flags = st.text_input(
-            f"Extra {runtime} flags",
-            placeholder="--userns=keep-id --env MY_VAR=value",
-            key="hpc_extra_runtime_flags",
-        )
+        with st.expander("⚙️ Advanced container settings"):
+            module_commands = st.text_area(
+                "Host-side module commands (before container launch)",
+                placeholder=f"module load {runtime}",
+                height=60,
+                key="hpc_module_cmds",
+            )
 
+            extra_runtime_flags = st.text_input(
+                f"Extra {runtime} flags",
+                placeholder="--userns=keep-id --env MY_VAR=value",
+                key="hpc_extra_runtime_flags",
+            )
+
+            st.caption("**Volume mounts** (host path → container path)")
+            mounts: list[dict] = st.session_state[MOUNTS_KEY]
+            mounts_to_remove = []
+            for i, mnt in enumerate(mounts):
+                mc1, mc2, mc3, mc4 = st.columns([3, 3, 1, 0.5])
+                with mc1:
+                    mnt["host"] = st.text_input(
+                        "Host path", value=mnt["host"],
+                        placeholder="/home/user/project",
+                        key=f"mnt_h_{i}", label_visibility="collapsed",
+                    )
+                with mc2:
+                    mnt["container"] = st.text_input(
+                        "Container path", value=mnt["container"],
+                        placeholder="/workspace",
+                        key=f"mnt_c_{i}", label_visibility="collapsed",
+                    )
+                with mc3:
+                    mnt["mode"] = st.selectbox(
+                        "Mode", ["rw", "ro"],
+                        index=0 if mnt.get("mode", "rw") == "rw" else 1,
+                        key=f"mnt_m_{i}", label_visibility="collapsed",
+                    )
+                with mc4:
+                    if st.button("✕", key=f"mnt_rm_{i}"):
+                        mounts_to_remove.append(i)
+
+            if mounts_to_remove:
+                for idx in reversed(mounts_to_remove):
+                    mounts.pop(idx)
+                st.session_state[MOUNTS_KEY] = mounts
+                st.rerun()
+
+            if st.button("＋ Add mount", key="mnt_add"):
+                mounts.append({"host": "", "container": "", "mode": "rw"})
+                st.session_state[MOUNTS_KEY] = mounts
+                st.rerun()
+
+        image_tar = ""  # image tar loading removed; use extra_runtime_flags if needed
         python_cmd = "python3"  # inside container
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
