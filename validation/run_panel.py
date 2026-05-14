@@ -53,9 +53,35 @@ _FMAX = 0.02                 # eV/A force-convergence threshold
 _STEP_CAP = 500              # relaxation step cap
 
 # Benchmark conditions. Each dials how much the agent reasons; adding
-# one is a new entry here plus the branch it implies (in generate_mlip
-# today; in goal selection once the goal-prescriptiveness axis lands).
-_MODES = ("a_forced",)
+# one is a new entry here plus a branch in _engine_plan (and, once the
+# goal-prescriptiveness axis lands, in goal selection).
+#   a_forced        MLIP backend forced — deterministic deploy+relax
+#   b_agent_select  MLIPAgent's LLM picks the backend itself
+_MODES = ("a_forced", "b_agent_select")
+
+
+def _engine_plan(mode: str, engines):
+    """Resolve (--mode, --engines) into the (label, kind) list the
+    harness actually runs.
+
+    In ``a_forced`` each MLIP engine is its own forced run, giving a
+    clean ``system x {mace, chgnet}`` grid. In ``b_agent_select`` the
+    MLIP engines collapse to a single agent-selected run labelled
+    ``mlip`` — the agent picks the backend, so the harness can't
+    pre-split the grid by it; which backend it chose is recorded in the
+    manifest instead.
+
+    kind is one of: "vasp", "mlip_forced", "mlip_agent".
+    """
+    plan = []
+    if "vasp" in engines:
+        plan.append(("vasp", "vasp"))
+    mlip = [e for e in engines if e in _MLIP_ENGINES]
+    if mode == "a_forced":
+        plan += [(e, "mlip_forced") for e in mlip]
+    elif mode == "b_agent_select" and mlip:
+        plan.append(("mlip", "mlip_agent"))
+    return plan
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -109,6 +135,7 @@ def generate_vasp(system, out_dir, api_key, model_name) -> dict:
     _write_vasp_sbatch(system, rundir)
     return {
         "status": "generated",
+        "kind": "vasp",
         "dir": rundir,
         "input_files": sorted(result.get("input_files", {})),
         "notes": result.get("notes", ""),
@@ -116,20 +143,24 @@ def generate_vasp(system, out_dir, api_key, model_name) -> dict:
     }
 
 
-def generate_mlip(system, engine, out_dir, api_key, model_name,
-                  device, mode) -> dict:
+def generate_mlip(system, label, out_dir, api_key, model_name,
+                  device, forced_backend) -> dict:
     """Drive MLIPAgent -> MDSimulationAgent to produce an MLIP relax run.
 
-    The ``mode`` decides how much the agent reasons:
-      a_forced  backend is forced (``backend=engine``) — no LLM
-                model-selection; deploy() builds the potential and the
-                MD agent generates a deterministic ASE relax script.
-    (b_agent_select, when added, drops ``backend=`` so MLIPAgent's
-    LLM-driven _select_pretrained_model picks the backend itself.)
+    ``forced_backend`` decides how much the agent reasons:
+      - a backend name  -> passed as ``backend=`` so MLIPAgent skips
+        LLM model-selection; deploy() builds that potential and the MD
+        agent generates a deterministic ASE relax script (condition a).
+      - ``None``        -> ``backend=`` is omitted, so MLIPAgent's
+        LLM-driven _select_pretrained_model picks the backend itself
+        (condition b). The chosen backend comes back in the result.
+
+    ``label`` is the output-dir / manifest key ("mace"/"chgnet" when
+    forced; "mlip" when agent-selected).
     """
     from scilink.agents.sim_agents.mlip_agent import MLIPAgent
 
-    rundir = _engine_dir(out_dir, system.name, engine)
+    rundir = _engine_dir(out_dir, system.name, label)
     structure = os.path.join(rundir, "system.data")
     atoms = system.build(scale=_RELAX_SCALE)
     _write_lammps_data(atoms, structure)
@@ -151,8 +182,8 @@ def generate_mlip(system, engine, out_dir, api_key, model_name,
             "device": device,
         },
     )
-    if mode == "a_forced":
-        deploy_kwargs["backend"] = engine   # skip LLM model-selection
+    if forced_backend is not None:
+        deploy_kwargs["backend"] = forced_backend   # skip LLM selection
 
     agent = MLIPAgent(working_dir=rundir, api_key=api_key,
                       model_name=model_name)
@@ -161,9 +192,11 @@ def generate_mlip(system, engine, out_dir, api_key, model_name,
     run_script = os.path.basename(result.get("run_path", "run_relax.py"))
     return {
         "status": "generated",
+        "kind": "mlip",
         "dir": rundir,
         "run_script": run_script,
-        "backend": result.get("backend"),
+        "backend": result.get("backend"),       # agent's pick when not forced
+        "agent_selected": forced_backend is None,
         "model_name": result.get("model_name"),
         "run_cmd": f"python {run_script}",
     }
@@ -249,37 +282,64 @@ def _lattice_from_mlip(rundir: str):
         return None
 
 
-def collect(out_dir: str, engines, mode: str) -> dict:
-    """Parse every run dir, build the comparison table."""
+def collect(out_dir: str, mode: str) -> dict:
+    """Parse every run dir, build the comparison table.
+
+    The set of engine *labels* and what kind each is comes from the
+    manifest ``generate`` wrote — so this works for both the
+    ``system x {mace, chgnet}`` grid of mode a and the collapsed
+    ``mlip`` column of mode b without the harness re-deriving the plan.
+    """
+    manifest_path = os.path.join(out_dir, "manifest.json")
+    if not os.path.exists(manifest_path):
+        raise SystemExit(f"no manifest at {manifest_path} — run "
+                         f"--phase generate first")
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    panel = manifest.get("panel", {})
+
+    # Engine labels, in the order generate recorded them (vasp first).
+    labels = []
+    for sysentry in panel.values():
+        for lbl in sysentry.get("engines", {}):
+            if lbl not in labels:
+                labels.append(lbl)
+
     rows = []
     for system in PANEL:
+        sysentry = panel.get(system.name)
+        if not sysentry:
+            continue
         row = {
             "system": system.name,
             "crystal": system.crystal,
             "exp_a": system.exp_lattice_constant,
             "engines": {},
         }
-        for engine in engines:
-            rundir = os.path.join(out_dir, system.name, engine)
-            a = (_lattice_from_mlip(rundir) if engine in _MLIP_ENGINES
+        for label in labels:
+            meta = sysentry.get("engines", {}).get(label, {})
+            rundir = os.path.join(out_dir, system.name, label)
+            a = (_lattice_from_mlip(rundir) if meta.get("kind") == "mlip"
                  else _lattice_from_vasp(rundir))
-            if a is None:
-                row["engines"][engine] = {"a": None, "dev_pct": None,
-                                          "in_band": None}
-            else:
+            cell = {"a": None, "dev_pct": None, "in_band": None,
+                    # which backend actually ran — only interesting when
+                    # the agent chose it (mode b); None otherwise.
+                    "selected_backend": (meta.get("backend")
+                                         if meta.get("agent_selected")
+                                         else None)}
+            if a is not None:
                 dev = 100.0 * (a / system.exp_lattice_constant - 1.0)
-                row["engines"][engine] = {
-                    "a": round(a, 4),
-                    "dev_pct": round(dev, 2),
-                    # "correct" band: equilibrium at or modestly above
-                    # experiment (PBE / PBE-trained MLIPs overestimate).
-                    "in_band": -0.5 <= dev <= 2.5,
-                }
+                cell["a"] = round(a, 4)
+                cell["dev_pct"] = round(dev, 2)
+                # "correct" band: equilibrium at or modestly above
+                # experiment (PBE / PBE-trained MLIPs overestimate).
+                cell["in_band"] = -0.5 <= dev <= 2.5
+            row["engines"][label] = cell
         rows.append(row)
 
     summary = {"mode": mode,
                "collected_at": datetime.datetime.now().isoformat(),
-               "engines": list(engines), "rows": rows}
+               "engines": labels, "rows": rows}
     with open(os.path.join(out_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     _write_summary_md(out_dir, summary)
@@ -301,7 +361,11 @@ def _write_summary_md(out_dir: str, summary: dict) -> None:
                 cells += ["—", "—"]
             else:
                 flag = "" if ed["in_band"] else " ⚠"
-                cells += [f'{ed["a"]:.4f}', f'{ed["dev_pct"]:+.2f}{flag}']
+                a_cell = f'{ed["a"]:.4f}'
+                # mode b: the agent chose the backend — show which.
+                if ed.get("selected_backend"):
+                    a_cell = f'{ed["selected_backend"]} · {a_cell}'
+                cells += [a_cell, f'{ed["dev_pct"]:+.2f}{flag}']
         lines.append("| " + " | ".join(cells) + " |")
     note = (
         "\n_Δ% is deviation from the experimental lattice constant. "
@@ -365,11 +429,16 @@ def main() -> int:
         with open(manifest_path) as f:
             manifest = json.load(f)
 
+    plan = _engine_plan(args.mode, args.engines)
+
     # ── generate ──────────────────────────────────────────────────
     if "generate" in do:
-        if "vasp" in args.engines and not args.api_key:
-            print("ERROR: VASP generation needs --api-key (or "
-                  "SCILINK_API_KEY).", file=sys.stderr)
+        # vasp + agent-selected MLIP both call the LLM; forced MLIP
+        # does not (a placeholder key is fine there).
+        needs_llm = any(k in ("vasp", "mlip_agent") for _, k in plan)
+        if needs_llm and not args.api_key:
+            print("ERROR: this mode/engine set calls the LLM — set "
+                  "--api-key (or SCILINK_API_KEY).", file=sys.stderr)
             return 2
         manifest = {"mode": args.mode,
                     "generated_at": datetime.datetime.now().isoformat(),
@@ -378,24 +447,32 @@ def main() -> int:
             print(f"[generate] {system.name}")
             entry = {"exp_lattice_constant": system.exp_lattice_constant,
                      "engines": {}}
-            for engine in args.engines:
-                print(f"  - {engine}")
-                if engine == "vasp":
+            for label, kind in plan:
+                print(f"  - {label}")
+                if kind == "vasp":
                     res = generate_vasp(system, out_dir, args.api_key,
                                         args.model_name)
-                else:
-                    res = generate_mlip(system, engine, out_dir,
-                                        args.api_key or "sk-no-llm-needed",
-                                        args.model_name, args.device,
-                                        args.mode)
+                elif kind == "mlip_forced":
+                    res = generate_mlip(
+                        system, label, out_dir,
+                        args.api_key or "sk-no-llm-needed",
+                        args.model_name, args.device,
+                        forced_backend=label,
+                    )
+                else:  # mlip_agent
+                    res = generate_mlip(
+                        system, label, out_dir, args.api_key,
+                        args.model_name, args.device,
+                        forced_backend=None,
+                    )
                 if res.get("status") == "error":
                     print(f"    ERROR: {res.get('message')}")
-                entry["engines"][engine] = res
+                entry["engines"][label] = res
             manifest["panel"][system.name] = entry
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
 
-    # ── run (MLIP only) ───────────────────────────────────────────
+    # ── run (MLIP only — VASP is submitted via sbatch by the user) ─
     if "run" in do:
         if not manifest.get("panel"):
             print("ERROR: nothing generated yet — run --phase generate "
@@ -403,18 +480,19 @@ def main() -> int:
             return 2
         for system in systems:
             entry = manifest["panel"].get(system.name, {})
-            for engine in args.engines:
-                eng = entry.get("engines", {}).get(engine)
-                if not eng or eng.get("status") != "generated":
+            # iterate whatever generate actually recorded — label set
+            # differs by mode (mace/chgnet vs collapsed mlip).
+            for label, eng in entry.get("engines", {}).items():
+                if eng.get("status") != "generated":
                     continue
-                if engine in _MLIP_ENGINES:
-                    print(f"[run] {system.name} / {engine}")
+                if eng.get("kind") == "mlip":
+                    print(f"[run] {system.name} / {label}")
                     r = run_mlip(eng, args.device)
                     eng.update(r)
                     if not r["ran"]:
                         print(f"    FAILED (rc={r['returncode']}) — see "
                               f"run_relax.err")
-                else:
+                else:  # vasp
                     print(f"[run] {system.name} / vasp — submit "
                           f"{eng['dir']}/submit.sbatch")
         with open(manifest_path, "w") as f:
@@ -422,7 +500,7 @@ def main() -> int:
 
     # ── collect ───────────────────────────────────────────────────
     if "collect" in do:
-        summary = collect(out_dir, args.engines, args.mode)
+        summary = collect(out_dir, args.mode)
         print()
         with open(os.path.join(out_dir, "summary.md")) as f:
             print(f.read())
