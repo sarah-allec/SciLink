@@ -28,23 +28,42 @@ should agree with each other to within a few tenths of a percent.
 """
 
 from dataclasses import dataclass
-from typing import Callable, List
+from typing import Callable, Dict, List
 
 from ase import Atoms
 from ase.build import bulk
 
+# Goal-prescriptiveness levels — the axis condition (2) varies. Both
+# levels state the material, the structure, and the task (relax cell +
+# ions, report the lattice constant); they differ only in how much
+# *physics guidance* they hand the agent:
+#   guided  names the material class and nudges on smearing / k-point
+#           density / cutoff — the agent picks the actual values
+#   bare    none of that — the agent must classify the material and
+#           infer every calculation parameter itself
+GOAL_LEVELS = ("guided", "bare")
+
 
 @dataclass(frozen=True)
 class ReferenceSystem:
-    """One bulk crystal + its experimental reference + the agent goal."""
+    """One bulk crystal + its experimental reference + the agent goals."""
 
     name: str                          # slug, used for output dirs
     crystal: str                       # human-readable structure label
     elements: List[str]
     exp_lattice_constant: float        # Angstrom, conventional cubic cell
     reference_source: str              # citation for the reference value
-    research_goal: str                 # natural-language goal given to the agent
+    research_goals: Dict[str, str]     # goal text keyed by GOAL_LEVELS
     _builder: Callable[[], Atoms]      # returns the conventional cubic cell
+
+    def goal(self, level: str = "guided") -> str:
+        """The natural-language goal at the requested prescriptiveness."""
+        if level not in self.research_goals:
+            raise KeyError(
+                f"{self.name!r} has no {level!r} goal; "
+                f"levels: {sorted(self.research_goals)}"
+            )
+        return self.research_goals[level]
 
     def build(self, scale: float = 0.97) -> Atoms:
         """Return the structure scaled by ``scale`` relative to experiment.
@@ -93,13 +112,21 @@ PANEL: List[ReferenceSystem] = [
             "Kittel, Introduction to Solid State Physics, 8th ed., "
             "Table 1 (room-temperature a)."
         ),
-        research_goal=(
-            "Relax bulk silicon in the diamond-cubic structure to its "
-            "equilibrium geometry (full cell + ionic relaxation) and "
-            "report the optimized lattice constant. This is a "
-            "semiconductor; choose smearing and k-point density "
-            "accordingly."
-        ),
+        research_goals={
+            "guided": (
+                "Relax bulk silicon in the diamond-cubic structure to "
+                "its equilibrium geometry (full cell + ionic "
+                "relaxation) and report the optimized lattice "
+                "constant. This is a semiconductor; choose smearing "
+                "and k-point density accordingly."
+            ),
+            "bare": (
+                "Relax bulk silicon in the diamond-cubic structure to "
+                "its equilibrium geometry — optimize both the cell and "
+                "the ionic positions — and report the optimized cubic "
+                "lattice constant."
+            ),
+        },
         _builder=_si,
     ),
     ReferenceSystem(
@@ -111,12 +138,19 @@ PANEL: List[ReferenceSystem] = [
             "Kittel, Introduction to Solid State Physics, 8th ed., "
             "Table 1 (room-temperature a)."
         ),
-        research_goal=(
-            "Relax bulk FCC copper to its equilibrium geometry (full "
-            "cell + ionic relaxation) and report the optimized lattice "
-            "constant. This is a metal; use appropriate smearing and a "
-            "dense k-point mesh."
-        ),
+        research_goals={
+            "guided": (
+                "Relax bulk FCC copper to its equilibrium geometry "
+                "(full cell + ionic relaxation) and report the "
+                "optimized lattice constant. This is a metal; use "
+                "appropriate smearing and a dense k-point mesh."
+            ),
+            "bare": (
+                "Relax bulk FCC copper to its equilibrium geometry — "
+                "optimize both the cell and the ionic positions — and "
+                "report the optimized cubic lattice constant."
+            ),
+        },
         _builder=_cu,
     ),
     ReferenceSystem(
@@ -128,12 +162,20 @@ PANEL: List[ReferenceSystem] = [
             "Kittel, Introduction to Solid State Physics, 8th ed., "
             "Table 1 (room-temperature a)."
         ),
-        research_goal=(
-            "Relax bulk magnesium oxide in the rock-salt structure to "
-            "its equilibrium geometry (full cell + ionic relaxation) "
-            "and report the optimized lattice constant. This is a wide-"
-            "gap ionic insulator."
-        ),
+        research_goals={
+            "guided": (
+                "Relax bulk magnesium oxide in the rock-salt structure "
+                "to its equilibrium geometry (full cell + ionic "
+                "relaxation) and report the optimized lattice "
+                "constant. This is a wide-gap ionic insulator."
+            ),
+            "bare": (
+                "Relax bulk magnesium oxide in the rock-salt structure "
+                "to its equilibrium geometry — optimize both the cell "
+                "and the ionic positions — and report the optimized "
+                "cubic lattice constant."
+            ),
+        },
         _builder=_mgo,
     ),
     ReferenceSystem(
@@ -145,12 +187,20 @@ PANEL: List[ReferenceSystem] = [
             "Kittel, Introduction to Solid State Physics, 8th ed., "
             "Table 1 (room-temperature a)."
         ),
-        research_goal=(
-            "Relax bulk diamond (cubic carbon) to its equilibrium "
-            "geometry (full cell + ionic relaxation) and report the "
-            "optimized lattice constant. Carbon is a light element — "
-            "ensure the plane-wave cutoff is high enough."
-        ),
+        research_goals={
+            "guided": (
+                "Relax bulk diamond (cubic carbon) to its equilibrium "
+                "geometry (full cell + ionic relaxation) and report "
+                "the optimized lattice constant. Carbon is a light "
+                "element — ensure the plane-wave cutoff is high enough."
+            ),
+            "bare": (
+                "Relax bulk diamond (cubic carbon) to its equilibrium "
+                "geometry — optimize both the cell and the ionic "
+                "positions — and report the optimized cubic lattice "
+                "constant."
+            ),
+        },
         _builder=_diamond,
     ),
 ]

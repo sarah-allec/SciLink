@@ -18,14 +18,16 @@ Three phases (``--phase``):
   run       execute the relaxations (MLIP in-process; VASP -> sbatch)
   collect   parse relaxed lattice constants, build the comparison table
 
-The panel is run under a ``--mode`` — a benchmark *condition* that dials
-how much the agent reasons. Each mode's artifacts live under
+The panel is run under a ``--mode`` — a benchmark *condition* on a
+spectrum of increasing agent autonomy. Each mode's artifacts live under
 ``results/<mode>/`` so conditions never collide and ``collect`` can
-later compare across them. Modes (added incrementally):
-  a_forced         backend forced, prescriptive goals — deterministic
-                   MLIP path; the agent-reasoning baseline
-  (b_agent_select) agent picks the MLIP backend            [later]
-  (c_*_goal …)     goal text dialed prescriptive -> bare   [later]
+later compare across them:
+  a_forced        MLIP backend forced + guided goal — deterministic
+                  MLIP path; the agent-reasoning baseline
+  b_agent_select  agent picks the MLIP backend     + guided goal
+  c_bare_goal     agent picks the MLIP backend     + bare goal — the
+                  agent must classify the material and infer every
+                  calculation parameter itself
 
 Typical cluster use:
   python validation/run_panel.py --mode a_forced --phase generate
@@ -52,12 +54,27 @@ _RELAX_SCALE = 0.97          # start every cell ~9% compressed
 _FMAX = 0.02                 # eV/A force-convergence threshold
 _STEP_CAP = 500              # relaxation step cap
 
-# Benchmark conditions. Each dials how much the agent reasons; adding
-# one is a new entry here plus a branch in _engine_plan (and, once the
-# goal-prescriptiveness axis lands, in goal selection).
-#   a_forced        MLIP backend forced — deterministic deploy+relax
-#   b_agent_select  MLIPAgent's LLM picks the backend itself
-_MODES = ("a_forced", "b_agent_select")
+# Benchmark conditions — a spectrum of increasing agent autonomy on the
+# calculation-reasoning axis. Each step adds one increment of reasoning:
+#   a_forced        MLIP backend forced + guided goal — deterministic
+#                   deploy+relax; the agent-reasoning baseline
+#   b_agent_select  agent picks the MLIP backend       + guided goal
+#   c_bare_goal     agent picks the MLIP backend       + bare goal
+#                   (must classify the material and infer every
+#                   calculation parameter itself)
+# Adding a condition is one _MODES entry + its _GOAL_LEVEL entry + a
+# branch in _engine_plan if it changes backend behavior.
+_MODES = ("a_forced", "b_agent_select", "c_bare_goal")
+
+# Which goal-prescriptiveness level each mode feeds the agents.
+_GOAL_LEVEL = {
+    "a_forced": "guided",
+    "b_agent_select": "guided",
+    "c_bare_goal": "bare",
+}
+
+# Modes where the MLIP backend is agent-selected (vs forced per engine).
+_AGENT_SELECT_MODES = ("b_agent_select", "c_bare_goal")
 
 
 def _engine_plan(mode: str, engines):
@@ -65,8 +82,8 @@ def _engine_plan(mode: str, engines):
     harness actually runs.
 
     In ``a_forced`` each MLIP engine is its own forced run, giving a
-    clean ``system x {mace, chgnet}`` grid. In ``b_agent_select`` the
-    MLIP engines collapse to a single agent-selected run labelled
+    clean ``system x {mace, chgnet}`` grid. In the agent-select modes
+    the MLIP engines collapse to a single agent-selected run labelled
     ``mlip`` — the agent picks the backend, so the harness can't
     pre-split the grid by it; which backend it chose is recorded in the
     manifest instead.
@@ -77,10 +94,11 @@ def _engine_plan(mode: str, engines):
     if "vasp" in engines:
         plan.append(("vasp", "vasp"))
     mlip = [e for e in engines if e in _MLIP_ENGINES]
-    if mode == "a_forced":
+    if mode in _AGENT_SELECT_MODES:
+        if mlip:
+            plan.append(("mlip", "mlip_agent"))
+    else:  # forced-backend modes
         plan += [(e, "mlip_forced") for e in mlip]
-    elif mode == "b_agent_select" and mlip:
-        plan.append(("mlip", "mlip_agent"))
     return plan
 
 
@@ -110,8 +128,13 @@ def _write_lammps_data(atoms, path: str) -> None:
 #  generate
 # ──────────────────────────────────────────────────────────────────
 
-def generate_vasp(system, out_dir, api_key, model_name) -> dict:
-    """Drive PeriodicDFTAgent to produce VASP relaxation inputs."""
+def generate_vasp(system, out_dir, api_key, model_name, goal_text) -> dict:
+    """Drive PeriodicDFTAgent to produce VASP relaxation inputs.
+
+    ``goal_text`` is the goal at this mode's prescriptiveness level
+    (see reference_systems.GOAL_LEVELS) — it is the only thing the
+    goal-prescriptiveness axis varies.
+    """
     from scilink.agents.sim_agents.periodic_dft_agent import PeriodicDFTAgent
 
     rundir = _engine_dir(out_dir, system.name, "vasp")
@@ -121,7 +144,7 @@ def generate_vasp(system, out_dir, api_key, model_name) -> dict:
     agent = PeriodicDFTAgent(api_key=api_key, model_name=model_name)
     result = agent.generate_inputs(
         structure_file=poscar,
-        request=system.research_goal,
+        request=goal_text,
         software="vasp",
     )
     if result.get("status") != "success":
@@ -144,7 +167,7 @@ def generate_vasp(system, out_dir, api_key, model_name) -> dict:
 
 
 def generate_mlip(system, label, out_dir, api_key, model_name,
-                  device, forced_backend) -> dict:
+                  device, forced_backend, goal_text) -> dict:
     """Drive MLIPAgent -> MDSimulationAgent to produce an MLIP relax run.
 
     ``forced_backend`` decides how much the agent reasons:
@@ -153,8 +176,9 @@ def generate_mlip(system, label, out_dir, api_key, model_name,
         agent generates a deterministic ASE relax script (condition a).
       - ``None``        -> ``backend=`` is omitted, so MLIPAgent's
         LLM-driven _select_pretrained_model picks the backend itself
-        (condition b). The chosen backend comes back in the result.
+        (conditions b, c). The chosen backend comes back in the result.
 
+    ``goal_text`` is the goal at this mode's prescriptiveness level.
     ``label`` is the output-dir / manifest key ("mace"/"chgnet" when
     forced; "mlip" when agent-selected).
     """
@@ -172,7 +196,7 @@ def generate_mlip(system, label, out_dir, api_key, model_name,
 
     deploy_kwargs = dict(
         system_info=system_info,
-        research_goal=system.research_goal,
+        research_goal=goal_text,
         structure_file=structure,
         runner="ase",
         simulation_params={
@@ -440,30 +464,32 @@ def main() -> int:
             print("ERROR: this mode/engine set calls the LLM — set "
                   "--api-key (or SCILINK_API_KEY).", file=sys.stderr)
             return 2
-        manifest = {"mode": args.mode,
+        goal_level = _GOAL_LEVEL[args.mode]
+        manifest = {"mode": args.mode, "goal_level": goal_level,
                     "generated_at": datetime.datetime.now().isoformat(),
                     "panel": {}}
         for system in systems:
             print(f"[generate] {system.name}")
+            goal_text = system.goal(goal_level)
             entry = {"exp_lattice_constant": system.exp_lattice_constant,
                      "engines": {}}
             for label, kind in plan:
                 print(f"  - {label}")
                 if kind == "vasp":
                     res = generate_vasp(system, out_dir, args.api_key,
-                                        args.model_name)
+                                        args.model_name, goal_text)
                 elif kind == "mlip_forced":
                     res = generate_mlip(
                         system, label, out_dir,
                         args.api_key or "sk-no-llm-needed",
                         args.model_name, args.device,
-                        forced_backend=label,
+                        forced_backend=label, goal_text=goal_text,
                     )
                 else:  # mlip_agent
                     res = generate_mlip(
                         system, label, out_dir, args.api_key,
                         args.model_name, args.device,
-                        forced_backend=None,
+                        forced_backend=None, goal_text=goal_text,
                     )
                 if res.get("status") == "error":
                     print(f"    ERROR: {res.get('message')}")
