@@ -13,7 +13,7 @@ this is a settled architectural commitment, not a refactoring waypoint:
 |---|---|---|
 | `analyze` | `AnalysisOrchestratorAgent` | Experimental data analysis (microscopy, spectroscopy, …) |
 | `plan` | `PlanningOrchestratorAgent` | Experimental campaign design |
-| `simulate` | `SimulationOrchestratorAgent` *(not yet built — stub at `cli/simulate.py`)* | Computational simulations (DFT today, LAMMPS later) |
+| `simulate` | `SimulationOrchestratorAgent` | Computational simulation (DFT, classical MD, MLIP-driven MD) |
 
 Anything in scientific workflow falls under one of these three. There will
 **not** be a fourth mode. Future capability growth happens *inside* one of
@@ -35,7 +35,7 @@ maintenance pain. We have not hit it.
 When building `SimulationOrchestratorAgent`, copy the structure of
 `AnalysisOrchestratorAgent`. Don't refactor the other two.
 
-## What the simulate orchestrator looks like
+## How the simulate orchestrator works
 
 Structure-centric, iterative, two-surface. **Different from analyze mode**
 in three ways: no data file required to start, structure-centric
@@ -96,7 +96,8 @@ class SimulationOrchestratorAgent:
         """Interactive — CLI / UI."""
     def run_task(self, task: str, context: dict) -> dict:
         """Non-interactive — autonomous mode under the hood. Returns:
-            {summary, files_produced, key_findings, suggested_followups}
+            {status, summary, files_produced, key_findings,
+             suggested_followups, structures, warnings}
         Used by the future meta agent to delegate sub-tasks.
         """
 ```
@@ -169,6 +170,50 @@ When the simulate orchestrator ships, **these stay**. Analyze mode keeps
 the one-shot pipeline tool because that's the right shape for "I'm done
 analyzing, prepare a calc". Simulate mode adds *granular* alternatives
 for iterative work. Don't replace `run_dft_workflow`; add alongside.
+
+## Self-refinement is one shape
+
+Every simulation agent fits the same loop:
+
+1. **Generate** — structure + inputs. One-shot. Pre-run validation
+   (`StructureValidatorAgent`, `IncarValidatorAgent`) lives inside
+   this stage as part of generation, not as a separate pre-run phase.
+2. **Run** — the engine (VASP, LAMMPS, MD via `DeployedPotential`).
+   For MD-shaped runs the engine sweeps multiple phases
+   (optim → equilib → production) within this single stage.
+3. **Branch on outcome**:
+   - **Engine error** → debugger (`VaspUpdater` / `LAMMPSUpdater`)
+     parses the log, proposes corrected inputs, loops back to **Run**.
+   - **Phase success** → quality check fires *per phase*, not just at
+     the end. Pass → next phase or done. Questionable → refine and
+     loop back to **Run**.
+
+Both feedback paths terminate at **Run** with updated inputs — the
+iteration is around Run, not around Generate. The shape is
+scale-agnostic: DFT, classical MD, and MLIP-driven MD instantiate it
+with different agents in each slot. When adding a new simulation
+agent, fit it into this skeleton rather than reinventing the loop.
+
+## Engine-neutral contracts
+
+Some agents communicate through small, engine-neutral descriptors so
+adding a new backend is one skill bundle rather than N×M integrations.
+
+The canonical example today is `DeployedPotential` (in
+`scilink/agents/sim_agents/_potential.py`): `MLIPAgent` emits it,
+`MDSimulationAgent` consumes it. The descriptor carries `backend`,
+`model_name`, `model_file`, `elements`, and an `ASECalculatorSpec`
+(three strings: import line, construct expression, device env var).
+The MD agent fills its ASE calculator from those strings and never
+imports MLIP code itself. Engine-specific bindings (LAMMPS
+`pair_style`, GROMACS kernel, …) live with the engine in its skill
+bundle.
+
+The payoff is N+M wiring instead of N×M: one new MLIP backend means
+one new skill bundle, not one integration per MD engine. The same
+pattern should apply to any future producer→consumer agent boundary
+that crosses scale or engine — design the contract first, then add
+producer and consumer behind it.
 
 ## Skill subsystem
 
