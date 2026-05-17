@@ -197,6 +197,24 @@ wrong magnetic ground states, and unreliable forces.
 
 ## validation
 
+**Pre-submit syntax check (engine-native, no LLM):**
+
+VASP accepts unknown INCAR keys silently — a one-letter typo such as
+`ISPN = 2` instead of `ISPIN = 2` disables spin polarisation and
+produces a physics-wrong result that converges by every other metric.
+Before submission, `PeriodicDFTAgent` runs the generated INCAR through
+`scilink.agents.sim_agents.vasp_input_validator.check_incar_syntax`
+(pymatgen's `Incar.check_params()`). High-confidence typos are
+auto-renamed to the closest valid tag; low-confidence matches are
+returned for downstream LLM review. The fix payload is recorded under
+`result["syntax_check"]` so the caller can log what was changed.
+
+This is the VASP instance of an engine-neutral contract:
+`<engine>_input_validator.check_syntax(content) -> List[issue]`. Don't
+add tag-spelling guidance to LLM prompts — the pymatgen check is the
+canonical authority, and the LLM should reason about physics, not
+syntax.
+
 **Quality checks for generated INCAR files:**
 
 - GGA tag MUST be present and match the intended functional. Its absence

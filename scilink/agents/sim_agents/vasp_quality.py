@@ -50,6 +50,30 @@ from .skill_graduation import (
 # Deterministic guardrails
 # ──────────────────────────────────────────────────────────────
 
+def _check_incar_tags(incar_path: str) -> List[Dict[str, Any]]:
+    """Post-run wrapper around the engine-native INCAR syntax check.
+
+    Reads the INCAR off disk and delegates to
+    ``vasp_input_validator.check_incar_syntax``.  The pre-run path
+    (PeriodicDFTAgent) usually catches typos before submission; this
+    post-run pass exists as a defense-in-depth check so that runs that
+    bypassed pre-validation (manual INCAR edits, externally-supplied
+    inputs) still get the warning.
+
+    Same return shape as ``check_incar_syntax`` — keeps the issue
+    contract consistent between Generate and Quality stages.
+    """
+    if not os.path.exists(incar_path):
+        return []
+    try:
+        with open(incar_path) as f:
+            content = f.read()
+    except Exception:
+        return []
+    from .vasp_input_validator import check_incar_syntax
+    return check_incar_syntax(content)
+
+
 def _deterministic_issues(facts: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Issues that should always be flagged based on the parsed facts.
 
@@ -282,6 +306,11 @@ class VaspQualityAgent:
         # Layer 1: deterministic facts + guardrails.
         facts = analyze_run_directory(output_dir)
         det_issues = _deterministic_issues(facts)
+        # Plus: scan the on-disk INCAR for typoed / unknown tags.
+        # Picks up things VASP silently ignores (e.g. ISPN-for-ISPIN).
+        det_issues.extend(
+            _check_incar_tags(os.path.join(output_dir, "INCAR"))
+        )
 
         # Skill convention text (validation section preferred).
         skill_text = self._load_skill_text(skill)

@@ -347,6 +347,35 @@ class PeriodicDFTAgent:
                 "raw_result": result,
             }
 
+        # ── pre-submit syntax pass ────────────────────────────────────
+        # Engine-native syntax check on whatever the engine considers its
+        # primary parameter file.  Lives behind a per-engine validator
+        # module — PeriodicDFTAgent itself doesn't know about pymatgen.
+        # See CLAUDE.md "Engine-neutral contracts".
+        if software == "vasp" and "INCAR" in result["input_files"]:
+            try:
+                from .vasp_input_validator import (
+                    check_incar_syntax, apply_incar_syntax_fixes,
+                )
+                incar_text = result["input_files"]["INCAR"]
+                issues = check_incar_syntax(incar_text)
+                if issues:
+                    fixed, applied = apply_incar_syntax_fixes(incar_text, issues)
+                    if applied:
+                        result["input_files"]["INCAR"] = fixed
+                        for a in applied:
+                            self.logger.info(
+                                "pre-submit syntax fix: %s → %s",
+                                a["renamed_from"], a["renamed_to"],
+                            )
+                    result["syntax_check"] = {
+                        "issues": issues,
+                        "applied_fixes": applied,
+                    }
+            except Exception as exc:
+                # Syntax check is advisory — never block generation on it.
+                self.logger.warning("INCAR syntax check failed: %s", exc)
+
         result["status"] = "success"
         result["software"] = software
         return result
