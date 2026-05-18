@@ -111,7 +111,13 @@ def lattice_a(atoms) -> float:
 
 
 def final_energy(rundir: str) -> float | None:
-    """Total energy in eV from OSZICAR last line, or None if unparseable."""
+    """Total energy in eV from OSZICAR last line, or None if unparseable.
+
+    VASP writes ``E0=`` and the value as separate space-separated tokens
+    (``E0=  -.225E+03``), so naive ``tok.split("=")[1]`` always returns
+    empty.  Use a regex that tolerates the whitespace.
+    """
+    import re
     osz = os.path.join(rundir, "OSZICAR")
     if not os.path.exists(osz):
         return None
@@ -122,11 +128,10 @@ def final_energy(rundir: str) -> float | None:
                 last_line = line
     if not last_line:
         return None
-    # OSZICAR final line: "  10 F= -.XXX E0= -.XXX d E =-..."
-    try:
-        for tok in last_line.split():
-            if tok.startswith("E0="):
-                return float(tok.split("=", 1)[1])
-    except Exception:
-        pass
+    m = re.search(r"E0\s*=\s*(-?[\d.]+E[+-]?\d+)", last_line)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
     return None
