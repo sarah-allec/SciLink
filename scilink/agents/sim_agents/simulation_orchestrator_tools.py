@@ -742,6 +742,104 @@ class SimulationOrchestratorTools:
         )
 
         # =====================================================================
+        # 5b. GENERATE MD INPUTS (engine-neutral, molecular-dynamics scale)
+        # =====================================================================
+        def generate_md_inputs(structure_path: str, research_goal: str,
+                               runner: str = None) -> str:
+            if not Path(structure_path).exists():
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Structure file not found: {structure_path}",
+                })
+
+            skill, domain = self._resolve_engine(runner)
+            if not skill:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        "No engine selected. Call route_simulation first, or "
+                        "pass `runner` explicitly (e.g. 'lammps')."
+                    ),
+                })
+
+            structure_dir = Path(structure_path).parent
+            try:
+                from .simulation_pipeline import _generate_inputs
+                gen = _generate_inputs(
+                    scale=domain, software=skill, method="llm",
+                    structure_file=structure_path, request=research_goal,
+                    output_dir=str(structure_dir),
+                    api_key=self.orch.api_key, base_url=self.orch.base_url,
+                    model_name=self.orch.model_name,
+                )
+            except Exception as e:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"MD input generation failed: {e}",
+                })
+
+            if gen.get("status") not in (None, "success"):
+                return json.dumps({
+                    "status": "error",
+                    "message": gen.get("message") or "MD input generation failed",
+                })
+
+            file_paths = {
+                fn: str(structure_dir / fn)
+                for fn in (gen.get("input_files") or {})
+                if (structure_dir / fn).exists()
+            }
+            summary = gen.get("summary", "")
+            record = self._find_structure_record(structure_path)
+            if record is not None:
+                record["input_files"] = file_paths
+                record["summary"] = summary
+
+            return json.dumps({
+                "status": "success",
+                "engine": skill,
+                "input_files": file_paths,
+                "summary": summary,
+                "structure_dir": str(structure_dir),
+            })
+
+        self._register_tool(
+            func=generate_md_inputs,
+            name="generate_md_inputs",
+            description=(
+                "Generate molecular-dynamics input files for a structure, "
+                "tailored to the research goal, and save them alongside the "
+                "structure. Engine-neutral: `runner` selects the engine "
+                "(e.g. 'lammps'), defaulting to the routing decision. "
+                "Returns a generic input_files map. Use for MD-scale work; "
+                "pair with validate_inputs / analyze_output for review."
+            ),
+            parameters={
+                "structure_path": {
+                    "type": "string",
+                    "description": "Absolute path to the structure the inputs should match.",
+                },
+                "research_goal": {
+                    "type": "string",
+                    "description": (
+                        "What the simulation should accomplish (e.g. "
+                        "'equilibrate Cu bulk at 300 K in NVT and report the "
+                        "lattice parameter'). Drives ensemble / conditions / "
+                        "run length."
+                    ),
+                },
+                "runner": {
+                    "type": "string",
+                    "description": (
+                        "Optional MD engine override (e.g. 'lammps'). "
+                        "Defaults to the engine chosen by route_simulation."
+                    ),
+                },
+            },
+            required=["structure_path", "research_goal"],
+        )
+
+        # =====================================================================
         # 10. RUN COMPLETE DFT WORKFLOW (one-shot shortcut)
         # =====================================================================
         def run_complete_dft_workflow(description: str,
