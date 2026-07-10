@@ -47,6 +47,29 @@ structure, or generating configurations/forces for MLIP training). If the
 goal is a minimum-energy geometry, that is a relaxation (use the `vasp`
 skill), not this one.
 
+**Functional (critical for aqueous systems).** The functional sets the ceiling
+on quality — and when the trajectory is MLIP training data, the MLIP inherits
+the reference functional's errors exactly. **Bare PBE water is notoriously
+poor** (over-structured, too-slow dynamics, over-bound), so it is the wrong
+reference for a precipitation/aqueous MLIP. Choose deliberately:
+
+- **revPBE-D3 (recommended default for aqueous AIMD-for-MLIP).** GGA-level
+  revPBE (GGA = RE) plus Grimme D3 dispersion (IVDW = 11, or IVDW = 12 for
+  D3-BJ). This is the long-standing water/MLIP workhorse: good liquid-water
+  structure and dynamics, **smooth forces**, and ~3-5x cheaper than a meta-GGA.
+  Smooth forces matter specifically because the data trains an MLIP on forces —
+  meta-GGA force noise degrades force training.
+- **SCAN or revised-SCAN (higher fidelity, more expensive/fussy).** Meta-GGA
+  (METAGGA = SCAN, or R2SCAN) gives arguably the best water structure, but needs
+  LASPH = .TRUE., ADDGRID = .TRUE., and denser FFT grids for stable forces, is
+  several-fold costlier, and carries more force noise. Reserve for when a target
+  property demands it; note the extra numerical care for MD forces.
+- **Bare PBE** is acceptable ONLY for a pipeline shakedown (proving the run goes
+  through), never for the production training corpus.
+
+When GGA = RE (or any non-PBE functional) is set, the GGA/METAGGA tag must still
+be present and consistent with the POTCAR directory — same rule as static VASP.
+
 **Ensemble and thermostat.** Pick the ensemble from what is held fixed:
 - **NVT** (fixed volume, controlled temperature) — the default for a
   liquid/solution already at a sensible density. Thermostat options:
@@ -91,8 +114,12 @@ expense scales with NSW * (cost of one SCF).
 5. **ISMEAR = 0** (Gaussian) with a small SIGMA (0.05-0.1 eV). NEVER
    ISMEAR = -5 for MD — tetrahedron gives erratic forces and will not run
    stable dynamics.
-6. **ALWAYS include the GGA tag** (GGA = PE for PBE) — same POTCAR-directory
-   rule as static VASP; omitting it causes a fatal "No pseudopotential" error.
+6. **Choose the functional deliberately** (see the "Functional" planning note)
+   and ALWAYS include the corresponding tag — GGA = RE (+ IVDW = 11) for the
+   recommended revPBE-D3, GGA = PE only for a shakedown, METAGGA = SCAN for the
+   meta-GGA option. Same POTCAR-directory rule as static VASP; omitting the tag
+   causes a fatal "No pseudopotential" error. Do NOT default to bare PBE for an
+   aqueous production run.
 7. **ENCUT >= 400 eV** for hydrogen-containing systems (450 eV standard).
 8. **EDIFF = 1E-5** is the practical AIMD setting: MD needs consistent forces
    every step, but 1E-6 (static-quality) makes every one of thousands of
@@ -129,9 +156,11 @@ system — Mg, Ca, Na, O, H — is non-magnetic: ISPIN = 1.)
 (1 1 1)** is correct and standard. A larger k-mesh multiplies an already
 expensive per-step SCF for negligible gain at these cell sizes.
 
-**INCAR template for NVT AIMD of an aqueous/solvated system (Nose-Hoover):**
+**INCAR template for NVT AIMD of an aqueous/solvated system (Nose-Hoover,
+revPBE-D3 — the recommended aqueous default):**
 
-  GGA = PE
+  GGA = RE
+  IVDW = 11
   ENCUT = 450
   PREC = Normal
   EDIFF = 1E-5
@@ -154,9 +183,16 @@ expensive per-step SCF for negligible gain at these cell sizes.
   NCORE = 4
   KPAR = 1
 
-**INCAR template for NVT AIMD (Langevin thermostat, robust for ionic liquids):**
+  # revPBE-D3: GGA = RE selects revPBE (potpaw_PBE potentials); IVDW = 11 adds
+  # Grimme D3 (zero-damping), or IVDW = 12 for D3-BJ. For the SCAN alternative,
+  # replace "GGA = RE / IVDW = 11" with "METAGGA = SCAN" + "LASPH = .TRUE." +
+  # "ADDGRID = .TRUE." and use a denser FFT grid.
 
-  GGA = PE
+**INCAR template for NVT AIMD (Langevin thermostat, robust for ionic liquids;
+revPBE-D3):**
+
+  GGA = RE
+  IVDW = 11
   ENCUT = 450
   PREC = Normal
   EDIFF = 1E-5
@@ -259,8 +295,13 @@ typos. Do not add tag-spelling guidance to prompts; reason about physics.
   contradiction — flag it.
 - **NSW must be large** (>> 1; hundreds to thousands). NSW = 0 or a handful
   contradicts an MD request.
-- **GGA tag present** (POTCAR-directory correctness), and **ENCUT >= 400 eV**
-  for hydrogen-containing systems — same as static VASP.
+- **Functional tag present and dispersion-corrected for aqueous runs.** A
+  GGA/METAGGA tag must be set (POTCAR-directory correctness). For an aqueous
+  production run, flag bare PBE (GGA = PE with no dispersion) as a quality
+  problem — expect revPBE-D3 (GGA = RE + IVDW = 11/12) or a meta-GGA
+  (METAGGA = SCAN + LASPH + ADDGRID). Bare PBE is acceptable only for a
+  shakedown. **ENCUT >= 400 eV** for hydrogen-containing systems — same as
+  static VASP.
 - **K-points Gamma-only (1 1 1)** for a condensed-phase cell; a dense mesh is
   a (very expensive) mistake here.
 - **LANGEVIN_GAMMA count matches the number of species types** when MDALGO = 3.
