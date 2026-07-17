@@ -485,6 +485,41 @@ class TestSweepGeneration:
         # Members are independent: editing one's map must not touch the other's.
         assert st["members"][1]["input_files"]["run.lammps"] == "S400"
 
+    def test_fanout_members_carry_their_own_structure(self):
+        """A member's ``files`` map overrides shared files — the seam a
+        composition series needs, where members differ by structure not deck."""
+        from scilink.agents.sim_agents.md_simulation_agent import (
+            _assemble_fanout_stage,
+        )
+        # Same deck for every member; each carries its OWN packed box under the
+        # shared filename (isolated run dirs keep the names from colliding).
+        members = [
+            {"name": "eis_20", "script": "DECK",
+             "files": {"system.data": "BOX_20"}},
+            {"name": "eis_40", "script": "DECK",
+             "files": {"system.data": "BOX_40"}},
+        ]
+        shared = {"system.data": "BASE", "ff.params": "FF"}
+        stages = _assemble_fanout_stage(members, "run.lammps", shared)
+        m0, m1 = stages[0]["members"]
+        # Each member's own structure won over the shared one...
+        assert m0["input_files"]["system.data"] == "BOX_20"
+        assert m1["input_files"]["system.data"] == "BOX_40"
+        # ...while genuinely shared files still reach every member.
+        assert m0["input_files"]["ff.params"] == "FF"
+        assert m1["input_files"]["ff.params"] == "FF"
+
+    def test_fanout_member_without_files_is_unchanged(self):
+        """Deck-sweep members (no ``files``) behave exactly as before."""
+        from scilink.agents.sim_agents.md_simulation_agent import (
+            _assemble_fanout_stage,
+        )
+        members = [{"name": "t300", "script": "S300"}]
+        stages = _assemble_fanout_stage(
+            members, "run.lammps", {"system.data": "DATA"})
+        files = stages[0]["members"][0]["input_files"]
+        assert files == {"system.data": "DATA", "run.lammps": "S300"}
+
     def test_sweep_expansion_feeds_collect_stages(self):
         # End-to-end of the deterministic half: expand → assemble → normalize
         # into Stage objects with isolated run dirs (no agent, no LLM).

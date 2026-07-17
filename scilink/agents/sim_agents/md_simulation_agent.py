@@ -29,13 +29,21 @@ def _assemble_fanout_stage(
     """Assemble a one-stage fan-out campaign from expanded member scripts.
 
     Each member becomes a self-contained run: the shared files (structure data,
-    force fields) plus its own substituted script under ``entry_file``. The
-    result is the engine-neutral ``stages`` structure ``_collect_stages``
-    consumes — pure and engine-agnostic, so it is unit-testable without an
-    agent, an LLM, or an engine.
+    force fields) plus any per-member files, plus its own substituted script
+    under ``entry_file``. The result is the engine-neutral ``stages`` structure
+    ``_collect_stages`` consumes — pure and engine-agnostic, so it is
+    unit-testable without an agent, an LLM, or an engine.
+
+    A member's optional ``files`` map layers over ``shared_files``, so a member
+    may carry its own structure or force-field file — the seam a composition or
+    concentration series needs, where members differ by structure rather than
+    by a deck scalar. When absent (a deck sweep), every member shares one
+    structure and only the script differs, exactly as before.
 
     Args:
-        members: ``{"name", "script"}`` dicts from ``expand_parameter_sweep``.
+        members: ``{"name", "script"}`` dicts from ``expand_parameter_sweep``,
+            each optionally carrying ``"files": {filename → contents}`` of
+            per-member inputs that override the shared files of the same name.
         entry_file: Filename each member's script is written under.
         shared_files: Files every member needs (filename → contents).
 
@@ -45,6 +53,9 @@ def _assemble_fanout_stage(
     member_specs = []
     for member in members:
         input_files = dict(shared_files)
+        # Per-member files override shared ones (e.g. a member's own packed
+        # box), then the substituted script is written under the entry file.
+        input_files.update(member.get("files") or {})
         input_files[entry_file] = member["script"]
         member_specs.append({
             "name": member["name"],

@@ -226,9 +226,21 @@ biomolecular classes.
    that was a false fork, fusing two separable questions. Naming the composition
    points is safe for either author; computing molecule counts is always the
    deterministic helper's job. Only the second constrains reproducibility.
-2. **Where do counts get computed?** A `composition_from_spec` helper, or a
-   `build_box` that accepts concentrations directly? (Not the LLM — see above.)
-   Open only as to *which* surface carries the arithmetic.
+2. ~~**Where do counts get computed?**~~ **SETTLED (2026-07-17):** in a
+   `composition_from_spec` helper separate from `build_box` — the packer keeps
+   its integer-count contract (the mirror of `build_interchange`), and the
+   helper does spec → counts. Reading the experimental data settled the harder
+   half: **only pure mole fraction is density-free.** Molarity needs a box
+   volume; volume fraction needs pure-component densities. UC2's own spec
+   ("1.0 M Zn(OTf)₂ in 60:40 water:EIS *by volume*") is molarity + vol%, so it
+   *cannot* be specified without a density. The helper therefore takes
+   per-species density as an explicit **required** argument for any
+   molarity/volume basis and **raises if absent** — never a built-in table,
+   never an LLM-supplied ρ (an invented ρ_EIS is the `nacl_aq` failure one layer
+   up). The density comes from a citable reference or a bootstrap pure-component
+   NPT run (the FF-consistent option — see the density discussion). The helper
+   is deferred: for now UC2's five count-sets are hand-computed from a
+   documented ρ_EIS, which does not block the fan-out plumbing.
 3. **Does `build_box` supersede LLM codegen for condensed, or coexist?** If the
    tool covers the common cases, codegen becomes the fallback for exotic boxes.
    Retiring codegen entirely is more reproducible but less open-ended.
