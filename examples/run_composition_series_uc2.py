@@ -111,10 +111,18 @@ def main():
         from scilink.skills._shared._registry import get_tool_function
         run_command = os.environ.get("SCILINK_RUN_COMMAND")
         if not run_command:
-            get_rc = get_tool_function("default_run_command", active_skills=["lammps"])
-            run_command = get_rc()
+            # The LAMMPS skill's default_run_command tool resolves the on-PATH
+            # binary, but it is not on every branch — fall back cleanly.
+            try:
+                get_rc = get_tool_function(
+                    "default_run_command", active_skills=["lammps"])
+                run_command = get_rc()
+            except Exception:
+                run_command = None
         if not run_command:
-            sys.exit("No LAMMPS run command (set SCILINK_RUN_COMMAND).")
+            sys.exit("No LAMMPS run command available. Set "
+                     "SCILINK_RUN_COMMAND='lmp -in {script}' (the skill's "
+                     "default_run_command tool is not on this branch).")
         executor = LocalExecutor(timeout=int(os.environ.get("LMP_TIMEOUT", "36000")))
 
     result = run_composition_series(
