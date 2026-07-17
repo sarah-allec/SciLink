@@ -598,5 +598,36 @@ class TestStagedGeneration:
         assert stages[1].phases[0].run_command == "lmp -in run_production.lammps"
 
 
+class TestStageDryDir:
+    """The dry-run gate must stage a phase's deps from its input_files, not
+    only from run_dir on disk — a fan-out member's structure lives in
+    input_files and is not written to run_dir until the (later) real run."""
+
+    def test_stages_dependency_from_input_files_when_run_dir_empty(self, tmp_path):
+        from scilink.agents.sim_agents.refinement import _stage_dry_dir
+        run_dir = tmp_path / "member"      # empty: the real run hasn't written here yet
+        run_dir.mkdir()
+        dry = tmp_path / "member" / "_dryrun"
+        _stage_dry_dir(
+            {"run.lammps": "DECK", "system.data": "BOX-40"},
+            str(run_dir), str(dry), "run.lammps")
+        # the structure was staged from input_files (this is the bug fix)...
+        assert (dry / "system.data").read_text() == "BOX-40"
+        # ...and the deck itself was NOT staged (it is written separately).
+        assert not (dry / "run.lammps").exists()
+
+    def test_also_copies_on_disk_deps_not_in_input_files(self, tmp_path):
+        """A prior stage's on-disk file (e.g. a restart) still reaches dry_dir."""
+        from scilink.agents.sim_agents.refinement import _stage_dry_dir
+        run_dir = tmp_path / "m"
+        run_dir.mkdir()
+        (run_dir / "equil.restart").write_text("RESTART")
+        dry = run_dir / "_dryrun"
+        _stage_dry_dir({"run.lammps": "DECK", "system.data": "BOX"},
+                       str(run_dir), str(dry), "run.lammps")
+        assert (dry / "system.data").read_text() == "BOX"      # from input_files
+        assert (dry / "equil.restart").read_text() == "RESTART"  # from disk
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

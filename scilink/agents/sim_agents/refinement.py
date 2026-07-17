@@ -642,15 +642,29 @@ def _resolve_skill_callable(skill: Optional[str], domain: Optional[str],
     return fn if callable(fn) else None
 
 
-def _stage_dry_dir(run_dir: str, dry_dir: str, entry: str) -> None:
-    """Recreate ``dry_dir`` with the run's dependency files (data files, etc.)
-    copied from ``run_dir`` — everything except the deck itself and subdirs."""
+def _stage_dry_dir(
+    input_files: Dict[str, str], run_dir: str, dry_dir: str, entry: str,
+) -> None:
+    """Recreate ``dry_dir`` with the phase's dependency files — everything
+    except the deck itself.
+
+    Writes the phase's own ``input_files`` (the authoritative source: a fan-out
+    member's structure lives here in memory and is only written to ``run_dir``
+    by the real run, which happens *after* this gate — so staging from
+    ``run_dir`` alone would miss it), then copies any additional on-disk
+    dependency a prior stage left in ``run_dir`` and that is not already
+    provided (e.g. a restart file). Engine-neutral: no filename is inspected."""
     if os.path.isdir(dry_dir):
         shutil.rmtree(dry_dir)
     os.makedirs(dry_dir, exist_ok=True)
+    for name, contents in (input_files or {}).items():
+        if name == entry:
+            continue
+        with open(os.path.join(dry_dir, name), "w") as fh:
+            fh.write(contents)
     for name in os.listdir(run_dir):
         src = os.path.join(run_dir, name)
-        if name == entry or not os.path.isfile(src):
+        if name == entry or name in (input_files or {}) or not os.path.isfile(src):
             continue
         shutil.copy2(src, os.path.join(dry_dir, name))
 
@@ -705,7 +719,7 @@ def _run_dry_run_gate(phase, executor, run_critic, ctx, prepare, entry,
         twin = prepare(real_deck)
         # Stage deps (e.g. the data file) and run the trimmed twin to surface the
         # engine's setup error.
-        _stage_dry_dir(phase.run_dir, dry_dir, entry)
+        _stage_dry_dir(phase.input_files, phase.run_dir, dry_dir, entry)
         result = executor.run({entry: twin}, phase.run_command, dry_dir)
         out_dir = result.get("output_dir", dry_dir)
         # Put the REAL deck where the critic judges, so a fix patches the full
