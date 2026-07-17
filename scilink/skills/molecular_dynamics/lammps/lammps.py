@@ -838,9 +838,15 @@ def validate_script(
                 pass
 
     # ── Unresolved templates ──
-    templates = re.findall(r'\$\{[a-z_]+\}|\{[a-z_]+\}', content, re.IGNORECASE)
-    if templates:
-        errors.append(f"Unresolved template variables: {sorted(set(templates))}")
+    # A ${NAME}/{NAME} placeholder is unresolved only if the deck does not
+    # itself define NAME via a `variable NAME ...` command. A deck's own LAMMPS
+    # runtime variables legitimately appear as ${NAME} (e.g. an output-file tag)
+    # and must not be flagged — otherwise every deck using a variable false-fails.
+    defined_vars = set(re.findall(r'(?m)^\s*variable\s+(\w+)\s', content))
+    templates = re.findall(r'\$?\{\w+\}', content)
+    unresolved = sorted({t for t in templates if t.strip('${}') not in defined_vars})
+    if unresolved:
+        errors.append(f"Unresolved template variables: {unresolved}")
 
     # ── Force field completeness ──
     if system_info:

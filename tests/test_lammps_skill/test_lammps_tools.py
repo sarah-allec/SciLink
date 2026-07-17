@@ -320,6 +320,50 @@ class TestValidateScriptErrors:
         assert r["valid"] is False
         assert any("nvt" in e.lower() and "npt" in e.lower() for e in r["errors"])
 
+
+# =====================================================================
+# validate_script — template variables vs deck-defined LAMMPS variables
+# =====================================================================
+
+class TestValidateScriptTemplates:
+
+    def test_deck_defined_variable_not_flagged(self, tmp_path):
+        """A ${NAME} the deck defines via `variable NAME ...` is legitimate."""
+        deck = tmp_path / "d.lammps"
+        deck.write_text(
+            "units real\n"
+            "variable        tag string cosolv_0.0\n"
+            "dump    d all custom 5000 rdf_${tag}.dat id type x y z\n"
+            "write_data      final_${tag}.data\n"
+        )
+        r = lammps_tools.validate_script(str(deck))
+        assert not any("Unresolved template" in e for e in r["errors"]), r["errors"]
+
+    def test_undefined_placeholder_flagged(self, tmp_path):
+        """A ${NAME} nothing defines is a genuine unsubstituted placeholder."""
+        deck = tmp_path / "d.lammps"
+        deck.write_text(
+            "units real\n"
+            "fix 1 all nvt temp ${temperature} 300 100\n"
+        )
+        r = lammps_tools.validate_script(str(deck))
+        assert any("Unresolved template" in e and "temperature" in e
+                   for e in r["errors"]), r["errors"]
+
+    def test_defined_and_undefined_mixed(self, tmp_path):
+        """Only the undefined one flags; the deck-defined variable is spared."""
+        deck = tmp_path / "d.lammps"
+        deck.write_text(
+            "units real\n"
+            "variable        tag string run1\n"
+            "dump    d all custom 100 out_${tag}.lammpstrj id type x y z\n"
+            "velocity all create ${temp} 12345\n"
+        )
+        r = lammps_tools.validate_script(str(deck))
+        errs = [e for e in r["errors"] if "Unresolved template" in e]
+        assert errs, "expected the undefined ${temp} to flag"
+        assert "temp" in errs[0] and "tag" not in errs[0], errs
+
     def test_no_run(self, script_dir):
         r = lammps_tools.validate_script(str(script_dir / "err_no_run.lammps"))
         assert r["valid"] is False
