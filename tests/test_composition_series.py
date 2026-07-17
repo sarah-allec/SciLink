@@ -73,7 +73,7 @@ def test_series_builds_each_member_and_fans_one_deck(tmp_path):
     with p_bb, p_ff, mock.patch.object(sp, "_generate_inputs", _fake_generate_inputs):
         out = sp.run_composition_series(
             "MD of aqueous Zn(OTf)2 with EIS cosolvent", _members(),
-            software="lammps", density=1.05,
+            software="lammps", density=1.05, validate=False,
             output_dir=str(tmp_path / "series"))
 
     assert out["final_status"] == "generated"
@@ -100,7 +100,7 @@ def test_series_writes_members_to_isolated_directories(tmp_path):
     p_bb, p_ff = _patch_build_and_ff(tmp_path)
     with p_bb, p_ff, mock.patch.object(sp, "_generate_inputs", _fake_generate_inputs):
         sp.run_composition_series(
-            "protocol", _members(), software="lammps",
+            "protocol", _members(), software="lammps", validate=False,
             output_dir=str(tmp_path / "series"))
 
     base = tmp_path / "series"
@@ -124,7 +124,7 @@ def test_series_runs_campaign_when_executor_given(tmp_path):
                     fake_run_campaign), \
          mock.patch("scilink.agents.sim_agents.critics.RunCritic"):
         out = sp.run_composition_series(
-            "protocol", _members(), software="lammps",
+            "protocol", _members(), software="lammps", validate=False,
             output_dir=str(tmp_path / "series"),
             executor=object(), run_command="lmp -in {script}")
 
@@ -133,6 +133,55 @@ def test_series_runs_campaign_when_executor_given(tmp_path):
     # the fan-out reached the campaign: one parallel stage, one phase per member
     assert captured["n_members"] == 3
     assert captured["parallel"] is True
+
+
+def test_series_validates_the_shared_deck_once(tmp_path):
+    """The protocol deck is validated a single time (it is shared), and the
+    verdict is recorded — the check that would flag a bad deck pre-run."""
+    p_bb, p_ff = _patch_build_and_ff(tmp_path)
+    seen = {}
+
+    class FakeInputValidator:
+        n = 0
+
+        def __init__(self, **kw):
+            pass
+
+        def validate(self, input_files, system_description, skill=None, domain=None):
+            FakeInputValidator.n += 1
+            seen["files"] = set(input_files)
+            return {"status": "success", "verdict": "good"}
+
+    with p_bb, p_ff, \
+         mock.patch.object(sp, "_generate_inputs", _fake_generate_inputs), \
+         mock.patch("scilink.agents.sim_agents.critics.InputValidator",
+                    FakeInputValidator):
+        out = sp.run_composition_series(
+            "protocol", _members(), software="lammps",
+            output_dir=str(tmp_path / "series"))
+
+    assert FakeInputValidator.n == 1, "deck should be validated exactly once"
+    assert "run.lammps" in seen["files"]
+    assert out["input_validation"]["verdict"] == "good"
+    assert "deck_validation" in out["steps_completed"]
+
+
+def test_series_skips_validation_when_disabled(tmp_path):
+    p_bb, p_ff = _patch_build_and_ff(tmp_path)
+
+    class BoomValidator:
+        def __init__(self, **kw):
+            raise AssertionError("validator must not be constructed when validate=False")
+
+    with p_bb, p_ff, \
+         mock.patch.object(sp, "_generate_inputs", _fake_generate_inputs), \
+         mock.patch("scilink.agents.sim_agents.critics.InputValidator", BoomValidator):
+        out = sp.run_composition_series(
+            "protocol", _members(), software="lammps", validate=False,
+            output_dir=str(tmp_path / "series"))
+
+    assert "deck_validation" not in out["steps_completed"]
+    assert "input_validation" not in out
 
 
 def test_series_needs_at_least_two_members(tmp_path):

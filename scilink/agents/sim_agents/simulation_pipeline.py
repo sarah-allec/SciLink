@@ -538,6 +538,8 @@ def run_composition_series(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     model_name: str = "claude-opus-4-6",
+    futurehouse_api_key: Optional[str] = None,
+    validate: bool = True,
     executor: "Executor | None" = None,
     run_command: Optional[str] = None,
     autonomy: str = "autonomous",
@@ -658,6 +660,25 @@ def run_composition_series(
     result["steps_completed"] = ["member_builds", "deck_generation"]
     result["deck_from"] = rep["name"]
 
+    # ── Step 3.5: validate the shared protocol deck once (engine-neutral
+    #    pre-run critic). One validation covers the protocol because the deck is
+    #    shared across members; per-member structure validity is separately
+    #    enforced at build time by the force-field completeness gate. The verdict
+    #    feeds the refinement gate below, mirroring run_complete_workflow. ──
+    if validate:
+        deck_files = _collect_input_files(gen)
+        if deck_files:
+            from .critics import InputValidator
+            validator = InputValidator(
+                api_key=api_key, base_url=base_url, model_name=model_name,
+                futurehouse_api_key=futurehouse_api_key,
+            )
+            result["input_validation"] = validator.validate(
+                input_files=deck_files, system_description=user_request,
+                skill=software, domain=scale,
+            )
+            result["steps_completed"].append("deck_validation")
+
     if executor is None:
         result["final_status"] = "generated"
         result["stages"] = stages_spec
@@ -682,6 +703,7 @@ def run_composition_series(
         stages, executor, RunCritic(api_key=api_key, base_url=base_url,
                                     model_name=model_name),
         policy_for(autonomy), ctx,
+        pre_run_verdict=result.get("input_validation"),
     )
     result["refinement"] = refinement
     result["steps_completed"].append("refinement")
