@@ -6,10 +6,11 @@ the solvation trend across them is a controlled comparison — unlike the earlie
 campaign, where each composition was generated independently (system size swung
 221->1975 water, Zn count 8->45).
 
-The composition arithmetic is explicit and parameterized below. RHO_EIS is the
-one external datum; it is a documented estimate (the earlier independent runs
-imply 0.96-1.23 g/cm^3), not a measured value — adjust it if a better number is
-available, or bootstrap it from a pure-EIS NPT run.
+Composition is defined by EIS MOLE FRACTION — density-free and exact, so no
+pure-component density is guessed anywhere. Mapping these points onto Dave's
+volume-fraction labels (for the experimental density comparison) needs the pure
+EIS density, which should be BOOTSTRAPPED from a pure-EIS NPT run (the force
+field gives it self-consistently), never assumed.
 
 Environment (same as the MD one-shot smoke):
   SCILINK_API_KEY, SCILINK_BASE_URL   proxy credentials
@@ -29,15 +30,13 @@ from datetime import datetime
 from pathlib import Path
 
 # ── composition parameters (edit these; the counts derive from them) ──
-RHO_WATER = 0.997      # g/cm^3, 25 C
-RHO_EIS = 1.10         # g/cm^3 — DOCUMENTED ESTIMATE, confirm/replace if known
-MW_WATER = 18.015      # g/mol
-MW_EIS = 136.21        # g/mol, ethyl isopropyl sulfone (C5H12O2S)
-
+# Composition is set by EIS mole fraction of the solvent — density-free, exact.
+# The four values span the earlier independent runs' implied range (~0.03-0.14).
 N_SOLVENT_TOTAL = 2000    # water + EIS per member — fixed for a consistent series
 N_ZN = 40                 # fixed ion count for consistent statistics (was 8-45)
-VOL_FRACTIONS = {         # water:EIS by volume -> EIS volume fraction
-    "S2_80-20": 0.20, "S3_70-30": 0.30, "S4_60-40": 0.40, "S5_50-50": 0.50,
+EIS_MOLE_FRACTIONS = {    # EIS fraction of (water + EIS)
+    "x_eis_0.03": 0.03, "x_eis_0.06": 0.06,
+    "x_eis_0.10": 0.10, "x_eis_0.15": 0.15,
 }
 START_DENSITY = 1.20      # g/cm^3 starting guess for packing; NPT relaxes it
 
@@ -53,22 +52,20 @@ GOAL = (
 )
 
 
-def eis_water_counts(vol_frac_eis: float) -> tuple[int, int]:
-    """Integer (N_water, N_EIS) for a target EIS volume fraction at fixed total.
+def eis_water_counts(x_eis: float) -> tuple[int, int]:
+    """Integer (N_water, N_EIS) for a target EIS mole fraction at fixed total.
 
-    N_EIS/N_water = (v/(1-v)) * (rho_EIS*MW_water)/(rho_water*MW_EIS).
+    Density-free: N_EIS = round(x_eis * N_total), N_water = N_total - N_EIS.
     """
-    k = (RHO_EIS * MW_WATER) / (RHO_WATER * MW_EIS)
-    ratio = (vol_frac_eis / (1.0 - vol_frac_eis)) * k
-    n_water = round(N_SOLVENT_TOTAL / (1.0 + ratio))
-    n_eis = N_SOLVENT_TOTAL - n_water
+    n_eis = round(x_eis * N_SOLVENT_TOTAL)
+    n_water = N_SOLVENT_TOTAL - n_eis
     return n_water, n_eis
 
 
 def build_members() -> list:
     members = []
-    for name, vfrac in VOL_FRACTIONS.items():
-        n_water, n_eis = eis_water_counts(vfrac)
+    for name, x_eis in EIS_MOLE_FRACTIONS.items():
+        n_water, n_eis = eis_water_counts(x_eis)
         members.append({
             "name": name,
             "density": START_DENSITY,
@@ -95,7 +92,7 @@ def main():
         c = {x["name"]: x["count"] for x in m["components"]}
         print(f"  {m['name']}: water={c['water']} eis={c['ethyl_isopropyl_sulfone']} "
               f"Zn={c['Zn2+']} triflate={c['triflate']}")
-    print(f"(RHO_EIS={RHO_EIS} g/cm^3 — estimate)\n")
+    print("(composition by EIS mole fraction — density-free)\n")
 
     from scilink.agents.sim_agents.simulation_pipeline import run_composition_series
 
