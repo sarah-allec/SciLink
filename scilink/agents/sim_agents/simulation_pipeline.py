@@ -34,10 +34,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _slugify(name: str) -> str:
+    """Filesystem-safe slug for a member/run directory name."""
+    slug = re.sub(r"[^0-9A-Za-z._-]+", "_", str(name)).strip("_")
+    return slug or "member"
 
 
 # Default engine per scale, used when the caller does not name one. Each
@@ -170,6 +177,58 @@ def _load_components_manifest(structure_path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _parameterize_structure(
+    structure_path: str,
+    software: str,
+    output_dir: str,
+    *,
+    api_key: Optional[str],
+    base_url: Optional[str],
+    model_name: str,
+) -> Dict[str, Any]:
+    """Turn a packed box into an engine-native, force-field-typed input.
+
+    Runs the engine-neutral FF stack on the components.json manifest sitting
+    next to ``structure_path``: ``ForceFieldAgent.parameterize`` ->
+    ``ParameterizedSystem`` -> ``write_md_inputs``. Charges come from the
+    manifest's SMILES (NAGL), so calling this once per member of a composition
+    series with identical force-field arguments gives every member the same
+    force field by construction.
+
+    Returns a status dict:
+      * ``{"status": "success", "structure_file", "force_field_files", "summary"}``
+      * ``{"status": "skipped"}`` — no manifest (MLIP-MD / pre-built data file).
+      * ``{"status": "error", "message"}`` — parameterization failed.
+    """
+    manifest = _load_components_manifest(structure_path)
+    if not manifest:
+        return {"status": "skipped"}
+    try:
+        from .force_field_agent import ForceFieldAgent
+        from ._engine_inputs import write_md_inputs
+        ff_agent = ForceFieldAgent(
+            working_dir=output_dir, api_key=api_key,
+            base_url=base_url, model_name=model_name,
+        )
+        psystem = ff_agent.parameterize(
+            components=manifest["components"],
+            coordinates_file=structure_path,
+            working_dir=output_dir,
+        )
+        written = write_md_inputs(psystem, software, output_dir)
+        return {
+            "status": "success",
+            "structure_file": written["structure_file"],
+            "force_field_files": written["force_field_files"] or None,
+            "summary": {
+                "status": "success", "backend": psystem.backend,
+                "n_atoms": psystem.n_atoms, "total_charge": psystem.total_charge,
+            },
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 def run_complete_workflow(
     user_request: str,
     *,
@@ -291,40 +350,25 @@ def run_complete_workflow(
 
     # ── Step 1.5: force-field parameterization (MD, force-field-based only) ──
     # Turn a packed box of coordinates into an engine-native, parameterized
-    # input (e.g. a typed LAMMPS data file) via the engine-neutral FF stack:
-    # ForceFieldAgent.parameterize -> ParameterizedSystem -> write_md_inputs.
-    # Gated on a components.json manifest, so MLIP-driven MD (potential-based,
-    # no manifest), pre-built data files, and non-MD scales are untouched. When
-    # the caller already supplied force_field_files, respect them.
+    # input (e.g. a typed LAMMPS data file). Gated on a components.json manifest,
+    # so MLIP-driven MD (potential-based, no manifest), pre-built data files, and
+    # non-MD scales are untouched. When the caller already supplied
+    # force_field_files, respect them.
     if (scale == "molecular_dynamics" and force_field_files is None):
-        manifest = _load_components_manifest(structure_path)
-        if manifest:
-            try:
-                from .force_field_agent import ForceFieldAgent
-                from ._engine_inputs import write_md_inputs
-                ff_agent = ForceFieldAgent(
-                    working_dir=output_dir, api_key=api_key,
-                    base_url=base_url, model_name=model_name,
-                )
-                psystem = ff_agent.parameterize(
-                    components=manifest["components"],
-                    coordinates_file=structure_path,
-                    working_dir=output_dir,
-                )
-                written = write_md_inputs(psystem, software, output_dir)
-                structure_path = written["structure_file"]
-                force_field_files = written["force_field_files"] or None
-                result["force_field"] = {
-                    "status": "success", "backend": psystem.backend,
-                    "n_atoms": psystem.n_atoms,
-                    "total_charge": psystem.total_charge,
-                }
-                result["steps_completed"].append("force_field")
-            except Exception as e:
-                result["final_status"] = "failed_force_field"
-                result["force_field"] = {"status": "error", "message": str(e)}
-                return result
-        else:
+        ff = _parameterize_structure(
+            structure_path, software, output_dir,
+            api_key=api_key, base_url=base_url, model_name=model_name,
+        )
+        if ff["status"] == "success":
+            structure_path = ff["structure_file"]
+            force_field_files = ff["force_field_files"] or None
+            result["force_field"] = ff["summary"]
+            result["steps_completed"].append("force_field")
+        elif ff["status"] == "error":
+            result["final_status"] = "failed_force_field"
+            result["force_field"] = {"status": "error", "message": ff["message"]}
+            return result
+        else:  # "skipped" — no manifest
             result.setdefault("warnings", []).append(
                 "molecular_dynamics run with no components.json manifest next to "
                 "the structure and no force_field_files supplied — skipping "
@@ -401,6 +445,243 @@ def run_complete_workflow(
     refinement = run_campaign(
         stages, executor, run_critic, policy_for(autonomy), ctx,
         pre_run_verdict=result.get("input_validation"),
+    )
+    result["refinement"] = refinement
+    result["steps_completed"].append("refinement")
+    result["final_status"] = (
+        "success" if refinement.get("status") == "success"
+        else f"refinement_{refinement.get('status', 'failed')}"
+    )
+    return result
+
+
+def _build_series_member(
+    member: Dict[str, Any],
+    *,
+    software: str,
+    density: Optional[float],
+    member_dir: str,
+    api_key: Optional[str],
+    base_url: Optional[str],
+    model_name: str,
+) -> Dict[str, Any]:
+    """Build one composition-series member's force-field-typed structure.
+
+    Two ways in, both landing on a typed engine input in ``member_dir``:
+      * ``{"components": [...]}`` (+ optional ``density``/``box``) — packs a box
+        with ``build_box`` (deterministic, seeded) then parameterizes it.
+      * ``{"structure_file": path}`` — an already-typed structure, used as is.
+
+    Returns ``{"status": "success", "structure_file", "force_field_files",
+    "name", ...}`` or ``{"status": "error", "name", "message"}``.
+    """
+    name = member["name"]
+    os.makedirs(member_dir, exist_ok=True)
+
+    if member.get("structure_file"):
+        # Pre-built, already-typed structure — trust it as the member's input.
+        return {
+            "status": "success", "name": name,
+            "structure_file": member["structure_file"],
+            "force_field_files": member.get("force_field_files"),
+        }
+
+    components = member.get("components")
+    if not components:
+        return {"status": "error", "name": name,
+                "message": "member needs either 'components' or 'structure_file'"}
+
+    try:
+        from ...skills.structure_generation.condensed.build_box import build_box
+        packed = build_box(
+            components,
+            density=member.get("density", density),
+            box=member.get("box"),
+            working_dir=member_dir,
+        )
+    except Exception as e:
+        return {"status": "error", "name": name,
+                "message": f"build_box failed: {e}"}
+
+    # build_box writes components.json next to the coordinates, so the shared
+    # force-field step turns the box into a typed engine input — identical FF
+    # arguments across members means an identical force field by construction.
+    ff = _parameterize_structure(
+        packed["structure_file"], software, member_dir,
+        api_key=api_key, base_url=base_url, model_name=model_name,
+    )
+    if ff["status"] == "error":
+        return {"status": "error", "name": name,
+                "message": f"parameterization failed: {ff['message']}"}
+    if ff["status"] == "skipped":
+        return {"status": "error", "name": name,
+                "message": "build_box wrote no components.json manifest"}
+
+    return {
+        "status": "success", "name": name,
+        "structure_file": ff["structure_file"],
+        "force_field_files": ff["force_field_files"],
+        "box": packed["box"], "density": packed["density"],
+        "n_atoms": packed["n_atoms"], "n_molecules": packed["n_molecules"],
+    }
+
+
+def run_composition_series(
+    user_request: str,
+    members: List[Dict[str, Any]],
+    *,
+    scale: str = "molecular_dynamics",
+    software: Optional[str] = None,
+    density: Optional[float] = None,
+    deck_from: int = 0,
+    output_dir: str = "composition_series_output",
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model_name: str = "claude-opus-4-6",
+    executor: "Executor | None" = None,
+    run_command: Optional[str] = None,
+    autonomy: str = "autonomous",
+    max_run_cycles: int = 3,
+) -> Dict[str, Any]:
+    """Run one MD protocol across a series of compositions.
+
+    A composition (or concentration) series: N members that share one
+    force field and one protocol but differ in structure — the mirror of a
+    temperature sweep, where members share a structure and differ in a deck
+    scalar. Each member's box is packed and typed independently (in its own
+    directory), then a single protocol deck is generated once and fanned out
+    over every member, so the members differ *only* by composition and the
+    comparison across them is controlled.
+
+    The deck is generated once (from member ``deck_from``) and reused, which is
+    what makes it one protocol rather than N independently-authored ones. This
+    assumes the members share a species set — the deck's force-field styles must
+    cover every member — which holds when composition varies by molecule *count*
+    (the series case). A member that adds or drops a species needs its own deck
+    and is a separate run, not a fan-out member.
+
+    Args:
+        user_request: Natural-language description of the protocol/goal.
+        members: ``[{"name", "components"|"structure_file", "density"?, "box"?}]``.
+            ``components`` is ``[{name, smiles, count}]`` packed by ``build_box``.
+        scale: Simulation scale (``"molecular_dynamics"``).
+        software: Engine within the scale; defaults to the scale's engine.
+        density: Default target packing density (g/cm^3) for members that do not
+            set their own. Only a starting configuration — the MD relaxes it.
+        deck_from: Index of the member the shared protocol deck is generated
+            from. Pick one whose species set covers the series.
+        output_dir: Directory for per-member subdirectories and the campaign.
+        api_key, base_url, model_name: LLM credentials.
+        executor, run_command, autonomy, max_run_cycles: as in
+            :func:`run_complete_workflow` — when ``executor`` is given the fan-out
+            runs and refines, otherwise generation stops after the deck.
+
+    Returns:
+        A result dict with ``final_status``, ``members`` (per-member build
+        results), and — when executed — ``refinement`` from the fan-out campaign.
+    """
+    software = software or _DEFAULT_ENGINE.get(scale)
+    os.makedirs(output_dir, exist_ok=True)
+    result: Dict[str, Any] = {
+        "user_request": user_request, "scale": scale, "engine": software,
+        "mode": "composition_series", "output_directory": output_dir,
+        "final_status": "started", "members": [],
+    }
+
+    if len(members) < 2:
+        result["final_status"] = "failed_series"
+        result["error"] = "a composition series needs at least two members"
+        return result
+    if not 0 <= deck_from < len(members):
+        result["final_status"] = "failed_series"
+        result["error"] = f"deck_from={deck_from} out of range for {len(members)} members"
+        return result
+
+    # ── Step 1+1.5: build + type every member independently ──
+    built = []
+    for member in members:
+        member_dir = os.path.join(output_dir, _slugify(member["name"]))
+        b = _build_series_member(
+            member, software=software, density=density, member_dir=member_dir,
+            api_key=api_key, base_url=base_url, model_name=model_name,
+        )
+        result["members"].append(b)
+        if b["status"] != "success":
+            result["final_status"] = "failed_member_build"
+            result["error"] = f"member {b['name']!r}: {b.get('message')}"
+            return result
+        built.append(b)
+
+    # ── Step 2: generate the shared protocol deck ONCE, from one member ──
+    rep = built[deck_from]
+    rep_dir = os.path.join(output_dir, _slugify(rep["name"]))
+    try:
+        gen = _generate_inputs(
+            scale=scale, software=software, method="llm",
+            structure_file=rep["structure_file"], request=user_request,
+            output_dir=rep_dir, api_key=api_key, base_url=base_url,
+            model_name=model_name, force_field_files=rep["force_field_files"],
+        )
+    except Exception as e:
+        result["final_status"] = "failed_input_generation"
+        result["error"] = f"deck generation failed: {e}"
+        return result
+    if gen.get("status") not in (None, "success"):
+        result["final_status"] = "failed_input_generation"
+        result["input_generation"] = gen
+        return result
+
+    entry = gen.get("entry_file") or "run.lammps"
+    gen_files = gen.get("input_files") or {}
+    deck_script = gen_files.get(entry, "")
+    data_name = os.path.basename(rep["structure_file"])
+    # Everything the deck needs except the structure is shared (identical force
+    # field for all members); the structure is what each member overrides.
+    shared_files = {
+        name: contents for name, contents in gen_files.items()
+        if name not in (entry, data_name)
+    }
+
+    # ── Step 3: fan the one deck out over the members' own structures ──
+    fanout_members = []
+    for b in built:
+        with open(b["structure_file"]) as fh:
+            typed = fh.read()
+        fanout_members.append({
+            "name": _slugify(b["name"]),
+            "script": deck_script,
+            # each member reads its OWN typed box under the deck's read_data name
+            "files": {data_name: typed},
+        })
+    from .md_simulation_agent import _assemble_fanout_stage
+    stages_spec = _assemble_fanout_stage(fanout_members, entry, shared_files)
+    result["steps_completed"] = ["member_builds", "deck_generation"]
+    result["deck_from"] = rep["name"]
+
+    if executor is None:
+        result["final_status"] = "generated"
+        result["stages"] = stages_spec
+        return result
+    if not run_command:
+        result["final_status"] = "generated"
+        result["stages"] = stages_spec
+        result["warnings"] = ["executor provided without a run_command; not run"]
+        return result
+
+    # ── Step 4: run + refine every member independently (fan-out campaign) ──
+    from .refinement import RefinementContext, policy_for, run_campaign
+    from .critics import RunCritic
+
+    stages = _collect_stages({"stages": stages_spec}, output_dir, run_command)
+    ctx = RefinementContext(
+        research_goal=user_request, scale=scale, engine=software,
+        skill=software, domain=scale, autonomy=autonomy,
+        max_cycles=max_run_cycles,
+    )
+    refinement = run_campaign(
+        stages, executor, RunCritic(api_key=api_key, base_url=base_url,
+                                    model_name=model_name),
+        policy_for(autonomy), ctx,
     )
     result["refinement"] = refinement
     result["steps_completed"].append("refinement")
