@@ -81,6 +81,25 @@ Liquids and solutions:
 2. NPT at target T,P for 0.5-2 ns → density convergence
 3. Production: NPT or NVT
 
+### Production length — match it to the observable
+
+Do not default to a generic long run; size production to the property being
+measured. Over-long production wastes wall time (and, for a composition/
+temperature series, blocks the other members) without improving a
+fast-converging observable.
+
+| Observable | Production length | Notes |
+|---|---|---|
+| RDF, coordination number, solvation structure | ~0.5-2 ns | structural averages; converge fast |
+| Density, other thermodynamic averages | ~1-2 ns NPT | after the equilibration above |
+| Diffusion coefficient (MSD/Einstein) | ~10-50 ns | needs a long linear MSD regime |
+| Shear viscosity (Green-Kubo) | ~20-100 ns | stress-ACF is noisy; longest of all |
+
+When the goal names only structural or thermodynamic properties (e.g. "produce
+RDFs", "the solvation shell", "the density"), keep production in the 1-2 ns
+range. Reserve multi-ns/tens-of-ns runs for transport properties, and only when
+a transport property is actually requested.
+
 ### Technique-specific requirements
 
 Tensile deformation:
