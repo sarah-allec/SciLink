@@ -1,5 +1,7 @@
 ---
 description: NWChem molecular quantum chemistry — Gaussian-basis DFT, HF, and post-HF (MP2/CCSD(T)/TCE) on finite molecules and ions; geometry optimization, analytic frequencies/thermochemistry, and COSMO/SMD implicit solvation. Charge/multiplicity-aware; handles charged ion pairs that periodic codes cannot.
+outputs:
+  molecular_qc_output: [.out, .nwo, .nwout]
 detect:
   binaries: [nwchem]
   env_vars: [NWCHEM_TOP, NWCHEM_EXECUTABLE, NWCHEM_BASIS_LIBRARY]
