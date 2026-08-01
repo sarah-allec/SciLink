@@ -115,6 +115,18 @@ class TestRealSkills:
         assert "t1_relaxation" in elig({"trajectory"})
         assert "t1_relaxation" not in elig({"thermo_log"})
 
+    def test_homo_lumo_skill_loads_and_gates(self, agent):
+        cat = agent._skill_catalog()
+        hl = [c for c in cat if c["name"] == "homo_lumo_gap"]
+        assert hl, "homo_lumo_gap skill not discovered"
+        meta = hl[0]["meta"]
+        assert meta["computes"] == ["homo_lumo_gap"]
+        assert meta["requires"] == ["molecular_qc_output"]
+        assert hl[0].get("implementation")
+        elig = lambda kinds: {c["name"] for c in agent.eligible_skills(kinds, catalog=cat)}
+        assert "homo_lumo_gap" in elig({"molecular_qc_output"})   # from nwchem outputs
+        assert "homo_lumo_gap" not in elig({"trajectory"})
+
     def test_skills_gate_independently(self, agent):
         cat = agent._skill_catalog()
         elig = lambda kinds: {c["name"] for c in agent.eligible_skills(kinds, catalog=cat)}
