@@ -40,9 +40,17 @@ class TestClassify:
         # Patterns come from engine skills' `outputs:` frontmatter — the agent
         # itself names no filenames, so adding an engine is a skill-only change.
         fmt = agent._output_format_map()
-        assert "vasprun.xml" in fmt.get("dft_output", set())      # from vasp skill
-        assert "log.lammps" in fmt.get("thermo_log", set())       # from lammps skill
-        assert "lammpstrj" in fmt.get("trajectory", set())        # from lammps skill
+        assert "vasprun.xml" in fmt.get("dft_output", set())          # vasp skill
+        assert "log.lammps" in fmt.get("thermo_log", set())           # lammps skill
+        assert "lammpstrj" in fmt.get("trajectory", set())            # lammps skill
+        assert ".out" in fmt.get("molecular_qc_output", set())        # nwchem skill
+        assert "traj" in fmt.get("trajectory", set())                # general MLIP skill
+
+    def test_mlip_ase_traj_is_a_trajectory(self, agent, tmp_path):
+        # Engine-neutral: an MLIP (ASE) .traj routes as `trajectory` too, so the
+        # same diffusion skill serves classical MD and MLIP-MD.
+        (tmp_path / "traj.traj").write_bytes(b"x")
+        assert "trajectory" in agent.classify_outputs(str(tmp_path))
 
 
 class TestAvailabilityGate:
@@ -126,6 +134,24 @@ class TestRealSkills:
         elig = lambda kinds: {c["name"] for c in agent.eligible_skills(kinds, catalog=cat)}
         assert "homo_lumo_gap" in elig({"molecular_qc_output"})   # from nwchem outputs
         assert "homo_lumo_gap" not in elig({"trajectory"})
+
+    def test_band_gap_gates_on_dft_output(self, agent):
+        cat = agent._skill_catalog()
+        bg = [c for c in cat if c["name"] == "band_gap"]
+        assert bg and bg[0]["meta"]["requires"] == ["dft_output"]
+        assert bg[0]["meta"]["computes"] == ["band_gap"]
+        elig = lambda k: {c["name"] for c in agent.eligible_skills(k, catalog=cat)}
+        assert "band_gap" in elig({"dft_output"})
+        assert "band_gap" not in elig({"trajectory"})
+
+    def test_diffusion_gates_on_trajectory(self, agent):
+        cat = agent._skill_catalog()
+        df = [c for c in cat if c["name"] == "diffusion"]
+        assert df and df[0]["meta"]["requires"] == ["trajectory"]
+        assert df[0]["meta"]["computes"] == ["self_diffusion"]
+        elig = lambda k: {c["name"] for c in agent.eligible_skills(k, catalog=cat)}
+        assert "diffusion" in elig({"trajectory"})
+        assert "diffusion" not in elig({"dft_output"})
 
     def test_skills_gate_independently(self, agent):
         cat = agent._skill_catalog()

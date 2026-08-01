@@ -1,5 +1,8 @@
 ---
 description: General MLIP guidance — when to use machine learning interatomic potentials, pretrained-first strategy, active learning loop, and cross-backend acceptance thresholds.
+outputs:
+  trajectory: [traj, xyz]
+  thermo_log: [thermo.log]
 detect:
   binaries: []
   env_vars: []
