@@ -45,13 +45,23 @@ export SCILINK_MODEL="${SCILINK_MODEL:-claude-opus-4-8-project}"
 # ── run parameters ──
 export LAMMPS_CMD="${LAMMPS_CMD:-lmp -in {script}}"
 export UC2_STAGE_TIMEOUT="${UC2_STAGE_TIMEOUT:-72000}"   # 20 h per stage cap
+export UC2_PRODUCTION_NS="${UC2_PRODUCTION_NS:-25}"      # human-set viscosity length
+
+# ── output + caches on the PROJECT filesystem, never the quota'd /qfs home ──
+# /qfs/people fills up and mkdir/caches fail there; rcfs has the room. The MLIP-
+# free FF/MD stack still writes matplotlib/torch caches to $HOME/.cache unless
+# redirected, which also fails on a full home.
+UC2_RUNS_DIR="${UC2_RUNS_DIR:-/rcfs/projects/matsci_ai_ldrd/alle927/uc2/runs}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/rcfs/projects/matsci_ai_ldrd/alle927/uc2/cache}"
+export MPLCONFIGDIR="$XDG_CACHE_HOME/mpl"
+mkdir -p "$UC2_RUNS_DIR" "$MPLCONFIGDIR"
 
 PY="$CONDA_PREFIX/bin/python"
 
-echo "=================  UC2 member: $MEMBER  ================="
-"$PY" uc2/run_uc2.py --stage full    --members "$MEMBER"
-"$PY" uc2/run_uc2.py --stage analyze --members "$MEMBER"
+echo "=================  UC2 member: $MEMBER  (runs -> $UC2_RUNS_DIR)  ================="
+"$PY" uc2/run_uc2.py --stage full    --members "$MEMBER" --runs-dir "$UC2_RUNS_DIR"
+"$PY" uc2/run_uc2.py --stage analyze --members "$MEMBER" --runs-dir "$UC2_RUNS_DIR"
 
 echo
 echo "Member $MEMBER done. Once all four finish, validate on the login node:"
-echo "  $PY uc2/run_uc2.py --stage validate"
+echo "  $PY uc2/run_uc2.py --stage validate --runs-dir $UC2_RUNS_DIR"
