@@ -42,12 +42,21 @@ sys.path.insert(0, str(REPO))
 
 import references  # noqa: E402  (uc2/references.py)
 
+# Human-in-the-loop knob. The agent's own duration choice (~10 ns) is optimistic
+# for a Green-Kubo viscosity on a viscous electrolyte — the stress autocorrelation
+# converges slowly, so a short run gives a noisy integral. Until the convergence
+# loop is closed automatically (see issue: auto-extend production on a non-
+# converged post-run observable), a domain scientist sets the production length
+# here. The post-run analysis still reports whether the integral actually
+# plateaued, so this choice is confirmed rather than assumed.
+PRODUCTION_NS = float(os.environ.get("UC2_PRODUCTION_NS", "25"))
+
 
 def _request(comp: dict) -> str:
     """High-level, goal-first request for one composition — no pre-chewed
     SMILES / molecule counts / box: the structure and force-field agents resolve
     those. Naming the target observables lets the deriver build the sampling
-    contract."""
+    contract; the production length is set explicitly (see PRODUCTION_NS)."""
     w, e = comp["water_ratio"], comp["eis_ratio"]
     return (
         f"Build and equilibrate a {references.SALT_CONCENTRATION_M:g} M "
@@ -55,13 +64,17 @@ def _request(comp: dict) -> str:
         f"isopropyl sulfone at a {w}:{e} water-to-sulfone volume ratio, at "
         f"{references.TEMPERATURE_K:g} K and {references.PRESSURE_ATM:g} atm. "
         "Use a box large enough for reliable liquid-state properties. Run staged "
-        "molecular dynamics (energy minimization, then NPT equilibration, then a "
-        "production run) long enough to compute the mass density, the shear "
+        "molecular dynamics: energy minimization, then NPT equilibration to "
+        "converge the density, then a production (NVT) run of at least "
+        f"{PRODUCTION_NS:g} ns. The production must be long enough for the "
+        "Green-Kubo shear-viscosity integral to converge — this is a viscous "
+        "electrolyte, so the stress autocorrelation converges slowly and a short "
+        "run gives a noisy viscosity. Compute the mass density, the shear "
         "viscosity by the Green-Kubo method, and the 1H spin-lattice (T1) "
         "relaxation time of the water protons. Sample the pressure/stress tensor "
-        "densely enough for the Green-Kubo integral to converge, and dump atomic "
-        "trajectories at sub-picosecond intervals so reorientational dynamics are "
-        "resolved."
+        "densely (every few fs) so the Green-Kubo integral is well resolved, and "
+        "dump the water-hydrogen trajectory at sub-picosecond intervals for the "
+        "reorientational (T1) analysis."
     )
 
 
@@ -99,9 +112,12 @@ def _run_member(comp: dict, stage: str, runs_dir: Path) -> dict:
     )
 
     if stage == "preview":
-        # Human-in-the-loop generation only; nothing executes.
+        # Human-in-the-loop generation only; nothing executes. Autopilot pauses
+        # for approval at each agent decision — override to "autonomous" via
+        # UC2_PREVIEW_AUTONOMY for a headless dry run (no input() prompts).
+        preview_autonomy = os.environ.get("UC2_PREVIEW_AUTONOMY", "autopilot")
         result = sp.run_complete_workflow(
-            _request(comp), autonomy="autopilot",
+            _request(comp), autonomy=preview_autonomy,
             executor=None, run_command=None, **common)
     else:  # full
         from scilink.agents.sim_agents.refinement import LocalExecutor
