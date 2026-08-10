@@ -30,11 +30,16 @@ REPO="${REPO:-/qfs/people/alle927/SciLink/SciLink}"
 cd "$REPO"
 
 # ── env: the OpenFF force-field + LAMMPS environment (scilink_ffmd) ──
-# Point UC2_ENV_SETUP at your env-activation script. It must leave a working
-# `python` (scilink + OpenFF Interchange) and `lmp` on PATH. The scilink_ffmd
-# env also needs its conda libs on the loader path and numpy<2.3 (see the
-# reference notes); fold those into the setup script.
-source "${UC2_ENV_SETUP:-/people/alle927/scilink_ffmd_env.sh}"
+# The job sources ~/.bashrc (conda-init lives there), so `conda activate` works;
+# activate the specific env explicitly rather than trusting the .bashrc default.
+# UC2_ENV_SETUP is an OPTIONAL hook if you keep a separate env script — it is
+# sourced only if it exists, so a missing path doesn't abort the job.
+# LD_LIBRARY_PATH puts the conda libs first: fixes the libstdc++/CXXABI mismatch
+# that otherwise makes NAGL (force-field charges) and matplotlib fail to import.
+if [ -n "${UC2_ENV_SETUP:-}" ] && [ -f "${UC2_ENV_SETUP}" ]; then
+    source "${UC2_ENV_SETUP}"
+fi
+conda activate "${UC2_CONDA_ENV:-scilink_ffmd}"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 
 # ── credentials / model (proxy path on Deception) ──
