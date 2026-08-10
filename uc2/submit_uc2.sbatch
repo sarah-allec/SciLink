@@ -37,11 +37,16 @@ cd "$REPO"
 # UC2_ENV_SETUP stays an OPTIONAL hook, sourced only if it exists.
 # LD_LIBRARY_PATH puts the conda libs first: fixes the libstdc++/CXXABI mismatch
 # that otherwise makes NAGL (force-field charges) and matplotlib fail to import.
+# conda's own activate.d scripts (binutils, etc.) reference unbound variables
+# and can return non-zero, so relax nounset/errexit just around activation and
+# restore the strict flags afterward.
+set +eu
 source "${UC2_CONDA_SH:-/share/apps/python/miniconda25.5.1/etc/profile.d/conda.sh}"
 if [ -n "${UC2_ENV_SETUP:-}" ] && [ -f "${UC2_ENV_SETUP}" ]; then
     source "${UC2_ENV_SETUP}"
 fi
 conda activate "${UC2_CONDA_ENV:-/people/alle927/.conda/envs/scilink_ffmd}"
+set -eu
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 
 # ── credentials / model (proxy path on Deception) ──
