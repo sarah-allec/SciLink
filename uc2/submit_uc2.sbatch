@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=24:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=uc2_%A_%a.out
 #SBATCH --error=uc2_%A_%a.err
 #SBATCH --array=0-3
@@ -60,7 +60,7 @@ export SCILINK_MODEL="${SCILINK_MODEL:-claude-opus-4-8-project}"
 # KSPACE (pppm), RIGID (fix shake), + GPU package. Override LAMMPS_CMD to change.
 _LMP="/share/apps/lammps/lammps-29Aug2024/build/lmp_rocky9"
 export LAMMPS_CMD="${LAMMPS_CMD:-$_LMP -sf gpu -pk gpu 1 -in {script}}"
-export UC2_STAGE_TIMEOUT="${UC2_STAGE_TIMEOUT:-72000}"   # 20 h per stage cap
+export UC2_STAGE_TIMEOUT="${UC2_STAGE_TIMEOUT:-144000}"  # 40 h/stage: 25 ns prod ~30 h at ~20 ns/day
 export UC2_PRODUCTION_NS="${UC2_PRODUCTION_NS:-25}"      # human-set viscosity length
 
 # ── output + caches on the PROJECT filesystem, never the quota'd /qfs home ──
