@@ -30,16 +30,18 @@ REPO="${REPO:-/qfs/people/alle927/SciLink/SciLink}"
 cd "$REPO"
 
 # ── env: the OpenFF force-field + LAMMPS environment (scilink_ffmd) ──
-# The job sources ~/.bashrc (conda-init lives there), so `conda activate` works;
-# activate the specific env explicitly rather than trusting the .bashrc default.
-# UC2_ENV_SETUP is an OPTIONAL hook if you keep a separate env script — it is
-# sourced only if it exists, so a missing path doesn't abort the job.
+# A batch shell runs neither interactive conda-init nor the `start_conda` alias,
+# so `conda` is absent unless we source the profile script ourselves. This is
+# what start_conda does. Activate the env by FULL PATH — it lives under
+# ~/.conda/envs, not the miniconda's own envs, so activate-by-name may miss it.
+# UC2_ENV_SETUP stays an OPTIONAL hook, sourced only if it exists.
 # LD_LIBRARY_PATH puts the conda libs first: fixes the libstdc++/CXXABI mismatch
 # that otherwise makes NAGL (force-field charges) and matplotlib fail to import.
+source "${UC2_CONDA_SH:-/share/apps/python/miniconda25.5.1/etc/profile.d/conda.sh}"
 if [ -n "${UC2_ENV_SETUP:-}" ] && [ -f "${UC2_ENV_SETUP}" ]; then
     source "${UC2_ENV_SETUP}"
 fi
-conda activate "${UC2_CONDA_ENV:-scilink_ffmd}"
+conda activate "${UC2_CONDA_ENV:-/people/alle927/.conda/envs/scilink_ffmd}"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
 
 # ── credentials / model (proxy path on Deception) ──
