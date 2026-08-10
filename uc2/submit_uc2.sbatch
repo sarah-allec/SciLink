@@ -48,7 +48,11 @@ export SCILINK_BASE_URL="${SCILINK_BASE_URL:?set SCILINK_BASE_URL (the proxy URL
 export SCILINK_MODEL="${SCILINK_MODEL:-claude-opus-4-8-project}"
 
 # ── run parameters ──
-export LAMMPS_CMD="${LAMMPS_CMD:-lmp -in {script}}"
+# Cluster-standard LAMMPS (29 Aug 2024), GPU-accelerated, verified to carry the
+# packages this electrolyte deck needs: MOLECULE (bond/angle/dihedral),
+# KSPACE (pppm), RIGID (fix shake), + GPU package. Override LAMMPS_CMD to change.
+_LMP="/share/apps/lammps/lammps-29Aug2024/build/lmp_rocky9"
+export LAMMPS_CMD="${LAMMPS_CMD:-$_LMP -sf gpu -pk gpu 1 -in {script}}"
 export UC2_STAGE_TIMEOUT="${UC2_STAGE_TIMEOUT:-72000}"   # 20 h per stage cap
 export UC2_PRODUCTION_NS="${UC2_PRODUCTION_NS:-25}"      # human-set viscosity length
 
