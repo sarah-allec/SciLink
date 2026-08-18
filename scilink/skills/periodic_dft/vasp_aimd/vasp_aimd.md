@@ -21,6 +21,18 @@ detect:
 ---
 # VASP Ab Initio Molecular Dynamics (AIMD) Input Generation Skill
 
+> **NOT REACHABLE BY ROUTING TODAY -- see `periodic_dft/vasp/vasp.md`, which is
+> authoritative for AIMD.** For the `periodic_dft` domain the skill name *is* the
+> engine name: `PeriodicDFTAgent.generate_inputs(software=...)` passes it straight
+> to `_load_skill`, and `software` comes either from the router or from
+> `_DEFAULT_ENGINE["periodic_dft"] = "vasp"`. A bundle named `vasp_aimd` is
+> therefore only selectable as if it were a *separate code*, which no caller asks
+> for -- so this file has never been loaded in a run. Its content now lives in
+> `vasp.md` (planning / implementation / validation), and that is the copy to
+> edit. This bundle is kept because it is the right home if a task axis is added
+> (`_load_skill` composing `vasp` + `vasp_aimd` for MD requests); until then,
+> changes here have no effect.
+
 ## overview
 
 Born-Oppenheimer molecular dynamics with VASP: the forces come from a

@@ -25,7 +25,8 @@ detect:
 Density Functional Theory (DFT) calculations using the Vienna Ab initio
 Simulation Package (VASP). This skill covers INCAR parameter selection
 and KPOINTS generation for metallic systems, surfaces, molecules,
-and transition state calculations. The goal is to produce input files
+transition states, and finite-temperature molecular dynamics (AIMD)
+of condensed-phase systems. The goal is to produce input files
 that are physically correct, computationally efficient, and consistent
 with standard practices in the computational materials science literature.
 
@@ -85,6 +86,40 @@ MAGMOM values:
 Omitting ISPIN = 2 for magnetic systems will give incorrect energies,
 wrong magnetic ground states, and unreliable forces.
 
+**Molecular dynamics (AIMD):** a distinct calculation type, not a relaxation
+with more steps. IBRION = 0 is the distinguishing tag; the product is a
+*trajectory* at temperature (sampling, diffusion, speciation, or
+configurations/energies/forces for MLIP training), not a minimized geometry.
+
+- **Thermostat.** NVT is the default for a liquid at sensible density, and
+  each thermostat has a mandatory companion tag: MDALGO = 2 (Nose-Hoover)
+  needs SMASS >= 0 (~0-3, sets the coupling period); MDALGO = 3 (Langevin)
+  needs LANGEVIN_GAMMA (one value per species type, POSCAR order, ps^-1,
+  ~1-10) and ISIF = 2. Omit the companion tag and the run is silently NVE:
+  temperature uncontrolled, and an out-of-equilibrium structure converts
+  potential energy to heat with no error raised. Use NPT (LANGEVIN_GAMMA_L
+  + PMASS, ISIF = 3) only when the density itself must relax.
+- **Temperature and timestep.** Set TEBEG, and TEEND = TEBEG for constant T
+  (aqueous: 300-350 K). POTIM must resolve the fastest motion: <= 1.0 fs
+  with hydrogen (0.5 safest), 1-2 fs otherwise. Too large a POTIM is the
+  most common AIMD failure and shows up as upward temperature drift.
+- **Functional for aqueous systems.** Bare PBE water is over-structured with
+  too-slow dynamics, and the wrong reference when the trajectory becomes
+  MLIP training data -- the MLIP inherits its errors exactly. Prefer
+  revPBE-D3 (GGA = RE + IVDW = 11, or 12 for D3-BJ): good liquid-water
+  structure and smooth forces at GGA cost. METAGGA = SCAN/R2SCAN is higher
+  fidelity but several-fold costlier and needs LASPH and ADDGRID for stable
+  forces. Bare PBE is for pipeline shakedowns only.
+- **Size NSW to the wall clock, not to an ideal.** Estimate the per-step
+  cost (condensed-phase boxes run seconds to tens of seconds per step) and
+  keep NSW * t_step comfortably inside the job's limit -- a run killed at
+  the wall may be discarded entirely, losing the whole trajectory rather
+  than merely shortening it. Report the physical time (NSW * POTIM).
+- **Start relaxed.** A packed or programmatically built box can sit tens of
+  eV above its relaxed energy, and released into MD that excess becomes
+  heat. Relax briefly (or run a low-T equilibration segment) first, and
+  measure only after temperature and energy plateau.
+
 ## implementation
 
 **CRITICAL: INCAR generation rules.** Always follow these:
@@ -128,6 +163,25 @@ wrong magnetic ground states, and unreliable forces.
 - LCLIMB = .TRUE. (climbing image NEB for accurate barrier)
 - SPRING = -5 (negative value for nudged elastic band)
 - NSW should be large enough for convergence (200-500)
+
+**Molecular dynamics (AIMD) calculations:**
+- IBRION = 0, never 1/2/3, and a complete thermostat pair: MDALGO = 2 with
+  SMASS, or MDALGO = 3 with LANGEVIN_GAMMA (plus ISIF = 2). IBRION = 0
+  without the companion tag is a silent NVE run.
+- TEBEG = TEEND = target temperature. POTIM <= 1.0 (0.5 safest) with hydrogen.
+- ISMEAR = 0, SIGMA = 0.05-0.1. ISMEAR = -5 gives erratic forces.
+- EDIFF = 1E-5, not 1E-6: MD needs consistent forces every step, but
+  static-quality tolerance multiplies over thousands of steps. NELMIN = 4-6
+  keeps forces consistent as the density re-converges from the prior step.
+- ISYM = 0 (moving ions break symmetry); PREC = Normal; LREAL = Auto for the
+  large cells AIMD uses; ALGO = Normal (robust) or VeryFast; MAXMIX = 40-60
+  speeds remixing between steps.
+- LWAVE = .FALSE., LCHARG = .FALSE. -- large, and not needed for a trajectory.
+- Gamma point only (1 1 1): a denser mesh multiplies an already expensive
+  per-step SCF for negligible gain at condensed-phase cell sizes.
+- Trajectory goes to XDATCAR, per-step energies and forces to OUTCAR and
+  vasprun.xml automatically -- no extra tag is needed to harvest
+  (configuration, energy, forces) tuples. NBLOCK = 1 writes every step.
 
 **Parallelization:**
 - NCORE = number of cores per orbital band (typically 4-8)
@@ -199,6 +253,38 @@ wrong magnetic ground states, and unreliable forces.
   LWAVE = .FALSE.
   NCORE = 1
   KPAR = 1
+
+**INCAR template for NVT AIMD of an aqueous/solvated system (Nose-Hoover,
+revPBE-D3), with Gamma-only KPOINTS:**
+
+  GGA = RE
+  IVDW = 11
+  ENCUT = 450
+  PREC = Normal
+  EDIFF = 1E-5
+  ISMEAR = 0
+  SIGMA = 0.05
+  ISPIN = 1
+  ALGO = Normal
+  LREAL = Auto
+  ISYM = 0
+  IBRION = 0
+  MDALGO = 2
+  SMASS = 0
+  POTIM = 0.5
+  NSW = 2000
+  TEBEG = 300
+  TEEND = 300
+  NELMIN = 4
+  LWAVE = .FALSE.
+  LCHARG = .FALSE.
+  NCORE = 4
+  KPAR = 1
+
+  # SMASS is REQUIRED with MDALGO = 2 -- without it the run is NVE and the
+  # temperature is uncontrolled. For Langevin instead: MDALGO = 3,
+  # LANGEVIN_GAMMA (one value per species type in POSCAR order), ISIF = 2.
+  # NSW above is a starting point -- size it to the wall clock (see planning).
 
 ## interpretation
 
@@ -289,6 +375,23 @@ syntax.
 - NCORE and KPAR should be set for efficient parallelization.
 - Check for contradictory settings: for example ISMEAR = -5 with NSW > 0,
   or ISIF = 3 with a slab geometry.
+
+**Additional checks when IBRION = 0 (AIMD):**
+
+- The thermostat pair must be complete: MDALGO = 2 requires SMASS, MDALGO = 3
+  requires LANGEVIN_GAMMA with one value per species type. IBRION = 0 with a
+  missing companion tag, or with no MDALGO at all, is an uncontrolled-
+  temperature NVE run -- flag it whenever the request names a temperature.
+- TEBEG must be set (TEEND = TEBEG for constant T).
+- POTIM <= 1.0 (ideally 0.5) whenever hydrogen is present.
+- ISMEAR must be 0; ISMEAR = -5 with IBRION = 0 is a contradiction.
+- NSW must be >> 1 (hundreds to thousands), and NSW * t_step must fit the
+  job's wall clock.
+- Gamma-only k-points (1 1 1) for a condensed-phase cell.
+- For an aqueous production run, bare PBE (GGA = PE, no dispersion) is a
+  quality problem: expect revPBE-D3 (GGA = RE + IVDW = 11/12) or a meta-GGA.
+- Contradictions: thermostat tags set while IBRION != 0; NSW = 0 with
+  IBRION = 0.
 
 Post-run error diagnosis and the corresponding INCAR fixes live in the
 `interpretation` section — those apply after a run has failed, whereas
