@@ -124,7 +124,10 @@ configurations/energies/forces for MLIP training), not a minimized geometry.
 
 **CRITICAL: INCAR generation rules.** Always follow these:
 
-1. ALWAYS include GGA tag explicitly (usually GGA = PE for PBE).
+1. ALWAYS include the GGA tag explicitly, matching the CHOSEN functional
+   (GGA = PE for PBE, GGA = RE for revPBE). Do NOT default to PBE: for an
+   aqueous / AIMD-for-MLIP run prefer revPBE-D3 (GGA = RE + IVDW = 11/12,
+   see the "Functional" note); bare PBE (GGA = PE) is shakedown-only there.
 2. Set ENCUT >= 400 eV for systems containing hydrogen. The H POTCAR
    has a low default ENCUT, but accurate H binding energies require
    at least 400 eV. 450 eV is standard practice.
