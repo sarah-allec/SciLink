@@ -35,11 +35,14 @@ with standard practices in the computational materials science literature.
 **Functional selection:** The GGA tag in the INCAR controls which
 pseudopotential directory ASE uses. This is critical:
 - GGA = PE means PBE functional, ASE looks in potpaw_PBE/
+- GGA = RE means revPBE functional (also potpaw_PBE/); pair with IVDW for revPBE-D3
 - GGA = 91 means PW91 functional, ASE looks in potpaw_GGA/
 - No GGA tag means LDA, ASE looks in potpaw/
-ALWAYS include the GGA tag explicitly. Omitting it when PBE potentials
-are intended causes a fatal "No pseudopotential" error because ASE
-searches the wrong directory.
+ALWAYS include the GGA tag explicitly, and set its VALUE to the functional you
+actually chose -- PE is NOT a default. The value is task-dependent: aqueous / MD
+runs want GGA = RE (revPBE-D3), see the aqueous "Functional" note below. Omitting
+the tag when PBE potentials are intended causes a fatal "No pseudopotential"
+error because ASE searches the wrong directory.
 
 **System identification:** Before choosing parameters, identify the system:
 1. Is it a metal, semiconductor, insulator, or molecule?
@@ -124,10 +127,13 @@ configurations/energies/forces for MLIP training), not a minimized geometry.
 
 **CRITICAL: INCAR generation rules.** Always follow these:
 
-1. ALWAYS include the GGA tag explicitly, matching the CHOSEN functional
-   (GGA = PE for PBE, GGA = RE for revPBE). Do NOT default to PBE: for an
-   aqueous / AIMD-for-MLIP run prefer revPBE-D3 (GGA = RE + IVDW = 11/12,
-   see the "Functional" note); bare PBE (GGA = PE) is shakedown-only there.
+1. ALWAYS include the GGA tag explicitly, set to the CHOSEN functional's value
+   (GGA = PE for PBE, GGA = RE for revPBE) -- PE is NOT a default. For an
+   aqueous / AIMD-for-MLIP run the REQUIRED value is GGA = RE + IVDW = 11 (or 12
+   for D3-BJ), i.e. revPBE-D3; writing GGA = PE there is WRONG unless the run is
+   an explicit shakedown (see the "Functional" note). Setting IVDW without
+   switching GGA to RE (leaving GGA = PE) is the common mistake -- it gives
+   PBE-D3, not the intended revPBE-D3.
 2. Set ENCUT >= 400 eV for systems containing hydrogen. The H POTCAR
    has a low default ENCUT, but accurate H binding energies require
    at least 400 eV. 450 eV is standard practice.
@@ -200,6 +206,10 @@ configurations/energies/forces for MLIP training), not a minimized geometry.
 - Molecules in a box: Gamma point only (1 1 1)
 - Hexagonal systems: Always use Gamma-centered grids (not standard MP)
 - NEB: Usually reduce k-points vs single-point for computational cost
+
+The next three templates are NON-AQUEOUS relaxations / EOS and use GGA = PE. For
+an aqueous MD run do NOT copy their GGA line -- use the revPBE-D3 AIMD template
+further below (GGA = RE + IVDW).
 
 **INCAR template for metal surface relaxation:**
 
