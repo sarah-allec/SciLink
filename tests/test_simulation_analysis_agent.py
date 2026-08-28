@@ -82,6 +82,52 @@ class TestPipeline:
         assert r["results"]["shear_viscosity"]["value"] == 0.9
         assert r["results"]["shear_viscosity"]["verification"]["plausible"] is True
 
+    def test_extra_observable_computed_without_a_skill(self, agent, tmp_path, monkeypatch):
+        # The goal asks for density; no density skill exists. The LLM names it as
+        # an extra observable and it is computed by the same recipe-free codegen.
+        (tmp_path / "prod.lammpstrj").write_text("dummy")
+        cat = [_skill("viscosity_greenkubo", ["shear_viscosity"], ["trajectory"])]
+        monkeypatch.setattr(agent, "_skill_catalog", lambda: cat)
+
+        def fake_llm(prompt):
+            if "AVAILABLE TECHNIQUES" in prompt:
+                return '{"skills": ["viscosity_greenkubo"]}'
+            if "ALREADY COVERED BY SKILLS" in prompt:
+                return '{"extra_observables": [{"observable": "density", "units": "g/cm^3"}]}'
+            if "physically plausible" in prompt:
+                return '{"plausible": true, "reasoning": "sane"}'
+            return 'import json; print(json.dumps({"status":"success","value":1.2,"units":"g/cm^3"}))'
+
+        agent._llm = fake_llm
+        r = agent.run_analysis("compute the shear viscosity and the mass density",
+                               run_dir=str(tmp_path))
+        assert r["status"] == "success"
+        assert r["skills_used"] == ["viscosity_greenkubo"]        # skills unchanged
+        assert r["extra_observables"] == ["density"]              # skill-less observable
+        assert "density" in r["results"] and "shear_viscosity" in r["results"]
+        assert r["results"]["density"]["value"] == 1.2
+
+    def test_no_extra_observables_is_backward_compatible(self, agent, tmp_path, monkeypatch):
+        # When the skills already cover the goal (LLM returns none), nothing extra
+        # is computed and the result shape is unchanged apart from the empty list.
+        (tmp_path / "prod.lammpstrj").write_text("dummy")
+        cat = [_skill("viscosity_greenkubo", ["shear_viscosity"], ["trajectory"])]
+        monkeypatch.setattr(agent, "_skill_catalog", lambda: cat)
+
+        def fake_llm(prompt):
+            if "AVAILABLE TECHNIQUES" in prompt:
+                return '{"skills": ["viscosity_greenkubo"]}'
+            if "ALREADY COVERED BY SKILLS" in prompt:
+                return '{"extra_observables": []}'
+            if "physically plausible" in prompt:
+                return '{"plausible": true}'
+            return 'import json; print(json.dumps({"status":"success","value":0.9,"units":"cP"}))'
+
+        agent._llm = fake_llm
+        r = agent.run_analysis("compute the shear viscosity", run_dir=str(tmp_path))
+        assert r["extra_observables"] == []
+        assert list(r["results"]) == ["shear_viscosity"]
+
     def test_no_output_is_error(self, agent, tmp_path):
         r = agent.run_analysis("anything", run_dir=str(tmp_path))
         assert r["status"] == "error" and r["results"] == {}
