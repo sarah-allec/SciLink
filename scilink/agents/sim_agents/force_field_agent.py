@@ -1304,12 +1304,113 @@ Provide a brief summary of what the results mean and any actions needed.
                 f"force_field skill {backend!r} exposes no "
                 "`build_parameterized_system` tool."
             )
+        # Observable- and system-aware method selection: from the target
+        # observable in the research goal and the backend skill's guidance, decide
+        # method options the inputs alone don't imply — a viscosity-accurate water
+        # model, ECC ionic-charge scaling for a concentrated/multivalent
+        # electrolyte's transport. The pre-run mirror of the post-run escalation
+        # advisor. Only fills options the caller did NOT set (explicit wins) and
+        # only ones this backend's build accepts; degrades to no-op without a model.
+        ff_kwargs = self._apply_method_selection(
+            build, backend=backend, components=components,
+            research_goal=research_goal, ff_kwargs=ff_kwargs)
         payload = build(
             components=components, coordinates_file=coordinates_file,
             pdb_file=pdb_file, working_dir=working_dir,
             research_goal=research_goal, **ff_kwargs,
         )
         return self._wrap_parameterized_system(payload)
+
+    def _apply_method_selection(self, build, *, backend, components,
+                                research_goal, ff_kwargs):
+        """Merge observable-aware method options into ``ff_kwargs`` (explicit wins).
+
+        Injects only options the ``build`` callable actually accepts (so a backend
+        without a knob is untouched) and only when the caller left them unset. Any
+        failure leaves ``ff_kwargs`` unchanged — selection never blocks the build.
+        """
+        import inspect
+        try:
+            accepted = set(inspect.signature(build).parameters)
+        except (TypeError, ValueError):
+            return ff_kwargs
+        # Nothing tunable on this backend, or the caller pinned everything.
+        if not ({"charge_scaling", "extra_force_fields"} & accepted):
+            return ff_kwargs
+        rec = self._recommend_method_options(
+            backend=backend, components=components, research_goal=research_goal)
+        if rec.get("charge_scaling") is not None \
+                and "charge_scaling" in accepted \
+                and ff_kwargs.get("charge_scaling") is None:
+            ff_kwargs["charge_scaling"] = rec["charge_scaling"]
+        rec_extra = rec.get("extra_force_fields") or []
+        if rec_extra and "extra_force_fields" in accepted:
+            existing = list(ff_kwargs.get("extra_force_fields") or [])
+            merged = existing + [f for f in rec_extra if f not in existing]
+            if merged != existing:
+                ff_kwargs["extra_force_fields"] = merged
+        if rec.get("rationale") and (rec.get("charge_scaling") is not None
+                                     or rec_extra):
+            self.logger.info("FF method selection (%s): %s -> water_model=%s "
+                             "charge_scaling=%s", backend, rec["rationale"],
+                             rec_extra or None, rec.get("charge_scaling"))
+        return ff_kwargs
+
+    def _recommend_method_options(self, *, backend, components,
+                                  research_goal) -> Dict[str, Any]:
+        """Recommend method options for this system + target observable.
+
+        Reads the backend skill's guidance (which documents when a transport
+        target warrants a viscosity-accurate water model or ECC ionic-charge
+        scaling) and lets the model choose for THIS system and research goal.
+        Returns ``{"extra_force_fields": [...], "charge_scaling": float|None,
+        "rationale": str}`` — empty/None (no change) on any failure or when
+        nothing is warranted, so selection stays reproducible without a model.
+        """
+        empty = {"extra_force_fields": [], "charge_scaling": None, "rationale": ""}
+        try:
+            from ...skills.loader import load_skill
+            skill = load_skill(backend, domain="force_field")
+            guidance = "\n\n".join(
+                str(skill.get(s)) for s in ("planning", "implementation", "validation")
+                if skill.get(s))
+        except Exception:
+            guidance = ""
+        comp_str = ", ".join(
+            f"{c.get('name') or c.get('smiles')}×{c.get('count')}"
+            for c in (components or [])) or "(unknown)"
+        prompt = (
+            "Select force-field METHOD OPTIONS for a molecular-dynamics run from "
+            "the system and the TARGET OBSERVABLE in the research goal. Use ONLY "
+            "options named in the backend guidance below, and name real force-field "
+            "files exactly as the guidance writes them.\n\n"
+            "Decide for THIS system and target observable:\n"
+            "1) water_model: if water is present AND a transport/dynamic property "
+            "is targeted, the guidance's viscosity-accurate water-model .offxml; "
+            "otherwise null (keep the default).\n"
+            "2) charge_scaling: if the guidance's ECC criteria apply (a transport/"
+            "dynamic observable of a concentrated or multivalent electrolyte), the "
+            "ECC factor to scale ionic charges by; otherwise null.\n\n"
+            f"=== Backend guidance ===\n{guidance or '(none)'}\n\n"
+            f"=== System components ===\n{comp_str}\n\n"
+            f"=== Research goal (target observable) ===\n{research_goal or '(unspecified)'}\n\n"
+            'Respond with JSON only: {"water_model": <offxml string or null>, '
+            '"charge_scaling": <number or null>, "rationale": <one sentence>}.'
+        )
+        try:
+            rec = self._generate_json(prompt) or {}
+        except Exception as e:
+            self.logger.info("method-option recommendation skipped: %s", e)
+            return empty
+        wm = rec.get("water_model")
+        extra = [wm.strip()] if isinstance(wm, str) and wm.strip() else []
+        cs = rec.get("charge_scaling")
+        try:
+            cs = float(cs) if cs is not None else None
+        except (TypeError, ValueError):
+            cs = None
+        return {"extra_force_fields": extra, "charge_scaling": cs,
+                "rationale": str(rec.get("rationale", ""))}
 
     def _select_backend(self, *,
                         components: Optional[List[Dict[str, Any]]],

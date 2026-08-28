@@ -61,6 +61,18 @@ The returned Interchange is engine-neutral; the MD engine's `write_md_inputs`
 tool exports it (LAMMPS data file, etc.). Do **not** write engine input files
 here — that is the engine skill's job.
 
+### Water model — match it to the target observable
+
+When water is present, pass a water model via `extra_force_fields`. The default
+3-site `tip3p.offxml` is fine for **structural/thermodynamic** targets, but it
+badly under-predicts **water viscosity** (~0.3 vs ~0.9 mPa·s). When the target
+observable is a **transport/dynamic** property (viscosity, diffusion,
+conductivity, relaxation), select a viscosity-accurate model instead —
+`opc.offxml` (OPC, best overall bulk properties) or `tip4p_ew.offxml` /
+`tip4p_2005.offxml` (TIP4P family, best-known water viscosity). Picking the water
+model from the target observable is a selection the force-field agent makes up
+front, not a fixed default.
+
 ### Electronic Continuum Correction (ECC) — for ionic transport
 
 A SMIRNOFF force field is fixed-charge (non-polarizable). In condensed **ionic**
