@@ -34,11 +34,14 @@ def build_parameterized_system(
     working_dir: str = ".",
     force_field: str = "openff-2.2.0.offxml",
     extra_force_fields: Optional[List[str]] = None,
+    charge_scaling: Optional[float] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
     """Parameterize a packed box with SMIRNOFF + NAGL into a serialized
-    Interchange, returned as the uniform payload dict. Extra keyword arguments
-    (``pdb_file``, ``research_goal``, …) other backends consume are ignored."""
+    Interchange, returned as the uniform payload dict. ``charge_scaling`` (e.g.
+    ``0.75``) applies ECC ionic-charge scaling; ``None`` leaves charges as
+    assigned. Extra keyword arguments (``pdb_file``, ``research_goal``, …) other
+    backends consume are ignored."""
     if not (components and coordinates_file):
         raise ValueError(
             "the OpenFF backend needs `components` + `coordinates_file` "
@@ -47,6 +50,7 @@ def build_parameterized_system(
     res = build_interchange(
         components, coordinates_file, working_dir=working_dir,
         force_field=force_field, extra_force_fields=extra_force_fields,
+        charge_scaling=charge_scaling,
     )
     return {
         "source_format": "interchange",
@@ -56,6 +60,7 @@ def build_parameterized_system(
         "interchange_path": res["interchange_path"],
         "components": components,
         "coordinates_file": coordinates_file,
+        "charge_scaling": res.get("charge_scaling"),
     }
 
 
@@ -76,11 +81,15 @@ TOOL_SPEC = ToolSpec(
         "force_field": {"type": "string", "description": "base SMIRNOFF .offxml (default Sage)"},
         "extra_force_fields": {"type": "list",
                                "description": "additional .offxml (e.g. water/ion model)"},
+        "charge_scaling": {"type": "number",
+                           "description": ("optional ECC factor (e.g. 0.75) scaling "
+                                           "ionic charges for electronic screening; "
+                                           "None leaves charges unscaled")},
     },
     required=["components", "coordinates_file"],
     signature=("build_parameterized_system(*, components, coordinates_file, "
                "working_dir='.', force_field='openff-2.2.0.offxml', "
-               "extra_force_fields=None) -> dict"),
+               "extra_force_fields=None, charge_scaling=None) -> dict"),
     import_line=("from scilink.skills.force_field.openff.build_parameterized_system "
                  "import build_parameterized_system"),
     agents=["simulation"],

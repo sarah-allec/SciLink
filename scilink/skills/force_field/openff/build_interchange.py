@@ -89,7 +89,8 @@ def build_interchange(components: List[Dict[str, Any]],
                       working_dir: str = ".",
                       force_field: str = "openff-2.2.0.offxml",
                       extra_force_fields: List[str] | None = None,
-                      nagl_model: str = _DEFAULT_NAGL_MODEL) -> Dict[str, Any]:
+                      nagl_model: str = _DEFAULT_NAGL_MODEL,
+                      charge_scaling: float | None = None) -> Dict[str, Any]:
     """Parameterize a packed box into a serialized OpenFF Interchange.
 
     Parameters
@@ -107,11 +108,17 @@ def build_interchange(components: List[Dict[str, Any]],
         e.g. a water/ion model via ``extra_force_fields`` when needed.
     nagl_model:
         NAGL model file for partial charges.
+    charge_scaling:
+        Optional ECC (Electronic Continuum Correction) factor. When set (e.g.
+        ``0.75``), the partial charges of every NET-CHARGED species (the ions)
+        are multiplied by it, mimicking electronic screening a fixed-charge model
+        omits; neutral species keep their full charges, and overall neutrality is
+        preserved. ``None`` (default) leaves charges exactly as assigned.
 
     Returns
     -------
     dict with ``interchange_path`` (serialized Interchange JSON), ``n_atoms``,
-    ``total_charge``.
+    ``total_charge``, and ``charge_scaling`` (the factor applied, or ``None``).
     """
     try:
         from openff.toolkit import ForceField, Molecule, Topology
@@ -146,6 +153,21 @@ def build_interchange(components: List[Dict[str, Any]],
         for _ in range(count):
             molecules_in_order.append(Molecule(mol))
             atom_provenance.extend((name, el) for el in elements)
+
+    # ECC charge scaling (optional): mimic the electronic screening a fixed-charge
+    # model omits by scaling every net-charged species' partial charges by
+    # `charge_scaling`, leaving neutral species intact. Uniform scaling of the
+    # (originally charge-balanced) ions preserves overall neutrality. Applied to
+    # the per-component `charged_unique` molecules that seed `charge_from_molecules`
+    # (and their copies already share these charge arrays by value at build time).
+    if charge_scaling is not None:
+        from ..._shared._charge_scaling import scale_ionic_charges
+        per_mol = [[float(c.m) for c in m.partial_charges] for m in charged_unique]
+        scaled = scale_ionic_charges(per_mol, float(charge_scaling))
+        for m, q in zip(charged_unique, scaled):
+            m.partial_charges = unit.Quantity(q, unit.elementary_charge)
+        total_charge = sum(float(m.total_charge.m) * int(c["count"])
+                           for m, c in zip(charged_unique, components))
 
     topology = Topology.from_molecules(molecules_in_order)
 
@@ -192,6 +214,8 @@ def build_interchange(components: List[Dict[str, Any]],
         "interchange_path": out,
         "n_atoms": int(topology.n_atoms),
         "total_charge": round(total_charge, 4),
+        "charge_scaling": (float(charge_scaling)
+                           if charge_scaling is not None else None),
     }
 
 
