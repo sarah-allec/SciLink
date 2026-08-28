@@ -49,6 +49,25 @@ def test_flagged_properties_and_backend_reach_the_prompt():
     assert "punt the SEARCH to a human" in prompt
 
 
+def test_signed_numeric_comparison_reaches_the_prompt():
+    # A judged observable carries value/reference/direction; the advisor must
+    # surface them so the diagnosis reasons FROM the sign, not a textbook default.
+    adv, captured = _stub(json.dumps({"recommended_action": "escalate_potential",
+                                      "suggested_method": "polarizable_ff"}))
+    flagged = [{"observable": "viscosity", "consistent": False,
+                "value": 0.74, "reference": 2.7, "units": "mPa*s",
+                "direction": "under",
+                "reasoning": "computed 0.74 mPa*s vs reference 2.7 mPa*s: model "
+                             "under-predicts by 72.7% (exceeds tolerance 25%)"}]
+    adv.advise(flagged, system_description="concentrated electrolyte", backend="")
+    prompt = captured["prompt"]
+    assert "0.74" in prompt and "2.7" in prompt         # the actual numbers
+    assert "under-predicts" in prompt                    # the signed direction
+    # and the prompt instructs the model to respect that direction
+    assert "SIGNED discrepancy" in prompt
+    assert "over-prediction mechanism" in prompt
+
+
 def test_recommendation_passes_through():
     adv, _ = _stub(json.dumps({
         "status": "success",

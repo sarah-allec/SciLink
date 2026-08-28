@@ -312,10 +312,14 @@ def numeric_reference_judge(
     Flags each observation whose computed ``value`` deviates from its
     ``reference`` by more than a relative tolerance (a per-item ``tolerance``
     overrides ``default_tol``). General — it judges any numeric observable against
-    a caller-supplied reference. Observations missing a numeric value/reference
-    are left unrated (``consistent=None``), never a false pass. Returns
-    ``{"per_observable": [{observable, consistent, rel_error?, value, reference,
-    units, reasoning}]}``.
+    a caller-supplied reference. A ``direction`` (``"over"``/``"under"``) records
+    whether the model over- or under-predicts, so a downstream diagnosis reasons
+    from the SIGNED discrepancy rather than assuming a failure mode. Observations
+    missing a numeric value/reference — or explicitly carrying ``verified=False``
+    (the value the analysis could not trust) — are left unrated
+    (``consistent=None``), never a false pass and never the sole basis of an
+    advisory. Returns ``{"per_observable": [{observable, consistent, rel_error?,
+    direction?, value, reference, units, reasoning}]}``.
     """
     per: List[Dict[str, Any]] = []
     for o in observations:
@@ -324,6 +328,14 @@ def numeric_reference_judge(
             "observable": name, "value": o.get("value"),
             "reference": o.get("reference"), "units": o.get("units"),
         }
+        # An UNVERIFIED value is untrustworthy evidence, not a confirmed
+        # contradiction — leave it unrated so it neither passes nor drives an
+        # advisory off a number the analysis itself flagged as implausible.
+        if o.get("verified") is False:
+            entry.update(consistent=None,
+                         reasoning="computed value is unverified; not rated")
+            per.append(entry)
+            continue
         try:
             v = float(o.get("value"))
             r = float(o.get("reference"))
@@ -338,11 +350,19 @@ def numeric_reference_judge(
         else:
             tol = float(o.get("tolerance", default_tol))
             rel = abs(v - r) / abs(r)
-            entry.update(
-                consistent=bool(rel <= tol), rel_error=round(rel, 4),
-                reasoning=(f"|computed - reference| / reference = {rel:.1%} "
-                           f"({'within' if rel <= tol else 'exceeds'} "
-                           f"tolerance {tol:.0%})"))
+            direction = "over" if v > r else "under" if v < r else "exact"
+            units = o.get("units")
+            us = f" {units}" if units else ""
+            within = "within" if rel <= tol else "exceeds"
+            if direction == "exact":
+                reasoning = (f"computed {v:.4g}{us} matches reference {r:.4g}{us} "
+                             f"(0%, {within} tolerance {tol:.0%})")
+            else:
+                reasoning = (f"computed {v:.4g}{us} vs reference {r:.4g}{us}: model "
+                             f"{direction}-predicts by {rel:.1%} "
+                             f"({within} tolerance {tol:.0%})")
+            entry.update(consistent=bool(rel <= tol), rel_error=round(rel, 4),
+                         direction=direction, reasoning=reasoning)
         per.append(entry)
     return {"per_observable": per}
 

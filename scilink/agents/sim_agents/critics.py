@@ -1295,6 +1295,14 @@ First decide whether this is a PARAMETER problem or a METHOD-CLASS problem:
   indicates the METHOD CLASS itself is inadequate — escalate to a higher-fidelity
   potential rather than tuning parameters.
 
+A flagged item may state the SIGNED discrepancy — whether the model OVER- or
+UNDER-predicts the property, and by how much. Your diagnosis MUST be consistent
+with that observed direction: do NOT attribute an over-prediction mechanism to a
+value the model under-predicts, or vice versa. When a flagged item is a
+direction-wrong TREND across a swept parameter, treat that qualitative signal as
+strong evidence of method-class inadequacy even if an individual magnitude is
+uncertain.
+
 Recommend ONE concrete corrective action:
 - "add_force_field": supplement or replace the offending component's parameters
   with a validated set (e.g. a literature model for that chemistry), applied
@@ -1400,8 +1408,19 @@ class ReparameterizationAdvisor(_CriticBase):
             # (component/property) or a whole-system observable/trend (observable).
             label = m.get("component") or m.get("observable") or "(system)"
             prop = f" — {m['property']}" if m.get("property") else ""
+            # Surface the signed numeric comparison when the judge supplied it, so
+            # the diagnosis reasons FROM the direction (over- vs under-prediction)
+            # instead of assuming a textbook failure mode.
+            nums = ""
+            if m.get("value") is not None and m.get("reference") is not None:
+                us = f" {m['units']}" if m.get("units") else ""
+                nums = (f" [computed {m['value']}{us} vs reference "
+                        f"{m['reference']}{us}")
+                if m.get("direction") in ("over", "under"):
+                    nums += f"; model {m['direction']}-predicts"
+                nums += "]"
             why = f": {m['reasoning']}" if m.get("reasoning") else ""
-            lines.append(f"- {label}{prop}{why}")
+            lines.append(f"- {label}{prop}{nums}{why}")
         flagged_block = "\n".join(lines)
 
         skill_context = self._load_skill_section(skill, domain or "")
