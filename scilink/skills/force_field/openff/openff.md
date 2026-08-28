@@ -61,6 +61,33 @@ The returned Interchange is engine-neutral; the MD engine's `write_md_inputs`
 tool exports it (LAMMPS data file, etc.). Do **not** write engine input files
 here — that is the engine skill's job.
 
+### Electronic Continuum Correction (ECC) — for ionic transport
+
+A SMIRNOFF force field is fixed-charge (non-polarizable). In condensed **ionic**
+phases the missing electronic polarization screens ion–ion and ion–solvent
+interactions, and its absence systematically distorts **transport** properties
+(viscosity, conductivity, diffusion), most severely for **concentrated** and
+**multivalent** electrolytes. When the target observable is a transport/dynamic
+property of such a system, apply ECC by passing a `charge_scaling` factor: it
+multiplies the partial charges of the **ions** (every net-charged species) by the
+factor, leaving neutral solvent charges — and their full dipole — intact, and
+preserving overall neutrality.
+
+```python
+build_interchange(components=[...], coordinates_file="structure.extxyz",
+                  extra_force_fields=["opc.offxml"],   # a viscosity-accurate water model
+                  charge_scaling=0.75)                  # ECC: 1/sqrt(eps_el), ~0.7–0.85
+```
+
+Guidance: `0.75` (= 1/√1.78) is the canonical value; reported values span
+~0.70–0.85 by system. Use ECC **only** when a transport/dynamic observable of a
+concentrated or multivalent electrolyte is at stake — for a **static/structural**
+target, or a dilute/neutral system, leave `charge_scaling=None`. ECC corrects
+**ion** coupling; it does **not** repair a neutral co-solvent's transport
+parameterization, so if a viscosity error tracks a *neutral* component's fraction,
+address that component's model (or its water model) instead of / in addition to
+ECC.
+
 ## Interpretation
 
 - `UnassignedValenceError` / "no parameters assigned": the SMILES has chemistry
@@ -78,6 +105,10 @@ here — that is the engine skill's job.
 
 ## Validation
 
-- The system is **net-neutral** when ions are present (`total_charge` ≈ 0).
+- The system is **net-neutral** when ions are present (`total_charge` ≈ 0) —
+  this holds under ECC too, since ionic charges scale uniformly.
 - `n_atoms` matches the coordinate file (the tool enforces this).
 - Every component was typed (no unassigned parameters), and a periodic box is set.
+- If `charge_scaling` was applied, `total_charge` still ≈ 0 and the returned
+  `charge_scaling` echoes the factor used (record it — the ionic charges are ECC,
+  not the model's native values).
