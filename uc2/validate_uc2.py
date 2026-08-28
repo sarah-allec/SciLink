@@ -88,16 +88,45 @@ def _reference_advisory(rows):
         return None
 
     # Density and viscosity are the VALIDATION observables (T1 is the prediction
-    # target, judged elsewhere, so it is not in this panel).
+    # target, judged elsewhere, so it is not in this panel). Carry each value's
+    # verification status: an unverified magnitude (here, an unconverged single-
+    # window Green-Kubo viscosity) is untrustworthy evidence, so scilink leaves it
+    # unrated and the escalation rests on the robust direction-wrong TREND instead.
     observations = []
     for comp, computed in rows:
         for quantity, ref_key, units, tol in (
                 ("density", "density_g_cm3", "g/cm^3", 0.05),
                 ("viscosity", "viscosity_mPa_s", "mPa*s", 0.25)):
+            c = computed.get(quantity, {})
             observations.append({
                 "observable": f"{quantity} ({comp['label']})",
-                "value": computed.get(quantity, {}).get("value"),
-                "reference": comp[ref_key], "units": units, "tolerance": tol})
+                "value": c.get("value"), "reference": comp[ref_key],
+                "units": units, "tolerance": tol, "verified": c.get("verified")})
+
+    # A qualitative trend verdict per validation observable across the rising-EIS
+    # series. A wrong direction is a whole-property-class signal that survives the
+    # magnitude noise (and the unverified status) of any single point, so it is
+    # what should drive a method-class escalation. Injected alongside the numeric
+    # judge; scilink stays the one that decides pass/fail and advises.
+    trend_entries = []
+    for quantity, meas_key in (("density", "density_g_cm3"),
+                               ("viscosity", "viscosity_mPa_s")):
+        cd = _direction([c.get(quantity, {}).get("value") for _, c in rows])
+        md = _direction([comp[meas_key] for comp, _ in rows])
+        if cd is None or md is None:
+            continue
+        trend_entries.append({
+            "observable": f"{quantity} trend (rising EIS fraction)",
+            "consistent": cd == md,
+            "reasoning": (f"computed trend {cd} while measured trend {md} across "
+                          f"the composition series"
+                          + ("" if cd == md else " — direction is wrong"))})
+
+    def judge(obs, sd):
+        report = numeric_reference_judge(obs, sd)
+        report["per_observable"].extend(trend_entries)
+        return report
+
     try:
         advisor = ReparameterizationAdvisor(
             api_key=os.environ.get("SCILINK_API_KEY"),
@@ -107,7 +136,7 @@ def _reference_advisory(rows):
             observations, prediction_target="the water 1H T1",
             system_description=("1 M Zn(OTf)2 in H2O / ethyl-isopropyl-sulfone "
                                 "electrolyte, classical (non-polarizable) force field"),
-            judge_fn=numeric_reference_judge,
+            judge_fn=judge,
             advise_fn=lambda flagged, sd: build_advisory(
                 advisor.advise(flagged, system_description=sd, backend="")))
     except Exception as e:
@@ -144,30 +173,39 @@ def report(comps, runs_dir: Path):
              d.get("verified"))
         line("viscosity", v.get("value"), comp["viscosity_mPa_s"], "mPa*s",
              v.get("verified"))
-        line("water T1", t.get("value"), comp["water_T1_s"], "s",
-             t.get("verified"))
+        # T1 is the PREDICTION target, not a validation observable — show the
+        # value for reference but no error/verdict: it is only trustworthy once
+        # the validation observables (density, viscosity) check out, which they
+        # do not. A percentage here would read as a validation failure it is not.
+        tval = t.get("value")
+        tc = f"{tval:.4g}" if isinstance(tval, (int, float)) else "--"
+        tvf = ("" if t.get("verified") is None
+               else "  [verified]" if t.get("verified") else "  [UNVERIFIED]")
+        print(f"    {'water T1':12s} computed {tc:>10s}  (prediction; "
+              f"trustworthy only if density & viscosity validate){tvf}")
         if comp["notes"]:
             print(f"       note: {comp['notes']}")
         print()
 
-    # Trend check — the crux of the use case.
-    print("=== trend across the series (rising EIS fraction) ===\n")
+    # Trend check — the crux of the use case. Only the VALIDATION observables
+    # (density, viscosity) appear here; T1 is the prediction, judged by whether
+    # these validate, not compared against measurement itself.
+    print("=== validation-observable trend across the series (rising EIS "
+          "fraction) ===\n")
     for quantity, meas_key in (("density", "density_g_cm3"),
-                               ("viscosity", "viscosity_mPa_s"),
-                               ("water_T1", "water_T1_s")):
+                               ("viscosity", "viscosity_mPa_s")):
         comp_series = [c.get(quantity, {}).get("value") for _, c in rows]
         meas_series = [comp[meas_key] for comp, _ in rows]
         cd = _direction(comp_series)
         md = _direction(meas_series)
-        expected = references.MEASURED_TREND.get(
-            "water_T1" if quantity == "water_T1" else quantity, "")
+        expected = references.MEASURED_TREND.get(quantity, "")
         agree = (cd is not None and md is not None
                  and cd == md)
         verdict = ("OK" if agree else
                    "MISMATCH" if (cd and md) else "insufficient data")
         print(f"  {quantity:10s} computed: {cd or '--':10s} "
               f"measured: {md or '--':10s} -> {verdict}")
-        if quantity in ("density", "viscosity") and cd and md and not agree:
+        if cd and md and not agree:
             print(f"      ^ validation observable trend is wrong "
                   f"(measured {expected}); the prediction downstream is not "
                   f"trustworthy until the force field is corrected.")
