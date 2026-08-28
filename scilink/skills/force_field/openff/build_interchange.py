@@ -154,20 +154,13 @@ def build_interchange(components: List[Dict[str, Any]],
             molecules_in_order.append(Molecule(mol))
             atom_provenance.extend((name, el) for el in elements)
 
-    # ECC charge scaling (optional): mimic the electronic screening a fixed-charge
-    # model omits by scaling every net-charged species' partial charges by
-    # `charge_scaling`, leaving neutral species intact. Uniform scaling of the
-    # (originally charge-balanced) ions preserves overall neutrality. Applied to
-    # the per-component `charged_unique` molecules that seed `charge_from_molecules`
-    # (and their copies already share these charge arrays by value at build time).
-    if charge_scaling is not None:
-        from ..._shared._charge_scaling import scale_ionic_charges
-        per_mol = [[float(c.m) for c in m.partial_charges] for m in charged_unique]
-        scaled = scale_ionic_charges(per_mol, float(charge_scaling))
-        for m, q in zip(charged_unique, scaled):
-            m.partial_charges = unit.Quantity(q, unit.elementary_charge)
-        total_charge = sum(float(m.total_charge.m) * int(c["count"])
-                           for m, c in zip(charged_unique, components))
+    # NOTE on ECC charge scaling: it is NOT applied here. OpenFF's
+    # `create_interchange(charge_from_molecules=...)` rejects charges that do not
+    # sum to a molecule's formal charge (a scaled Zn2+ summing to +1.5 vs formal
+    # +2.0 raises), so the interchange must be built with the ORIGINAL charges.
+    # The factor is carried out to the engine writer, which scales the ionic
+    # charges in the final engine file (see `_engine_inputs`), preserving overall
+    # neutrality. Here we only record the requested factor.
 
     topology = Topology.from_molecules(molecules_in_order)
 
