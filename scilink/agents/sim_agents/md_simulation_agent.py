@@ -919,11 +919,16 @@ class MDSimulationAgent(SimulationAgent):
                 pressure=plan.get("pressure", 1.0),
                 timestep=plan.get("timestep", 2.0),
             )
-        # Independent-replica support: when the plan carries a seed, stamp it into
-        # the velocity-create command so this run samples different initial
-        # velocities (a distinct seed per replica -> independent runs for a
-        # statistical average). No seed in the plan -> the deck is unchanged.
+        # Independent-replica support: stamp a velocity seed so this run samples
+        # different initial velocities (a distinct seed per replica -> independent
+        # runs for a statistical average). The seed comes from the plan, or falls
+        # back to the SCILINK_MD_SEED environment variable, which lets a batch
+        # submit N replicas of one deck by setting a different seed per job. No
+        # seed from either source -> the deck is unchanged.
         seed = plan.get("seed")
+        if seed is None:
+            env_seed = os.environ.get("SCILINK_MD_SEED")
+            seed = env_seed if env_seed not in (None, "") else None
         if seed is not None and self.tools_module and hasattr(
             self.tools_module, "set_velocity_seed"
         ):
