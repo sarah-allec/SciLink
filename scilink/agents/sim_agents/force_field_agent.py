@@ -1483,6 +1483,7 @@ Provide a brief summary of what the results mean and any actions needed.
             coordinates_file=payload.get("coordinates_file", ""),
             interchange_path=payload.get("interchange_path", ""),
             amber_files=amber,
+            charge_scaling=payload.get("charge_scaling"),
         )
 
     def generate_lammps_parameters(self,

@@ -107,6 +107,10 @@ class ParameterizedSystem:
     interchange_path: str = ""
     amber_files: Tuple[str, str] = ("", "")
     notes: str = ""
+    # ECC ionic-charge scaling factor requested by the FF agent, applied to the
+    # ions in the final engine file (not baked into the interchange, which OpenFF
+    # requires to carry formal charges). None -> no scaling.
+    charge_scaling: Optional[float] = None
 
     def to_json(self) -> str:
         """Serialize to JSON (survives the process boundary into an engine

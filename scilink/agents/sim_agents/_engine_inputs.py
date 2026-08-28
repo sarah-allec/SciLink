@@ -19,6 +19,7 @@ this module never requires them.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict
 
@@ -130,7 +131,100 @@ def write_md_inputs(system: ParameterizedSystem, software: str,
             f"(Interchange.to_{software}) returns an in-memory object, not files."
         )
 
-    return _export_files(interchange, software, working_dir)
+    written = _export_files(interchange, software, working_dir)
+
+    # ECC ionic-charge scaling, applied to the FINAL engine file (not the
+    # interchange, which OpenFF requires to carry formal charges). Scales the
+    # charges of every net-charged molecule by the factor and leaves neutral
+    # species intact, preserving overall neutrality.
+    if system.charge_scaling is not None:
+        if software == "lammps":
+            n = _apply_ecc_to_lammps_datafile(
+                written["structure_file"], float(system.charge_scaling))
+            logging.getLogger(__name__).info(
+                "Applied ECC charge scaling %.3g to %d ion atom(s) in %s",
+                system.charge_scaling, n, written["structure_file"])
+        else:
+            logging.getLogger(__name__).warning(
+                "charge_scaling=%s requested but ECC file-scaling is only wired "
+                "for LAMMPS; %s charges are NOT scaled.",
+                system.charge_scaling, software)
+    return written
+
+
+def _scale_datafile_lines(lines, factor, tol=1e-6):
+    """Scale the charges of net-charged molecules in a LAMMPS data file's Atoms
+    section by ``factor`` (leaving neutral molecules intact). Groups atoms by
+    molecule-ID, so uniform scaling of the charge-balanced ions preserves overall
+    neutrality. Returns ``(new_lines, n_atoms_changed)``; a no-op (0 changed) when
+    the atom style carries no per-molecule charge to scale.
+    """
+    from ...skills._shared._charge_scaling import scale_ionic_charges
+
+    header = next((i for i, ln in enumerate(lines)
+                   if ln.split("#", 1)[0].strip() == "Atoms"), None)
+    if header is None:
+        return lines, 0
+    # Column layout from the "Atoms # <style>" comment: `full` = id mol type q ...,
+    # `charge` = id type q ... (no molecule column -> cannot group -> skip).
+    style = ""
+    if "#" in lines[header]:
+        tail = lines[header].split("#", 1)[1].split()
+        style = tail[0] if tail else ""
+    if not style:
+        style = "full" if any(l.split("#", 1)[0].strip() == "Bonds"
+                              for l in lines) else ""
+    if style == "full":
+        mol_idx, q_idx = 1, 3
+    else:
+        return lines, 0        # no safe molecule+charge columns -> do nothing
+
+    k = header + 1
+    while k < len(lines) and lines[k].strip() == "":
+        k += 1
+    rows, idxs = [], []
+    while k < len(lines) and lines[k].strip():
+        parts = lines[k].split()
+        if len(parts) <= max(mol_idx, q_idx):
+            break
+        try:
+            int(parts[0]); float(parts[q_idx])
+        except ValueError:
+            break
+        rows.append(parts); idxs.append(k); k += 1
+    if not rows:
+        return lines, 0
+
+    groups: "dict" = {}
+    for parts in rows:
+        groups.setdefault(parts[mol_idx], []).append(parts)
+    ordered = list(groups.values())
+    scaled = scale_ionic_charges([[float(p[q_idx]) for p in g] for g in ordered],
+                                 factor, tol=tol)
+    changed = 0
+    for grp, newqs in zip(ordered, scaled):
+        for p, nq in zip(grp, newqs):
+            if abs(float(p[q_idx]) - nq) > 1e-12:
+                p[q_idx] = f"{nq:.10g}"
+                changed += 1
+    new_lines = list(lines)
+    for i, parts in zip(idxs, rows):
+        new_lines[i] = " ".join(parts) + "\n"
+    return new_lines, changed
+
+
+def _apply_ecc_to_lammps_datafile(data_file: str, factor: float) -> int:
+    """Scale the ionic charges of a LAMMPS data file in place; return #atoms changed."""
+    try:
+        with open(data_file) as fh:
+            lines = fh.readlines()
+    except OSError:
+        return 0
+    new_lines, changed = _scale_datafile_lines(lines, factor)
+    if changed:
+        with open(data_file, "w", encoding="utf-8") as fh:
+            fh.writelines(new_lines)
+    return changed
 
 
 def _export_files(interchange, software: str, working_dir: str) -> Dict[str, Any]:
