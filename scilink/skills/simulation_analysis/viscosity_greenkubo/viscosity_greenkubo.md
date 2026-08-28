@@ -49,12 +49,33 @@ Print one JSON object as the last stdout line:
 `{"status":"success","value":<η in mPa·s>,"units":"mPa·s","plateau_reached":<bool>,"n_origins":<int>}`.
 On failure: `{"status":"error","message":<str>}`.
 
+### Convergence over replicas — let the data set the sample size
+
+A single trajectory's Green-Kubo η is too noisy to trust even when its own
+running integral plateaus: the *estimate of the mean* only settles across several
+INDEPENDENT replicas (different seeds/initial velocities). Do not fix the replica
+count up front — converge adaptively with `run_convergence_loop`
+(`scilink.agents.sim_agents.convergence`): it runs replicas, measures η per
+replica with this skill, and stops when SciLink judges the running mean settled.
+
+Criterion (the default judge): at least `min_replicas` (≥3), **every** replica's
+running integral plateaued, and the **relative standard error of the mean**
+(`std/√n / |mean|`) at or below the target (~0.10, i.e. ±10%). If the cap
+(`max_replicas`) is hit first, report the best mean with `converged=false` — it
+stays `[UNVERIFIED]` and loops back for more sampling rather than being trusted.
+Report the converged mean **with its uncertainty** (relative SEM); a viscous
+mixture has long stress-correlation times, so it needs longer per-replica runs
+and/or more replicas than a mobile one — that is exactly what the adaptive loop
+decides.
+
 ## Validation
 
 Green-Kubo viscosity is noisy; guard against false precision:
 - The autocorrelation must decay to ≈0 well before the integration cutoff.
 - The running integral must show a plateau; a still-rising integral is not
   converged (plateau_reached=false).
+- The inter-replica mean must be converged: relative SEM ≤ target with every
+  replica plateaued, else the value is not yet verified (add replicas).
 - Typical liquid viscosities are ~0.1–10 mPa·s; a value orders of magnitude
   outside this range signals a unit error, not physics.
 
