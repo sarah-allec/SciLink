@@ -68,6 +68,54 @@ def _direction(series):
     return "increases" if d > 0 else "decreases"
 
 
+def _reference_advisory(rows):
+    """Route the density/viscosity validation observables through SciLink's core
+    validation primitive, so a systematic method-class failure yields a concrete,
+    human-approved escalation advisory (e.g. classical FF -> MLIP).
+
+    All of the escalation logic lives in ``scilink`` (``run_validation_panel`` +
+    ``numeric_reference_judge`` + ``build_advisory``); this only adapts UC2's
+    numbers into the general ``{observable, value, reference}`` shape and returns
+    the advisory to print. Degrades to ``None`` when the feature or an API key is
+    absent, so the report still runs against an older ``scilink``.
+    """
+    try:
+        import os
+        from scilink.agents.sim_agents.reference_validation import (
+            run_validation_panel, build_advisory, numeric_reference_judge)
+        from scilink.agents.sim_agents.critics import ReparameterizationAdvisor
+    except Exception:
+        return None
+
+    # Density and viscosity are the VALIDATION observables (T1 is the prediction
+    # target, judged elsewhere, so it is not in this panel).
+    observations = []
+    for comp, computed in rows:
+        for quantity, ref_key, units, tol in (
+                ("density", "density_g_cm3", "g/cm^3", 0.05),
+                ("viscosity", "viscosity_mPa_s", "mPa*s", 0.25)):
+            observations.append({
+                "observable": f"{quantity} ({comp['label']})",
+                "value": computed.get(quantity, {}).get("value"),
+                "reference": comp[ref_key], "units": units, "tolerance": tol})
+    try:
+        advisor = ReparameterizationAdvisor(
+            api_key=os.environ.get("SCILINK_API_KEY"),
+            base_url=os.environ.get("SCILINK_BASE_URL"),
+            model_name=os.environ.get("SCILINK_MODEL", "claude-opus-4-8-project"))
+        panel = run_validation_panel(
+            observations, prediction_target="the water 1H T1",
+            system_description=("1 M Zn(OTf)2 in H2O / ethyl-isopropyl-sulfone "
+                                "electrolyte, classical (non-polarizable) force field"),
+            judge_fn=numeric_reference_judge,
+            advise_fn=lambda flagged, sd: build_advisory(
+                advisor.advise(flagged, system_description=sd, backend="")))
+    except Exception as e:
+        print(f"  (SciLink advisory unavailable: {e})")
+        return None
+    return panel.get("advisory")
+
+
 def report(comps, runs_dir: Path):
     runs_dir = Path(runs_dir)
     rows = []
@@ -124,6 +172,24 @@ def report(comps, runs_dir: Path):
                   f"(measured {expected}); the prediction downstream is not "
                   f"trustworthy until the force field is corrected.")
     print()
+
+    # Theory in the loop: SciLink judges the validation observables against the
+    # references and, on a systematic method-class failure, advises escalating the
+    # potential (human-approved, never auto-run).
+    advisory = _reference_advisory(rows)
+    if advisory:
+        print("=== SciLink advisory (theory in the loop) ===\n")
+        print(f"  {advisory.get('status')}: {advisory.get('recommended_action')}"
+              f"  (suggested method: {advisory.get('suggested_method')})")
+        if advisory.get("diagnosis"):
+            print(f"  diagnosis: {advisory['diagnosis']}")
+        if advisory.get("rationale"):
+            print(f"  rationale: {advisory['rationale']}")
+        step = advisory.get("suggested_next_step")
+        if step:
+            print(f"  next step (requires human approval): {step['hint']}")
+        print(f"  auto_run={advisory.get('auto_run')}  "
+              f"requires_human_approval={advisory.get('requires_human_approval')}\n")
 
 
 def main():
