@@ -25,6 +25,35 @@ def test_large_deviation_flags_inconsistent():
     assert p["viscosity"]["rel_error"] > 0.8
 
 
+def test_direction_records_under_prediction():
+    # A computed value below its reference must read as UNDER-prediction, so a
+    # downstream diagnosis cannot invert the physics.
+    p = _per([{"observable": "viscosity", "value": 0.46, "reference": 2.70,
+               "units": "mPa*s"}])["viscosity"]
+    assert p["direction"] == "under"
+    assert "under-predicts" in p["reasoning"]
+    assert "0.46" in p["reasoning"] and "2.7" in p["reasoning"]
+
+
+def test_direction_records_over_prediction():
+    p = _per([{"observable": "x", "value": 3.0, "reference": 1.0}])["x"]
+    assert p["direction"] == "over"
+    assert "over-predicts" in p["reasoning"]
+
+
+def test_unverified_value_is_unrated_not_a_failure():
+    # An analysis-flagged UNVERIFIED value is untrustworthy evidence, not a
+    # confirmed contradiction: unrated, and it must not drive an advisory.
+    obs = [{"observable": "viscosity", "value": 0.46, "reference": 2.70,
+            "verified": False}]
+    assert _per(obs)["viscosity"]["consistent"] is None
+    r = run_validation_panel(
+        obs, "T1", "sys", judge_fn=numeric_reference_judge,
+        advise_fn=lambda flagged, sd: {"recommended_action": "escalate_potential"})
+    assert r["failed"] == [] and r["unrated"] == ["viscosity"]
+    assert "advisory" not in r          # nothing failed -> no advisory
+
+
 def test_per_item_tolerance_overrides_default():
     obs = [{"observable": "x", "value": 1.3, "reference": 1.0, "tolerance": 0.5}]
     assert _per(obs)["x"]["consistent"] is True          # 30% within a 50% tol
