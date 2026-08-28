@@ -67,11 +67,17 @@ When water is present, pass a water model via `extra_force_fields`. The default
 3-site `tip3p.offxml` is fine for **structural/thermodynamic** targets, but it
 badly under-predicts **water viscosity** (~0.3 vs ~0.9 mPa·s). When the target
 observable is a **transport/dynamic** property (viscosity, diffusion,
-conductivity, relaxation), select a viscosity-accurate model instead —
-`opc.offxml` (OPC, best overall bulk properties) or `tip4p_ew.offxml` /
-`tip4p_2005.offxml` (TIP4P family, best-known water viscosity). Picking the water
-model from the target observable is a selection the force-field agent makes up
-front, not a fixed default.
+conductivity, relaxation), select a viscosity-accurate model instead.
+
+Prefer a **3-site** viscosity-accurate model, which drops into any MD engine with
+no extra handling: `opc3.offxml` (OPC3 — 3-site, much better bulk properties than
+TIP3P) or `spce.offxml` (SPC/E). Reach for a **4-site** model — `opc.offxml`
+(OPC), `tip4p_ew.offxml` / `tip4p_fb.offxml` (TIP4P family, best-known water
+viscosity) — only when the target MD engine's exporter handles the massless
+**virtual site** those models add; otherwise the 4-site deck is more fragile
+(extra particles, rigid constraints) than the accuracy gain is worth. Picking the
+water model from the target observable — and from what the engine can cleanly run
+— is a selection the force-field agent makes up front, not a fixed default.
 
 ### Electronic Continuum Correction (ECC) — for ionic transport
 
