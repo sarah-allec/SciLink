@@ -93,12 +93,24 @@ def _credentials():
     return model, base_url, api_key
 
 
-def _run_member(comp: dict, stage: str, runs_dir: Path) -> dict:
+def _member_dir(comp: dict, runs_dir: Path, seed) -> Path:
+    """Output dir for a member — a per-seed subdir when running replicas, so each
+    independent seed keeps its own run and results.json."""
+    base = runs_dir / comp["label"]
+    return base / f"rep_{seed}" if seed is not None else base
+
+
+def _run_member(comp: dict, stage: str, runs_dir: Path, seed=None) -> dict:
     from scilink.agents.sim_agents import simulation_pipeline as sp
 
     model, base_url, api_key = _credentials()
-    out_dir = runs_dir / comp["label"]
+    out_dir = _member_dir(comp, runs_dir, seed)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # A replica run: stamp this seed into the deck's velocity-create (the MD agent
+    # reads SCILINK_MD_SEED), so each seed draws different initial velocities and
+    # the runs are independent samples for the Green-Kubo average.
+    if seed is not None:
+        os.environ["SCILINK_MD_SEED"] = str(seed)
 
     common = dict(
         scale="molecular_dynamics", software="lammps",
@@ -135,11 +147,11 @@ def _run_member(comp: dict, stage: str, runs_dir: Path) -> dict:
     return result
 
 
-def _analyze_member(comp: dict, runs_dir: Path) -> dict:
+def _analyze_member(comp: dict, runs_dir: Path, seed=None) -> dict:
     from scilink.agents.sim_agents import SimulationAnalysisAgent
 
     model, base_url, api_key = _credentials()
-    out_dir = runs_dir / comp["label"]
+    out_dir = _member_dir(comp, runs_dir, seed)
     if not out_dir.exists():
         print(f"[{comp['label']}] no run dir; skipping analyze")
         return {}
@@ -161,10 +173,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", required=True,
-                    choices=["preview", "full", "analyze", "validate"])
+                    choices=["preview", "full", "analyze", "validate", "converge"])
     ap.add_argument("--members", default="all",
                     help="comma-separated labels (e.g. 80-20,70-30) or 'all'")
     ap.add_argument("--runs-dir", default=str(HERE / "runs"))
+    ap.add_argument("--seed", type=int, default=None,
+                    help="replica seed: run/analyze this independent copy in a "
+                         "rep_<seed> subdir (omit for a single non-replica run)")
     args = ap.parse_args()
 
     runs_dir = Path(args.runs_dir)
@@ -180,12 +195,17 @@ def main():
         import validate_uc2
         validate_uc2.report(comps, runs_dir)
         return
+    if args.stage == "converge":
+        # Are enough replicas in for the viscosity TREND to be clear? (TrendCritic)
+        import converge_uc2
+        converge_uc2.report(comps, runs_dir)
+        return
 
     for comp in comps:
         if args.stage in ("preview", "full"):
-            _run_member(comp, args.stage, runs_dir)
+            _run_member(comp, args.stage, runs_dir, seed=args.seed)
         elif args.stage == "analyze":
-            _analyze_member(comp, runs_dir)
+            _analyze_member(comp, runs_dir, seed=args.seed)
 
 
 if __name__ == "__main__":
