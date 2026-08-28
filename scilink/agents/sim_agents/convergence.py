@@ -108,3 +108,64 @@ def run_convergence_loop(
         "reason": ("converged" if verdict.get("converged")
                    else f"hit max_replicas={max_replicas} without converging"),
     }
+
+
+def run_convergence_loop_batched(
+    *,
+    run_batch_fn: Callable[[List[int]], List[Any]],
+    measure_fn: Callable[[Any], Dict[str, Any]],
+    judge_fn: Optional[Callable[[List[Dict[str, Any]]], Dict[str, Any]]] = None,
+    initial_batch: int = 4,
+    increment: int = 4,
+    min_replicas: int = 3,
+    max_replicas: int = 12,
+    seed0: int = 0,
+) -> Dict[str, Any]:
+    """Converge an observable by submitting replicas in PARALLEL batches.
+
+    The controller model for a scheduler: ``run_batch_fn(seeds)`` launches every
+    seed at once (e.g. a SLURM array) and returns their outputs once done; the
+    loop judges convergence after each batch and submits another ``increment``
+    replicas until converged or the ``max_replicas`` cap. Outputs that fail to
+    come back are simply not measured, so a partial batch still makes progress.
+    Same return shape as :func:`run_convergence_loop`, plus ``n_batches``.
+
+    Injected ``run_batch_fn``/``measure_fn`` keep the decision logic MD-free and
+    unit-testable; the caller supplies the array submit-and-wait.
+    """
+    if min_replicas < 2:
+        raise ValueError("min_replicas must be >= 2 (a spread needs >=2 samples)")
+    if max_replicas < min_replicas:
+        raise ValueError("max_replicas must be >= min_replicas")
+    if initial_batch < 1 or increment < 1:
+        raise ValueError("initial_batch and increment must be >= 1")
+    judge = judge_fn or (lambda est: default_convergence_judge(
+        est, min_replicas=min_replicas))
+
+    estimates: List[Dict[str, Any]] = []
+    verdict: Dict[str, Any] = {"converged": False, "mean": None, "rel_sem": None}
+    next_seed = seed0
+    n_batches = 0
+    batch = initial_batch
+    while len(estimates) < max_replicas:
+        k = min(batch, max_replicas - len(estimates))
+        seeds = list(range(next_seed, next_seed + k))
+        next_seed += k
+        outputs = run_batch_fn(seeds) or []
+        n_batches += 1
+        estimates.extend(measure_fn(o) for o in outputs)
+        if len(estimates) >= min_replicas:
+            verdict = judge(estimates)
+            if verdict.get("converged"):
+                break
+        batch = increment
+    return {
+        "converged": bool(verdict.get("converged")),
+        "mean": verdict.get("mean"),
+        "uncertainty": verdict.get("rel_sem"),
+        "n_replicas": len(estimates),
+        "n_batches": n_batches,
+        "estimates": estimates,
+        "reason": ("converged" if verdict.get("converged")
+                   else f"hit max_replicas={max_replicas} without converging"),
+    }

@@ -7,7 +7,8 @@ logic is exercised with no MD: a replica's "value" is a function of its seed.
 import pytest
 
 from scilink.agents.sim_agents.convergence import (
-    default_convergence_judge, relative_sem, run_convergence_loop)
+    default_convergence_judge, relative_sem, run_convergence_loop,
+    run_convergence_loop_batched)
 
 
 def _loop(values_by_seed, plateau_by_seed=None, **kw):
@@ -69,6 +70,41 @@ def test_default_judge_reports_fields():
     v = default_convergence_judge(est, target_rel_sem=0.1, min_replicas=3)
     assert v["converged"] is True and v["n"] == 3
     assert v["all_plateaued"] is True and v["mean"] == pytest.approx(2.70, abs=0.02)
+
+
+def _batched(values_by_seed, plateau_by_seed=None, **kw):
+    def run_batch(seeds):
+        return list(seeds)                                 # parallel array -> outputs
+    def measure(seed):
+        e = {"value": values_by_seed(seed)}
+        if plateau_by_seed is not None:
+            e["plateau_reached"] = plateau_by_seed(seed)
+        return e
+    return run_convergence_loop_batched(
+        run_batch_fn=run_batch, measure_fn=measure, **kw)
+
+
+def test_batched_converges_after_first_batch():
+    vals = {0: 2.70, 1: 2.72, 2: 2.68, 3: 2.71}
+    r = _batched(lambda s: vals[s], initial_batch=4, increment=4,
+                 min_replicas=3, max_replicas=12)
+    assert r["converged"] is True
+    assert r["n_replicas"] == 4 and r["n_batches"] == 1
+
+
+def test_batched_adds_increments_until_cap():
+    # Alternating wide values never converge -> submits batches up to the cap.
+    r = _batched(lambda s: 1.0 if s % 2 == 0 else 9.0,
+                 initial_batch=4, increment=4, min_replicas=3, max_replicas=8)
+    assert r["converged"] is False
+    assert r["n_replicas"] == 8 and r["n_batches"] == 2
+    assert "hit max_replicas=8" in r["reason"]
+
+
+def test_batched_partial_batch_does_not_exceed_cap():
+    r = _batched(lambda s: 1.0 if s % 2 == 0 else 9.0,
+                 initial_batch=6, increment=6, min_replicas=3, max_replicas=8)
+    assert r["n_replicas"] == 8                            # 6 then a clamped 2
 
 
 def test_guards_on_bad_bounds():
