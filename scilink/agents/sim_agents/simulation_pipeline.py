@@ -668,6 +668,7 @@ def _run_workflow_once(
                     components=manifest["components"],
                     coordinates_file=structure_path,
                     working_dir=output_dir,
+                    research_goal=user_request,
                 )
                 written = write_md_inputs(psystem, software, output_dir)
                 structure_path = written["structure_file"]
