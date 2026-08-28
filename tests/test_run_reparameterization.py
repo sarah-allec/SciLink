@@ -88,3 +88,20 @@ def test_unresolved_when_no_candidate_passes():
         max_attempts=2)
     assert out["status"] == "unresolved"
     assert len(out["attempts"]) == 2
+
+
+def test_escalate_potential_is_advisory_and_skips_search():
+    # A method-class inadequacy: reparameterization does not apply, so the search
+    # loop must NOT run — surface the escalation recommendation for a human.
+    def _search_must_not_run(rec, tried):
+        raise AssertionError("search must not run for escalate_potential")
+
+    out = run_reparameterization(
+        FLAGGED, "sys", "openff",
+        advise_fn=lambda *a, **k: {"recommended_action": "escalate_potential",
+                                   "suggested_method": "mlip"},
+        search_fn=_search_must_not_run,
+        apply_and_recheck_fn=lambda cand: _good())
+    assert out["status"] == "advise_method_escalation"
+    assert out["attempts"] == []
+    assert out["recommendation"]["suggested_method"] == "mlip"

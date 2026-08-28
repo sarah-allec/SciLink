@@ -79,5 +79,29 @@ def test_per_measurement_key_is_accepted():
     assert r["passed"] == ["water"] and r["prediction_warranted"] is True
 
 
+def test_advise_fn_attaches_advisory_on_failure():
+    obs = [{"observable": "viscosity", "_verdict": "poor"}]
+    advice = {"recommended_action": "escalate_potential", "suggested_method": "mlip"}
+    r = run_validation_panel(obs, "T1", "x", judge_fn=_judge,
+                             advise_fn=lambda flagged, sd: advice)
+    assert r["failed"] == ["viscosity"]
+    assert r["advisory"] == advice
+
+
+def test_no_advisory_when_all_pass():
+    def _advise_must_not_run(flagged, sd):
+        raise AssertionError("advise_fn must not run when nothing failed")
+    obs = [{"observable": "density", "_verdict": "good"}]
+    r = run_validation_panel(obs, "T1", "x", judge_fn=_judge,
+                             advise_fn=_advise_must_not_run)
+    assert "advisory" not in r
+
+
+def test_no_advise_fn_is_backward_compatible():
+    obs = [{"observable": "viscosity", "_verdict": "poor"}]
+    r = run_validation_panel(obs, "T1", "x", judge_fn=_judge)
+    assert "advisory" not in r          # omitting advise_fn is unchanged behaviour
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

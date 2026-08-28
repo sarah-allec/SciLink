@@ -1265,10 +1265,13 @@ class ReferencePropertySelector(_CriticBase):
 # ──────────────────────────────────────────────────────────────────────────
 
 _REPARAM_ADVISOR_PROMPT = """\
-A pre-run validation flagged the force field: one or more pure-component
-reference properties contradict known behaviour, so the model is untrustworthy
-for production. Recommend a concrete corrective action so it can be fixed and
-re-validated before the run — no production compute is spent until it passes.
+A validation flagged the model: one or more properties contradict known
+behaviour, so the model is untrustworthy. The flagged items are either a
+constituent's pure-component reference property (a pre-run check) or a computed
+observable — or its trend across a swept parameter — of the whole system judged
+against a reference (a post-run check). Recommend a concrete corrective action so
+the model can be fixed (or escalated) and re-validated before its results are
+trusted.
 
 {skill_context}
 
@@ -1281,29 +1284,48 @@ re-validated before the run — no production compute is spent until it passes.
 === Flagged reference properties ===
 {flagged_block}
 
-Reason about the LIKELY cause of each flagged value — partial charges, van der
-Waals / Lennard-Jones terms, bonded/torsion terms, or a chemistry the base force
-field does not really cover — and recommend ONE concrete corrective action:
+First decide whether this is a PARAMETER problem or a METHOD-CLASS problem:
+- A single mis-parameterized component, or one static property off — partial
+  charges, van der Waals / Lennard-Jones terms, bonded/torsion terms, or a
+  chemistry the base force field does not really cover — is a PARAMETER problem,
+  fixable by reparameterizing that component.
+- A systematic failure of a whole property class (e.g. a dynamical or transport
+  property off by a large factor), or a physically-wrong TREND across a swept
+  parameter, that no single-component parameter change could plausibly fix,
+  indicates the METHOD CLASS itself is inadequate — escalate to a higher-fidelity
+  potential rather than tuning parameters.
+
+Recommend ONE concrete corrective action:
 - "add_force_field": supplement or replace the offending component's parameters
   with a validated set (e.g. a literature model for that chemistry), applied
   through the backend's extra-force-field channel.
 - "adjust_parameters": change specific named terms — for a targeted issue.
-- "switch_backend": use a backend that covers this chemistry better.
-- "escalate": no confident automatic fix to attempt — hand to the human.
+- "switch_backend": use a different backend of the SAME method class that covers
+  this chemistry better.
+- "escalate_potential": the method class is inadequate for the failing property —
+  move to a higher-fidelity potential: a machine-learning interatomic potential
+  (MLIP), or a polarizable / refit force field. Advisory: a human approves and
+  triggers the re-run with the new potential; it is NOT run automatically.
+- "escalate": no confident action to recommend — hand to the human with no
+  specific method.
 
-The system finds and applies the fix ITSELF: it searches the literature for
-candidate parameters and re-runs this same pure-component check to validate them
-automatically, so a wrong candidate is caught and discarded, not trusted. So do
-NOT punt the SEARCH to a human — recommend "add_force_field" whenever a validated
-set plausibly exists in the literature. A human APPROVES the corrected model
-before production; a human is not needed to find the parameters. Reserve
-"escalate" for when no automatic fix is worth attempting at all.
+For a PARAMETER problem the system finds and applies the fix ITSELF: it
+searches the literature for candidate parameters and re-runs the same check to
+validate them automatically, so a wrong candidate is caught and discarded, not
+trusted. So do NOT punt the SEARCH to a human — recommend "add_force_field"
+whenever a validated set plausibly exists in the literature. A human APPROVES the
+corrected model. For a METHOD-CLASS problem recommend "escalate_potential" and set
+"suggested_method"; the human approves the escalation. Reserve "escalate" for when
+no automatic fix and no confident escalation are worth attempting at all.
 
 Return a JSON object:
   status              "success"
-  diagnosis           which component/property, and the likely force-field cause
+  diagnosis           which component/property, and the likely cause (parameter
+                      vs method-class inadequacy)
   recommended_action  one of "add_force_field" | "adjust_parameters" |
-                      "switch_backend" | "escalate"
+                      "switch_backend" | "escalate_potential" | "escalate"
+  suggested_method    when recommended_action is "escalate_potential", one of
+                      "mlip" | "polarizable_ff" | "refit_ff"; otherwise null
   detail              concrete specifics (what to search for / change / switch to)
   requires_human      true|false — whether a human must APPROVE the corrected
                       model before production (finding the parameters is
@@ -1349,8 +1371,12 @@ class ReparameterizationAdvisor(_CriticBase):
 
         Returns:
             ``{"status", "diagnosis", "recommended_action", "detail",
-            "requires_human", "rationale"}``. When ``flagged`` is empty, returns
-            a no-op ``escalate`` with no LLM call.
+            "requires_human", "rationale", "suggested_method"}``.
+            ``recommended_action`` may be ``"escalate_potential"`` (advisory:
+            escalate to a higher-fidelity potential — MLIP or polarizable/refit
+            FF — for a method-class inadequacy), in which case ``suggested_method``
+            names it; otherwise ``suggested_method`` is ``None``. When ``flagged``
+            is empty, returns a no-op ``escalate`` with no LLM call.
         """
         if skill and not domain:
             raise ValueError(
@@ -1362,6 +1388,7 @@ class ReparameterizationAdvisor(_CriticBase):
                 "status": "success",
                 "diagnosis": "No flagged properties supplied.",
                 "recommended_action": "escalate",
+                "suggested_method": None,
                 "detail": "Nothing to fix.",
                 "requires_human": True,
                 "rationale": "Advisor called with no flagged measurements.",
@@ -1369,9 +1396,12 @@ class ReparameterizationAdvisor(_CriticBase):
 
         lines = []
         for m in flagged:
+            # A flagged entry is either a pure-component reference property
+            # (component/property) or a whole-system observable/trend (observable).
+            label = m.get("component") or m.get("observable") or "(system)"
             prop = f" — {m['property']}" if m.get("property") else ""
             why = f": {m['reasoning']}" if m.get("reasoning") else ""
-            lines.append(f"- {m.get('component')}{prop}{why}")
+            lines.append(f"- {label}{prop}{why}")
         flagged_block = "\n".join(lines)
 
         skill_context = self._load_skill_section(skill, domain or "")
@@ -1384,6 +1414,7 @@ class ReparameterizationAdvisor(_CriticBase):
         report = self._generate_json(prompt)
         report.setdefault("status", "success")
         report.setdefault("recommended_action", "escalate")
+        report.setdefault("suggested_method", None)
         report.setdefault("requires_human", True)
         return report
 

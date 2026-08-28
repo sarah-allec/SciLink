@@ -77,4 +77,36 @@ def test_no_flagged_is_a_noop_escalate_without_llm():
     adv, captured = _stub("SHOULD NOT BE CALLED")
     rec = adv.advise([])
     assert rec["recommended_action"] == "escalate"
+    assert rec["suggested_method"] is None
     assert "prompt" not in captured                        # no LLM call
+
+
+def test_escalate_potential_and_suggested_method_pass_through():
+    # A whole-method-class failure: the advisor escalates to a higher-fidelity
+    # potential (not a reparameterization) and names the method.
+    adv, _ = _stub(json.dumps({
+        "recommended_action": "escalate_potential",
+        "suggested_method": "mlip",
+        "diagnosis": "transport off by ~5x; classical FF too fluid",
+        "detail": "re-run with a pretrained MLIP",
+        "rationale": "no per-component parameter change can fix a whole-class error",
+    }))
+    rec = adv.advise(FLAGGED, backend="openff")
+    assert rec["recommended_action"] == "escalate_potential"
+    assert rec["suggested_method"] == "mlip"
+
+
+def test_suggested_method_defaults_none_when_omitted():
+    adv, _ = _stub(json.dumps({"recommended_action": "add_force_field"}))
+    rec = adv.advise(FLAGGED)
+    assert rec["suggested_method"] is None
+
+
+def test_prompt_offers_escalate_potential_and_generic_mlip():
+    adv, captured = _stub(json.dumps({"recommended_action": "escalate_potential",
+                                      "suggested_method": "mlip"}))
+    adv.advise(FLAGGED, backend="openff")
+    prompt = captured["prompt"]
+    assert "escalate_potential" in prompt
+    assert "machine-learning interatomic potential" in prompt   # generic, not a use case
+    assert "suggested_method" in prompt

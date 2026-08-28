@@ -192,6 +192,7 @@ def run_validation_panel(
     *,
     judge_fn: Callable[[List[Dict[str, Any]], str], Dict[str, Any]],
     scope_fn: Optional[Callable[[str, List[str], List[str], str], str]] = None,
+    advise_fn: Optional[Callable[[List[Dict[str, Any]], str], Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Validate a set of observables against their references; scope the prediction.
 
@@ -216,12 +217,20 @@ def run_validation_panel(
         scope_fn: Optional richer (e.g. LLM) confidence-statement generator
             ``(target, passed, failed, system_description) -> str``. Falls back
             to a deterministic summary.
+        advise_fn: Optional advisor ``(failed_observables, system_description) ->
+            advisory_dict`` — when any observable fails, its result is attached as
+            ``advisory`` (e.g. a reparameterization or method-escalation
+            recommendation). Injected so the panel stays critic-neutral; wire it
+            to the reparameterization advisor. When omitted, no ``advisory`` key
+            is added (backward compatible).
 
     Returns:
         ``{"status", "prediction_target", "per_observable", "passed", "failed",
-        "prediction_warranted", "confidence"}``. ``prediction_warranted`` is True
-        only when no observable failed; ``failed`` is the catch — route those to
-        the reparameterization fixer before trusting the prediction.
+        "prediction_warranted", "confidence"[, "advisory"]}``.
+        ``prediction_warranted`` is True only when no observable failed; ``failed``
+        is the catch. ``advisory`` is present only when ``advise_fn`` is given and
+        something failed — route those to the fixer / escalate before trusting the
+        prediction.
     """
     report = judge_fn(observations, system_description) or {}
     per = report.get("per_observable") or report.get("per_measurement") or []
@@ -240,7 +249,7 @@ def run_validation_panel(
     else:
         confidence = _default_scope(prediction_target, passed_names,
                                     failed_names, unrated_names)
-    return {
+    result = {
         "status": "success",
         "prediction_target": prediction_target,
         "per_observable": per,
@@ -250,6 +259,92 @@ def run_validation_panel(
         "prediction_warranted": warranted,
         "confidence": confidence,
     }
+    # On any failure, ask the advisor for a corrective/escalation recommendation
+    # (reparameterize a component, or escalate the potential to a higher-fidelity
+    # method). Advisory only — never applied here.
+    if advise_fn is not None and failed:
+        result["advisory"] = advise_fn(failed, system_description)
+    return result
+
+
+def build_advisory(recommendation: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape an advisor recommendation into a human-facing advisory.
+
+    The advisory is NEVER auto-run: it carries ``auto_run=False`` and
+    ``requires_human_approval=True``. When the recommendation escalates to a
+    machine-learning interatomic potential, it also names the concrete (advisory)
+    next step; a caller/UI executes it only after a human approves. Engine- and
+    potential-neutral; the specific method comes from the injected advisor.
+    """
+    action = recommendation.get("recommended_action")
+    method = recommendation.get("suggested_method")
+    advisory = {
+        "status": ("advise_method_escalation" if action == "escalate_potential"
+                   else "advise_reparameterization"),
+        "recommended_action": action,
+        "suggested_method": method,
+        "diagnosis": recommendation.get("diagnosis"),
+        "detail": recommendation.get("detail"),
+        "rationale": recommendation.get("rationale"),
+        "requires_human_approval": True,
+        "auto_run": False,
+    }
+    if method == "mlip":
+        advisory["suggested_next_step"] = {
+            "agent": "MLIPAgent",
+            "method": "deploy_pretrained",
+            "hint": ("MLIPAgent.deploy_pretrained(system_info=..., "
+                     "research_goal=..., structure_file=..., "
+                     "backend=<mlip backend, e.g. 'mace'>) — run only after "
+                     "human approval"),
+        }
+    return advisory
+
+
+def numeric_reference_judge(
+    observations: List[Dict[str, Any]],
+    system_description: str = "",
+    *,
+    default_tol: float = 0.15,
+) -> Dict[str, Any]:
+    """A deterministic ``judge_fn`` for :func:`run_validation_panel` (no LLM).
+
+    Flags each observation whose computed ``value`` deviates from its
+    ``reference`` by more than a relative tolerance (a per-item ``tolerance``
+    overrides ``default_tol``). General — it judges any numeric observable against
+    a caller-supplied reference. Observations missing a numeric value/reference
+    are left unrated (``consistent=None``), never a false pass. Returns
+    ``{"per_observable": [{observable, consistent, rel_error?, value, reference,
+    units, reasoning}]}``.
+    """
+    per: List[Dict[str, Any]] = []
+    for o in observations:
+        name = o.get("observable") or o.get("name") or "(observable)"
+        entry: Dict[str, Any] = {
+            "observable": name, "value": o.get("value"),
+            "reference": o.get("reference"), "units": o.get("units"),
+        }
+        try:
+            v = float(o.get("value"))
+            r = float(o.get("reference"))
+        except (TypeError, ValueError):
+            entry.update(consistent=None,
+                         reasoning="missing or non-numeric value/reference")
+            per.append(entry)
+            continue
+        if r == 0:
+            entry.update(consistent=None,
+                         reasoning="reference is zero; relative error undefined")
+        else:
+            tol = float(o.get("tolerance", default_tol))
+            rel = abs(v - r) / abs(r)
+            entry.update(
+                consistent=bool(rel <= tol), rel_error=round(rel, 4),
+                reasoning=(f"|computed - reference| / reference = {rel:.1%} "
+                           f"({'within' if rel <= tol else 'exceeds'} "
+                           f"tolerance {tol:.0%})"))
+        per.append(entry)
+    return {"per_observable": per}
 
 
 def run_reparameterization(
@@ -282,12 +377,20 @@ def run_reparameterization(
 
     Returns ``{"status", "recommendation", "candidate"?, "reference_validation"?,
     "attempts"}`` where ``status`` is:
-    ``"fixed"`` (a candidate re-validated), ``"escalated"`` (no automatic action
-    to attempt), ``"no_candidate"`` (search found nothing), ``"declined"`` (human
-    rejected a candidate), or ``"unresolved"`` (candidates tried, none passed).
+    ``"fixed"`` (a candidate re-validated), ``"advise_method_escalation"`` (the
+    method class is inadequate — escalate the potential, human-approved, not run
+    here), ``"escalated"`` (no automatic action to attempt), ``"no_candidate"``
+    (search found nothing), ``"declined"`` (human rejected a candidate), or
+    ``"unresolved"`` (candidates tried, none passed).
     """
     recommendation = advise_fn(flagged, system_description, backend)
     action = recommendation.get("recommended_action")
+    if action == "escalate_potential":
+        # Method-class inadequacy: no per-component parameter fix applies. Surface
+        # the escalation recommendation for a human to approve; do NOT enter the
+        # parameter search/apply loop.
+        return {"status": "advise_method_escalation",
+                "recommendation": recommendation, "attempts": []}
     if action in (None, "escalate"):
         return {"status": "escalated", "recommendation": recommendation,
                 "attempts": []}
