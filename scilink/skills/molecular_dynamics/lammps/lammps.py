@@ -1226,6 +1226,29 @@ def substitute_variables(
     return script
 
 
+def set_velocity_seed(script: str, seed: int) -> str:
+    """Set the random seed of every ``velocity ... create`` command to ``seed``.
+
+    Independent replicas of the same system differ only in their initial atomic
+    velocities, which LAMMPS draws from ``velocity <group> create <T> <seed>``.
+    Stamping a distinct seed per replica — rather than regenerating the deck —
+    makes each run an independent sample, which is what a statistical average
+    (e.g. a Green-Kubo transport coefficient over replicas) needs. Replaces a
+    literal integer seed and any ``{seed}`` / ``${seed}`` placeholder; the rest
+    of the command (temperature, ``dist gaussian``, …) is left untouched. A deck
+    with no ``velocity create`` is returned unchanged.
+    """
+    seed = int(seed)
+    # `velocity <group> create <T> ` then either a {seed}/${seed} placeholder or
+    # a literal integer seed. `<T>` and the group are matched loosely so the same
+    # rule works whether the temperature is a number or still a placeholder.
+    head = r"(\bvelocity\b[^\n]*?\bcreate\b\s+\S+\s+)"
+    script = re.sub(head + r"(?:\$\{seed\}|\{seed\}|\$\{SEED\})",
+                    lambda m: f"{m.group(1)}{seed}", script)
+    script = re.sub(head + r"\d+", lambda m: f"{m.group(1)}{seed}", script)
+    return script
+
+
 SWEEP_PLACEHOLDER = "__SWEEP__"
 
 

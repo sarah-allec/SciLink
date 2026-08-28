@@ -919,6 +919,15 @@ class MDSimulationAgent(SimulationAgent):
                 pressure=plan.get("pressure", 1.0),
                 timestep=plan.get("timestep", 2.0),
             )
+        # Independent-replica support: when the plan carries a seed, stamp it into
+        # the velocity-create command so this run samples different initial
+        # velocities (a distinct seed per replica -> independent runs for a
+        # statistical average). No seed in the plan -> the deck is unchanged.
+        seed = plan.get("seed")
+        if seed is not None and self.tools_module and hasattr(
+            self.tools_module, "set_velocity_seed"
+        ):
+            script = self.tools_module.set_velocity_seed(script, seed)
         return script
 
     # ================================================================
