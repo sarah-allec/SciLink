@@ -423,6 +423,81 @@ def _reparameterize(flagged, system_description, backend, components,
     )
 
 
+def _post_run_advisory(failure_class, verdict_reason, prediction_target,
+                       system_description, *, api_key, base_url, model_name):
+    """Build a human-facing advisory from a run-level method-class verdict.
+
+    Adapts a coarse run-level verdict (a ``failure_class`` + reasoning, with no
+    per-observable references) into the advisor's ``flagged`` contract, asks the
+    :class:`ReparameterizationAdvisor` for a corrective/escalation recommendation,
+    and shapes it via :func:`reference_validation.build_advisory` (never auto-run).
+    Module-level so tests can substitute it. Returns the advisory dict, or ``None``
+    on any failure (so the pipeline degrades to warning-only when no model is
+    available).
+    """
+    from .critics import ReparameterizationAdvisor
+    from .reference_validation import build_advisory
+    try:
+        advisor = ReparameterizationAdvisor(api_key=api_key, base_url=base_url,
+                                            model_name=model_name)
+        flagged = [{
+            "observable": prediction_target or "(computed property)",
+            "reasoning": verdict_reason or (
+                "A computed property contradicts known physical behaviour; the "
+                f"failure is attributed to the {str(failure_class).replace('_', ' ')}."),
+            "consistent": False,
+        }]
+        rec = advisor.advise(flagged, system_description=system_description or "",
+                             backend="")
+        return build_advisory(rec)
+    except Exception as e:  # advisory is best-effort; never break the run
+        logger.warning("Post-run advisory unavailable: %s", e)
+        return None
+
+
+def _post_run_reference_validation(reference_observations, system_description, *,
+                                   api_key, base_url, model_name,
+                                   prediction_target=None):
+    """Validate a finished run's observables against caller-supplied references.
+
+    General and use-case-neutral: a deterministic numeric judge
+    (:func:`reference_validation.numeric_reference_judge`) compares each
+    observation's computed ``value`` to its ``reference`` within a tolerance; on
+    any failure the reparameterization advisor recommends a fix or a method
+    escalation, shaped into a human-approval advisory. An optional ``series``
+    (``[{point, value}]``) on any observation triggers a :class:`TrendCritic`
+    direction check. Module-level so tests can substitute it. Returns the panel
+    report (with ``advisory`` / ``trend`` attached when applicable).
+    """
+    from .critics import ReparameterizationAdvisor, TrendCritic
+    from .reference_validation import (
+        run_validation_panel, build_advisory, numeric_reference_judge)
+
+    advisor = ReparameterizationAdvisor(api_key=api_key, base_url=base_url,
+                                        model_name=model_name)
+
+    def _advise(flagged, sd):
+        return build_advisory(advisor.advise(flagged, system_description=sd,
+                                             backend=""))
+
+    panel = run_validation_panel(
+        reference_observations,
+        prediction_target=prediction_target or "the target property",
+        system_description=system_description,
+        judge_fn=numeric_reference_judge, advise_fn=_advise)
+
+    series = next((o["series"] for o in reference_observations
+                   if o.get("series")), None)
+    if series:
+        try:
+            panel["trend"] = TrendCritic(
+                api_key=api_key, base_url=base_url, model_name=model_name
+            ).assess(series, system_description=system_description)
+        except Exception as e:  # trend check is best-effort
+            logger.warning("Trend check unavailable: %s", e)
+    return panel
+
+
 def _run_workflow_once(
     user_request: str,
     *,
@@ -451,6 +526,7 @@ def _run_workflow_once(
     auto_fix: bool = True,
     required_observables: Optional[list] = None,
     derive_observables: bool = False,
+    reference_observations: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Run the full structure → inputs → validation pipeline for any scale.
 
@@ -811,21 +887,47 @@ def _run_workflow_once(
     )
     result["refinement"] = refinement
     result["steps_completed"].append("refinement")
-    # Detection is wired; the automated reparameterization fix is not. When the
-    # critic attributes a converged-but-wrong result to the force field, surface
-    # it plainly so the result is not read as trustworthy.
-    if refinement.get("failure_class") == "force_field":
+    # When the critic attributes a converged-but-wrong result to the model
+    # (the force field, or the potential/method class), surface it plainly AND
+    # attach a concrete advisory (reparameterize, or escalate the potential) for a
+    # human to act on. Advisory only — nothing is re-run automatically.
+    if refinement.get("failure_class") in ("force_field", "potential"):
         result["force_field_flagged"] = True
         result.setdefault("warnings", []).append(
             "A computed property contradicts the known physical behaviour of the "
-            "system — the force field appears miscalibrated. No input-deck change "
-            "can fix this; the force field needs reparameterization (not yet "
-            "automated). Treat this result as unreliable."
+            "system — the model appears miscalibrated. No input-deck change can "
+            "fix this; see result['advisory'] for the recommended fix or "
+            "escalation. Treat this result as unreliable until addressed."
         )
         logger.warning(
-            "Run flagged force-field-limited (failure_class='force_field'); "
-            "reparameterization needed — not yet automated."
+            "Run flagged model-limited (failure_class=%r); see result['advisory'].",
+            refinement.get("failure_class"),
         )
+        advisory = _post_run_advisory(
+            refinement.get("failure_class"),
+            refinement.get("reasoning") or refinement.get("verdict"),
+            user_request, user_request,
+            api_key=api_key, base_url=base_url, model_name=model_name,
+        )
+        if advisory:
+            result["advisory"] = advisory
+
+    # Post-run validation against caller-supplied references. Backward compatible:
+    # when reference_observations is None (default) this block is skipped entirely
+    # and behaviour is unchanged. On a reference failure it attaches an advisory
+    # (reparameterize, or escalate the potential) for human approval — never
+    # auto-run. Does not override a force-field-flagged advisory already set above.
+    if reference_observations:
+        try:
+            ref_val = _post_run_reference_validation(
+                reference_observations, user_request,
+                api_key=api_key, base_url=base_url, model_name=model_name)
+            result["reference_validation"] = ref_val
+            if ref_val.get("advisory") and "advisory" not in result:
+                result["advisory"] = ref_val["advisory"]
+        except Exception as e:  # never break a finished run on validation
+            logger.warning("Post-run reference validation unavailable: %s", e)
+
     result["final_status"] = (
         "success" if refinement.get("status") == "success"
         else f"refinement_{refinement.get('status', 'failed')}"

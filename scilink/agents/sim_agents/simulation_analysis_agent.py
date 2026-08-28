@@ -161,6 +161,52 @@ class SimulationAnalysisAgent(BaseAnalysisAgent):
         # everything available rather than nothing).
         return selected or eligible
 
+    def _select_extra_observables(self, research_goal: str,
+                                  eligible: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Simple observables the goal needs that no eligible skill computes.
+
+        Skills package the COMPLEX analyses (their recipe carries domain
+        knowledge — Green-Kubo transport, spin-relaxation, spectra). A simple
+        observable the model can compute directly from the run output — a bulk
+        density from mass and cell volume, say — does not need a skill. This asks
+        the LLM which such observables the goal requires beyond what the skills
+        cover, so they are produced by the same verified codegen (recipe-free)
+        instead of being silently dropped. Returns ``[{"observable", "units"?},
+        ...]`` — empty when the skills already cover the goal, or on any failure
+        (best-effort; never blocks the skill-based analysis).
+        """
+        covered: List[str] = []
+        for s in eligible:
+            c = (s.get("meta") or {}).get("computes") or []
+            covered += [c] if isinstance(c, str) else list(c)
+        import json
+        prompt = (
+            "A research goal may require simple observables that the available "
+            "analysis SKILLS do not already compute. Skills exist for COMPLEX "
+            "analyses; a simple observable computable directly from the run "
+            "output with a short script (e.g. a bulk density from mass and cell "
+            "volume) does NOT need one. List ONLY the observables the goal "
+            "explicitly requires that are (a) NOT already covered below and "
+            "(b) simple enough to compute from the available data with a short, "
+            "standard script. Respond with JSON: {\"extra_observables\": "
+            "[{\"observable\": <name>, \"units\": <units>}, ...]}. Return an "
+            "empty list if the skills already cover the goal.\n\n"
+            f"RESEARCH GOAL: {research_goal}\n\n"
+            f"ALREADY COVERED BY SKILLS: {json.dumps(covered)}"
+        )
+        try:
+            parsed = self._extract_json(self._llm(prompt)) or {}
+        except Exception as exc:  # best-effort; never block skill analysis
+            self.logger.warning("Extra-observable selection failed: %s", exc)
+            return []
+        out: List[Dict[str, Any]] = []
+        for e in parsed.get("extra_observables") or []:
+            if isinstance(e, str):
+                out.append({"observable": e})
+            elif isinstance(e, dict) and e.get("observable"):
+                out.append({"observable": e["observable"], "units": e.get("units")})
+        return out
+
     def run_analysis(self, research_goal: str, run_dir: Optional[str] = None,
                      **kwargs) -> Dict[str, Any]:
         """Compute the goal's properties from the run output in ``run_dir``.
@@ -207,7 +253,31 @@ class SimulationAnalysisAgent(BaseAnalysisAgent):
                     data_files=data_files, recipe=recipe,
                     output_type=output_type)
 
+        # Simple observables the goal needs that no skill covers — computed by the
+        # SAME verified codegen with no recipe (the model writes the short script
+        # itself). Skills remain reserved for packaged complexity.
+        extras = self._select_extra_observables(research_goal, eligible)
+        extra_names: List[str] = []
+        for extra in extras:
+            prop = extra["observable"]
+            if prop in results:
+                continue  # a skill already produced it
+            # The hint goes in the recipe (guidance), NOT the task — the task is
+            # slugged into the script filename, so keep it short.
+            recipe = (
+                "If this quantity is directly recorded in the run's thermo / "
+                "energy log among the available data files, read it from there "
+                "(prefer a production-run time average) rather than recomputing "
+                "it from a single trajectory frame.")
+            if extra.get("units"):
+                recipe += f" Report the value in {extra['units']}."
+            results[prop] = self.compute_property(
+                task=f"{prop} for the research goal: {research_goal}",
+                data_files=data_files, recipe=recipe)
+            extra_names.append(prop)
+
         return {"status": "success", "results": results,
                 "output_directory": str(self.output_dir),
-                "data_kinds": sorted(by_kind), "skills_used":
-                [s["name"] for s in selected]}
+                "data_kinds": sorted(by_kind),
+                "skills_used": [s["name"] for s in selected],
+                "extra_observables": extra_names}
