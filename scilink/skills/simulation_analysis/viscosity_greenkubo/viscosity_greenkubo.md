@@ -34,10 +34,28 @@ then evaluate the Green-Kubo integral:
    (Pxx−Pyy)/2 and (Pyy−Pzz)/2. All five are unbiased estimators of the same shear
    viscosity; average their autocorrelations.
 
-4. **Green-Kubo integral:** η = (V / (k_B T)) ∫₀^∞ C(τ) dτ. Integrate with the
-   trapezoidal rule and track the *running* integral; take η as the plateau value.
-   If the running integral is still rising at the end of the series, it has not
-   converged — report the best estimate and set plateau_reached=false.
+4. **Green-Kubo integral — extract the plateau by fitting, never a raw endpoint.**
+   Form the *running* integral η(t) = (V / (k_B T)) ∫₀^t C(τ) dτ by cumulative
+   trapezoidal integration. Do NOT report η at the final lag: the running
+   integral's tail has a variance that grows with t (every added lag injects
+   noise), so the endpoint is unstable and can even go *negative* — a spurious
+   result, not a real viscosity. Extract the plateau robustly instead:
+   - **Fit cutoff.** Track the spread of the running integral across the five
+     equivalent components; set a cutoff `t_cut` where that inter-component
+     relative spread first exceeds ≈0.4 (beyond it the tail is noise-dominated).
+   - **Fit** the averaged running integral on `[0, t_cut]` to the standard
+     double-exponential rise-to-plateau
+     `η(t) = A[ α·τ1·(1−e^(−t/τ1)) + (1−α)·τ2·(1−e^(−t/τ2)) ]`,
+     weighting each point by `t^(−b)` (b ≈ 0.5–1) so the noisy long-time tail does
+     not dominate (Zhang, Otani & Maginn, *J. Chem. Theory Comput.* 2015). The
+     fitted amplitude **A** (the t→∞ limit) is η.
+   - **Convergence + sanity.** `plateau_reached` is true only when the fit
+     succeeds AND `A > 0` AND the fit is stable over the upper part of the window.
+     A negative or non-finite A, a failed fit, or an integral still rising at
+     `t_cut` means NOT converged: report the best estimate with
+     `plateau_reached=false` — never emit a negative or wild value as if real.
+   - Also report a per-run uncertainty (spread of A across the equivalent
+     components, or across time-origin blocks).
 
 5. **Units — do this explicitly and state the assumed unit system.** LAMMPS
    `real`: pressure in atm, time in fs, volume in Å³, T in K. LAMMPS `metal`:
@@ -72,6 +90,9 @@ decides.
 
 Green-Kubo viscosity is noisy; guard against false precision:
 - The autocorrelation must decay to ≈0 well before the integration cutoff.
+- η comes from the fitted plateau amplitude A, not the raw endpoint of the running
+  integral; a fitted A that is negative or non-finite is NOT a viscosity — report
+  plateau_reached=false, never a negative or wild value.
 - The running integral must show a plateau; a still-rising integral is not
   converged (plateau_reached=false).
 - The inter-replica mean must be converged: relative SEM ≤ target with every
