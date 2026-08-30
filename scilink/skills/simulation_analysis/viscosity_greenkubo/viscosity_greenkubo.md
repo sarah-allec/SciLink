@@ -49,11 +49,15 @@ then evaluate the Green-Kubo integral:
      weighting each point by `t^(−b)` (b ≈ 0.5–1) so the noisy long-time tail does
      not dominate (Zhang, Otani & Maginn, *J. Chem. Theory Comput.* 2015). The
      fitted amplitude **A** (the t→∞ limit) is η.
-   - **Convergence + sanity.** `plateau_reached` is true only when the fit
-     succeeds AND `A > 0` AND the fit is stable over the upper part of the window.
-     A negative or non-finite A, a failed fit, or an integral still rising at
-     `t_cut` means NOT converged: report the best estimate with
-     `plateau_reached=false` — never emit a negative or wild value as if real.
+   - **Convergence + sanity (hard bounds — apply as a check, not a suggestion).**
+     `plateau_reached` is true only when the fit succeeds, is stable over the upper
+     part of the window, AND the fitted amplitude `A` lands in a physical
+     liquid-viscosity window: **0.01 ≤ A ≤ 1000 mPa·s**. A fit that fails, is still
+     rising at `t_cut`, or returns an `A` that is negative, non-finite, or OUTSIDE
+     `[0.01, 1000]` has **diverged on under-converged data** — it is NOT a
+     viscosity. In that case report `plateau_reached=false` and `value=null`; do
+     NOT emit the diverged number (a real liquid is ~0.1–10 mPa·s, so an `A` orders
+     of magnitude away, e.g. 10^2–10^8, is a diverged fit, never a viscosity).
    - Also report a per-run uncertainty (spread of A across the equivalent
      components, or across time-origin blocks).
 
@@ -91,14 +95,14 @@ decides.
 Green-Kubo viscosity is noisy; guard against false precision:
 - The autocorrelation must decay to ≈0 well before the integration cutoff.
 - η comes from the fitted plateau amplitude A, not the raw endpoint of the running
-  integral; a fitted A that is negative or non-finite is NOT a viscosity — report
-  plateau_reached=false, never a negative or wild value.
+  integral. A fitted A that is negative, non-finite, or outside the physical
+  liquid-viscosity window **[0.01, 1000] mPa·s** is NOT a viscosity — it is a fit
+  that diverged on under-converged data. Report `plateau_reached=false` and
+  `value=null`; never emit the diverged number (a real liquid is ~0.1–10 mPa·s).
 - The running integral must show a plateau; a still-rising integral is not
   converged (plateau_reached=false).
 - The inter-replica mean must be converged: relative SEM ≤ target with every
   replica plateaued, else the value is not yet verified (add replicas).
-- Typical liquid viscosities are ~0.1–10 mPa·s; a value orders of magnitude
-  outside this range signals a unit error, not physics.
 
 ## Interpretation
 
