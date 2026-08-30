@@ -169,6 +169,11 @@ ReaxFF:
 
 ### Common errors
 - "Lost atoms": overlapping atoms (minimize first), timestep too large, or wrong units
+- **`0 = # of frozen angles` with a rigid water model present**: the H–O–H angle
+  was not constrained (bond-only SHAKE via `m 1.008`). The run does NOT crash, but
+  the water is non-rigid → distorted dynamics, low/unstable density, and a garbage
+  stress tensor (nonsense Green–Kubo viscosity). Fix by SHAKE-ing the water angle
+  type too (`… b <O–H> a <H–O–H>`) or `fix rigid/small`; see Implementation.
 - "All pair coeffs not set": missing pair_coeff; for EAM, all elements must be listed
 - "Pair style requires KSpace": using coul/long without `kspace_style pppm`
 - "Cannot open potential file": file not in working directory or wrong path
@@ -316,9 +321,29 @@ read_data {data_filename}
 kspace_style pppm 1.0e-4
 neighbor 2.0 bin
 neigh_modify every 1 delay 0 check yes
-fix SHAKE all shake 1.0e-5 100 0 m 1.008   # constrains X-H bonds (rigid water); enables 2 fs
+fix SHAKE all shake 1.0e-5 100 0 m 1.008   # constrains X-H BONDS only (enables 2 fs); see below re: rigid water
 (dynamics with timestep 2.0, Tdamp 100.0, Pdamp 1000.0)
 ```
+
+**Rigid water needs its ANGLE constrained too — `m 1.008` alone is not enough.**
+`fix shake … m 1.008` constrains every bond to a hydrogen (the O–H bonds and any
+C–H/N–H), which is right for organic X–H bonds at a 2 fs timestep. But a *rigid*
+water model (OPC3, SPC/E, TIP3P-rigid, TIP4P) also fixes the **H–O–H angle**, and
+SHAKE with the `m` (mass) form does **not** constrain angles. Left free, the stiff
+water angle is unstable at 2 fs → hot, distorted water → wrong density and a
+garbage stress tensor (nonsense Green–Kubo viscosity), with no crash to warn you.
+When water is present, constrain the water angle one of two ways:
+- **SHAKE the water bond + angle types explicitly:**
+  `fix SHAKE all shake 1.0e-5 100 0 b <O–H bondtype> a <H–O–H angletype>`
+  — resolve the water O–H bond type and H–O–H angle type from the data file (the
+  O–H bond links a mass≈16 O to a mass≈1.008 H; the H–O–H angle is that water
+  molecule's angle type). Add the other X–H bond types to the `b` list to keep the
+  2 fs timestep. Never hardcode a type number — read it from the data file.
+- **Or `fix rigid/small molecule`** on a water-only group for a fully rigid geometry.
+
+**Verify it:** the run's SHAKE summary must report a **nonzero `# of frozen
+angles`** when a rigid water model is used. `0 = # of frozen angles` means the
+water is NOT rigid — the deck is wrong even though the run does not crash.
 
 ### ReaxFF (reactive)
 ```
