@@ -120,6 +120,11 @@ Transport coefficients (viscosity, self-diffusion) — equilibrium Green-Kubo/Ei
   (it also needs T and
   vol) and does the Green-Kubo integral. It converges slowly for viscous liquids →
   the production run must be long (tens of ns) with stress sampled every few fs.
+  A **rigid water model stays fully constrained (SHAKE/`fix rigid`) for the
+  viscosity run** — LAMMPS puts the SHAKE constraint virial into the stress tensor,
+  so it does NOT corrupt the Green–Kubo integral. Do not run rigid water flexibly
+  to "protect" the stress; an unconstrained rigid model gives a meaningless
+  viscosity (see the rigid-water note under Implementation).
 - **Self-diffusion:** dump the unwrapped coordinate trajectory at a regular
   interval; the diffusion analysis skill computes the MSD/Einstein slope.
 
@@ -321,18 +326,28 @@ read_data {data_filename}
 kspace_style pppm 1.0e-4
 neighbor 2.0 bin
 neigh_modify every 1 delay 0 check yes
-fix SHAKE all shake 1.0e-5 100 0 m 1.008   # constrains X-H BONDS only (enables 2 fs); see below re: rigid water
+fix SHAKE all shake 1.0e-5 100 0 m 1.008   # X-H BONDS only — INSUFFICIENT if a rigid water model is present; see 'rigid water' below
 (dynamics with timestep 2.0, Tdamp 100.0, Pdamp 1000.0)
 ```
 
-**Rigid water needs its ANGLE constrained too — `m 1.008` alone is not enough.**
-`fix shake … m 1.008` constrains every bond to a hydrogen (the O–H bonds and any
-C–H/N–H), which is right for organic X–H bonds at a 2 fs timestep. But a *rigid*
-water model (OPC3, SPC/E, TIP3P-rigid, TIP4P) also fixes the **H–O–H angle**, and
-SHAKE with the `m` (mass) form does **not** constrain angles. Left free, the stiff
-water angle is unstable at 2 fs → hot, distorted water → wrong density and a
-garbage stress tensor (nonsense Green–Kubo viscosity), with no crash to warn you.
-When water is present, constrain the water angle one of two ways:
+**A rigid water model MUST be run rigid — this is not optional.** A rigid water
+model (OPC3, SPC/E, TIP3P-rigid, TIP4P) is parameterized for a fixed geometry:
+both the O–H bonds AND the H–O–H angle. You must constrain that whole geometry
+(SHAKE, or `fix rigid`). Integrating it flexibly — or with the O–H bonds SHAKE'd
+but the angle left free — gives wrong dynamics: hot, distorted water, a
+low/unstable density, and a meaningless stress tensor, with no crash to warn you.
+`fix shake … m 1.008` constrains only bonds-to-hydrogen (the O–H and any C–H/N–H),
+NOT angles, so it is **not sufficient** for water.
+
+**Do NOT skip SHAKE for a Green–Kubo viscosity run.** LAMMPS adds the SHAKE
+constraint (virial) forces into the stress tensor, so SHAKE does **not** corrupt
+the Green–Kubo integral — the stress is computed correctly with the constraints in
+place. Running a rigid water model flexibly to "keep the stress physically correct"
+is a misconception and the opposite of correct: an unconstrained rigid model is
+exactly what produces a garbage viscosity. Constrain the water and sample the
+stress as usual.
+
+Constrain the water geometry one of two ways:
 - **SHAKE the water bond + angle types explicitly:**
   `fix SHAKE all shake 1.0e-5 100 0 b <O–H bondtype> a <H–O–H angletype>`
   — resolve the water O–H bond type and H–O–H angle type from the data file (the
@@ -341,9 +356,9 @@ When water is present, constrain the water angle one of two ways:
   2 fs timestep. Never hardcode a type number — read it from the data file.
 - **Or `fix rigid/small molecule`** on a water-only group for a fully rigid geometry.
 
-**Verify it:** the run's SHAKE summary must report a **nonzero `# of frozen
-angles`** when a rigid water model is used. `0 = # of frozen angles` means the
-water is NOT rigid — the deck is wrong even though the run does not crash.
+**Verify:** the run's SHAKE summary must report a **nonzero `# of frozen angles`**
+when a rigid water model is present. `0 = # of frozen angles` means the water is
+NOT rigid — the deck is wrong even though the run does not crash.
 
 ### ReaxFF (reactive)
 ```
