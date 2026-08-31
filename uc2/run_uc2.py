@@ -160,8 +160,9 @@ def _analyze_member(comp: dict, runs_dir: Path, seed=None) -> dict:
         api_key=api_key, base_url=base_url, model_name=model,
         output_dir=str(out_dir / "analysis"))
     goal = ("Compute the mass density (g/cm^3), the shear viscosity (mPa*s) by "
-            "Green-Kubo, and the 1H spin-lattice T1 (s) of the water protons "
-            "from this finished electrolyte MD run.")
+            "Green-Kubo, the water self-diffusion coefficient (m^2/s) from the "
+            "mean-squared displacement, and the 1H spin-lattice T1 (s) of the water "
+            "protons from this finished electrolyte MD run.")
     res = agent.run_analysis(goal, run_dir=str(out_dir))
     (out_dir / "results.json").write_text(json.dumps(res, indent=2, default=str))
     print(f"[{comp['label']}] analyze -> {res.get('status')} "
