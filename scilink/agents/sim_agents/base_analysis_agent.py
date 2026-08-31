@@ -350,7 +350,11 @@ class BaseAnalysisAgent(ABC):
             msg = f"SyntaxError: {e.msg} (line {e.lineno})"
             return {"ok": False, "status": "error", "message": msg,
                     "concise_error": msg}
-        slug = re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_") or "analysis"
+        # Cap the slug so the script FILENAME stays under the filesystem's 255-char
+        # limit — `name` is the task string, which can be long (a full research
+        # goal). The property is at the front, so the truncated slug stays unique
+        # per observable.
+        slug = (re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_") or "analysis")[:120]
         exec_result = self.executor.execute_script(
             script_content=code, working_dir=str(self.output_dir))
         if exec_result.get("status") == "success":
