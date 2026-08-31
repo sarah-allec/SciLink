@@ -156,8 +156,13 @@ def _analyze_member(comp: dict, runs_dir: Path, seed=None) -> dict:
         print(f"[{comp['label']}] no run dir; skipping analyze")
         return {}
 
+    # A self-diffusion MSD streams and unwraps the full coordinate trajectory
+    # (multi-GB here), which does not finish inside the base agent's 120 s
+    # per-script default. Give the analysis codegen a real budget.
+    analyze_timeout = int(os.environ.get("UC2_ANALYZE_TIMEOUT", "1800"))
     agent = SimulationAnalysisAgent(
         api_key=api_key, base_url=base_url, model_name=model,
+        executor_timeout=analyze_timeout,
         output_dir=str(out_dir / "analysis"))
     goal = ("Compute the mass density (g/cm^3), the shear viscosity (mPa*s) by "
             "Green-Kubo, the water self-diffusion coefficient (m^2/s) from the "
