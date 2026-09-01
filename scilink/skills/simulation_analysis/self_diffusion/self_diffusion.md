@@ -38,6 +38,11 @@ trajectories already give a well-defined slope.
    - **Skip cheaply.** In that pass, advance past the atom lines of frames you are
      NOT keeping without splitting or converting them (just consume N lines); only
      parse the frames you keep.
+   - **dt from two frames, never a timestamp scan.** The dump interval is constant,
+     so get the per-frame timestep from just the first two frames (or frame 0 and
+     frame `stride`) — do NOT loop over the whole file to build a list of every
+     frame's timestep. That is another full pass. The strided read is the ONE and
+     ONLY full pass over the file.
    - Multiply the effective dt by the stride. (Note: `MDAnalysis.Universe(...)`
      scans the whole file to index frames, so for a very large dump prefer the
      manual single-pass reader above over `trajectory[::stride]`.)
