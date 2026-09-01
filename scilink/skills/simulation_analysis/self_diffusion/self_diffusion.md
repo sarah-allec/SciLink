@@ -39,13 +39,22 @@ trajectories already give a well-defined slope.
      NOT keeping without splitting or converting them (just consume N lines); only
      parse the frames you keep.
    - **dt from two frames, never a timestamp scan.** The dump interval is constant,
-     so get the per-frame timestep from just the first two frames (or frame 0 and
+     so get the per-frame step gap from just the first two frames (or frame 0 and
      frame `stride`) — do NOT loop over the whole file to build a list of every
      frame's timestep. That is another full pass. The strided read is the ONE and
-     ONLY full pass over the file.
-   - Multiply the effective dt by the stride. (Note: `MDAnalysis.Universe(...)`
-     scans the whole file to index frames, so for a very large dump prefer the
-     manual single-pass reader above over `trajectory[::stride]`.)
+     ONLY full pass over the file. Multiply the effective step gap by the stride.
+   - **Convert step-count to real time with the run's ACTUAL timestep — never
+     assume 1 step = 1 fs.** The dump's timestep column (`ITEM: TIMESTEP`) is a
+     *step count*, not a time. Physical time between analyzed frames is
+     `dt = Δstep × stride × timestep_fs`, where `timestep_fs` is the run's MD
+     timestep read from the `timestep` command in the LAMMPS input or `log.lammps`
+     (it varies by deck — 0.5 / 1.0 / 2.0 fs — the generator chooses it). A run
+     that used a 2 fs timestep but is analyzed as 1 fs has its time axis halved and
+     reports **double the true D** with an otherwise-perfect Fickian fit. Read the
+     value; do not hardcode 1.0. (`metal` units: read `timestep` in ps.)
+   - (Note: `MDAnalysis.Universe(...)` scans the whole file to index frames, so for
+     a very large dump prefer the manual single-pass reader above over
+     `trajectory[::stride]`.)
 
 2. **Find the coordinate columns FIRST — do not assume `x y z`.** Read the
    `ITEM: ATOMS` header and handle whichever coordinate columns the run actually
@@ -83,7 +92,9 @@ trajectories already give a well-defined slope.
 
 5. **Units.** Convert to m²/s. LAMMPS `real`: positions in Å, time in fs, so
    `D[Å²/fs] × 1e-5 = D[m²/s]`. LAMMPS `metal`: Å and ps → `× 1e-8`. Report in m²/s
-   (bulk liquids are ~1e-9 m²/s).
+   (bulk liquids are ~1e-9 m²/s). This conversion assumes the time axis is already
+   in real fs/ps — which requires the `timestep_fs` conversion in step 2, NOT the
+   raw step count.
 
 Print one JSON object as the last stdout line:
 `{"status":"success","value":<D in m^2/s>,"units":"m^2/s","fickian":<bool>,"r2":<float>,"loglog_slope":<float>}`.
@@ -98,6 +109,10 @@ On failure: `{"status":"error","message":<str>}`.
   unwrapped — the result is invalid, not a small D.
 - Bulk-liquid self-diffusion is ~1e-11 to 1e-9 m²/s; a value orders of magnitude
   outside signals a unit or unwrap error, not physics.
+- **Timestep tell-tale:** if one replica's D is a clean small-integer multiple
+  (≈2×, ≈4×) of a sister replica's with an equally clean Fickian fit, suspect a
+  wrong `timestep_fs` — confirm each run's `timestep` command matches the fs/step
+  the analysis used. Different decks in one series often pick different timesteps.
 
 ## Interpretation
 
