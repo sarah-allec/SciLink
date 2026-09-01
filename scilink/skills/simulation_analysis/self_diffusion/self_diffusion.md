@@ -22,6 +22,15 @@ trajectories already give a well-defined slope.
 1. **Load** the trajectory (MDAnalysis) and read the box and the sampling interval
    dt from the dump. Select the diffusing species (all atoms, or a molecular
    subset — see Interpretation).
+   **STRIDE a large trajectory — do this before anything else.** A sub-picosecond
+   dump over many ns is enormous (often >1e4 frames, many GB) — far finer in time
+   than a diffusion MSD needs, and too big to parse in one pass or hold in memory
+   (the position array is N_atoms × N_frames × 3 floats). Read only every Nth frame
+   (e.g. `MDAnalysis.Universe(...).trajectory[::stride]`, or the reader's `step=`),
+   choosing the stride so **~2000–5000 frames** remain, which gives ps-to-ns
+   spacing. Subsampling in time does NOT bias the slope — the MSD is smooth — it
+   only coarsens the lag grid. Multiply the effective dt by the stride. Never
+   materialize the full trajectory at once.
 
 2. **Find the coordinate columns FIRST — do not assume `x y z`.** Read the
    `ITEM: ATOMS` header and handle whichever coordinate columns the run actually
