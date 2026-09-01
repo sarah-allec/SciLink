@@ -23,21 +23,28 @@ trajectories already give a well-defined slope.
    dt from the dump. Select the diffusing species (all atoms, or a molecular
    subset — see Interpretation).
 
-2. **UNWRAP the coordinates — mandatory.** A LAMMPS dump usually stores WRAPPED
-   coordinates `x y z`; an atom re-enters the box at a periodic face, so the raw
-   positions cannot be used for an MSD. Unwrap one of two ways:
-   - **Image flags (exact, preferred).** If the dump line is
-     `dump … custom … x y z ix iy iz`, the true position is
-     `r_unwrapped = r_wrapped + (ix, iy, iz) · (Lx, Ly, Lz)`, applied per atom per
-     frame. Read `ix iy iz` from the dump columns (MDAnalysis exposes them, or
-     parse the `ITEM: ATOMS … ix iy iz` columns directly).
-   - **Displacement unwrap (no image flags).** Accumulate displacements between
-     consecutive frames, subtracting one box vector per dimension whenever a
-     coordinate jumps by more than L/2 (a PBC crossing). Valid only when sampling
-     is frequent enough that no atom moves more than L/2 per frame — true for a
-     sub-ps dump.
-   Sanity check: an unwrapped MSD keeps growing; a still-wrapped one saturates near
-   (L/2)². If you see saturation, the unwrap did not take.
+2. **Find the coordinate columns FIRST — do not assume `x y z`.** Read the
+   `ITEM: ATOMS` header and handle whichever coordinate columns the run actually
+   wrote. A deck may dump wrapped OR unwrapped positions under different names; a
+   parser that only looks for `x y z` will wrongly report "no coordinate columns"
+   on a perfectly good unwrapped dump. Accept, in this order of preference:
+   - **Unwrapped `xu yu zu` (preferred — use directly, no unwrapping).** These are
+     LAMMPS *unwrapped* coordinates: exactly the MSD input you want, already
+     continuous across periodic boundaries. Read them as the positions and SKIP the
+     unwrapping steps below. (`xsu ysu zsu` are scaled-unwrapped — the same once
+     multiplied by the box vectors.)
+   - **Wrapped `x y z` + image flags `ix iy iz`.** Reconstruct the true position
+     `r_unwrapped = r_wrapped + (ix, iy, iz) · (Lx, Ly, Lz)`, per atom per frame.
+   - **Wrapped `x y z`, no image flags.** Displacement-unwrap: accumulate
+     displacements between consecutive frames, subtracting one box vector per
+     dimension whenever a coordinate jumps by more than L/2 (a PBC crossing). Valid
+     only when sampling is frequent enough that no atom moves more than L/2 per
+     frame — true for a sub-ps dump. (Scaled-wrapped `xs ys zs` must be multiplied
+     by the box first.)
+   **UNWRAPPED coordinates are mandatory for the MSD** — wrapped positions saturate
+   at the box size and give a meaningless D. Sanity check: an unwrapped MSD keeps
+   growing; a still-wrapped one saturates near (L/2)². If you see saturation, the
+   unwrap did not take.
 
 3. **MSD.** Compute MSD(t) averaged over atoms AND time origins. Use the FFT-based
    estimator (MDAnalysis `analysis.msd.EinsteinMSD` with `fft=True`, on
