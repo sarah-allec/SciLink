@@ -22,15 +22,25 @@ trajectories already give a well-defined slope.
 1. **Load** the trajectory (MDAnalysis) and read the box and the sampling interval
    dt from the dump. Select the diffusing species (all atoms, or a molecular
    subset — see Interpretation).
-   **STRIDE a large trajectory — do this before anything else.** A sub-picosecond
-   dump over many ns is enormous (often >1e4 frames, many GB) — far finer in time
-   than a diffusion MSD needs, and too big to parse in one pass or hold in memory
-   (the position array is N_atoms × N_frames × 3 floats). Read only every Nth frame
-   (e.g. `MDAnalysis.Universe(...).trajectory[::stride]`, or the reader's `step=`),
-   choosing the stride so **~2000–5000 frames** remain, which gives ps-to-ns
-   spacing. Subsampling in time does NOT bias the slope — the MSD is smooth — it
-   only coarsens the lag grid. Multiply the effective dt by the stride. Never
-   materialize the full trajectory at once.
+   **STRIDE a large trajectory — do this before anything else, in a SINGLE
+   streaming pass.** A sub-picosecond dump over many ns is enormous (often >1e4
+   frames, many GB) — far finer in time than a diffusion MSD needs, too big to hold
+   in memory (the position array is N_atoms × N_frames × 3 floats), and slow to read
+   even once off a shared filesystem. Keep only every Nth frame so **~2000–5000
+   frames** remain (ps-to-ns spacing); subsampling in time does NOT bias the slope,
+   it only coarsens the lag grid. To do this cheaply on a multi-GB text dump:
+   - **One pass, no pre-scan.** Do NOT read the file once to count frames and again
+     to read them — that doubles the I/O and is the usual cause of a timeout here.
+     Read the FIRST frame for the atom count N (so lines-per-frame = N + 9), then
+     estimate the frame count from the file size (`os.path.getsize` ÷ the byte
+     length of that first frame) to choose the stride. Make exactly one streaming
+     pass.
+   - **Skip cheaply.** In that pass, advance past the atom lines of frames you are
+     NOT keeping without splitting or converting them (just consume N lines); only
+     parse the frames you keep.
+   - Multiply the effective dt by the stride. (Note: `MDAnalysis.Universe(...)`
+     scans the whole file to index frames, so for a very large dump prefer the
+     manual single-pass reader above over `trajectory[::stride]`.)
 
 2. **Find the coordinate columns FIRST — do not assume `x y z`.** Read the
    `ITEM: ATOMS` header and handle whichever coordinate columns the run actually
