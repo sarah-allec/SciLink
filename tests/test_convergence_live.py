@@ -72,6 +72,12 @@ def _track(orch, names):
             result = _fn(**kwargs)
             print(f">>> [{_name}] returned in {time.time() - t0:.0f}s: "
                   f"{str(result)[:600]}")
+            parsed = _parse(result)
+            for key in ("force_field", "error", "message"):
+                if key in parsed and str(parsed.get("status", "")).startswith(
+                        ("fail", "error")):
+                    print(f">>> [{_name}] {key}: "
+                          f"{json.dumps(parsed[key], default=str)[:1500]}")
             log.append((_name, kwargs, result))
             return result
 
@@ -207,17 +213,20 @@ def scenario_loop() -> bool:
     work = RUN_ROOT / "loop"
     shutil.rmtree(work, ignore_errors=True)
     orch = _make_orch(work / "sim")
+    # Two+ runs, each with analysis and checks, exceed the default tool cap.
+    orch.max_iterations = max(orch.max_iterations, 60)
     log = _track(orch, ["run_simulation", "analyze_output",
                         "check_observable_convergence"])
 
+    # Water, not LJ argon: the MD pipeline parameterizes liquids through
+    # OpenFF, which has no parameters for a bare noble-gas atom.
     response = orch.chat(
-        "Compute the shear viscosity of liquid argon at 94.4 K and "
-        "1.374 g/cm^3 via Green-Kubo in LAMMPS, using the Lennard-Jones "
-        "model (epsilon = 0.2381 kcal/mol, sigma = 3.405 Angstrom, "
-        "cutoff 10 Angstrom), about 500 atoms. To save compute, start with "
-        "a short NVT production of only 20 ps after equilibration, logging "
-        "the pressure tensor every step or two. I need a converged value "
-        "for a paper, so don't report a number you can't stand behind."
+        "Compute the shear viscosity of liquid water (TIP3P) at 298 K and "
+        "1 atm via Green-Kubo in LAMMPS, using a small box of about 216 "
+        "water molecules. To save compute, start with a short NVT "
+        "production of only 20 ps after equilibration, logging the "
+        "pressure tensor every few steps. I need a converged value for a "
+        "paper, so don't report a number you can't stand behind."
     )
     print("\n--- final response (last 1500 chars) ---\n" + response[-1500:])
 
