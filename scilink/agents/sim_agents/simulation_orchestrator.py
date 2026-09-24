@@ -138,7 +138,10 @@ The session is iterative and structure-centric. Typical flow:
   6. Submit the job to the HPC cluster (when connected), monitor
      status, download results once complete.
   7. Analyze the output, suggest fixes if the run failed.
-  8. Generate a final report summarizing the full workflow.
+  8. For MD production runs, check observable convergence
+     (`check_observable_convergence`) — extend production or add
+     replicas if time-series observables have not converged.
+  9. Generate a final report summarizing the full workflow.
 
 Users often iterate on one structure, then ask for variants (different
 defect concentrations, supercell sizes, polymorphs, terminations). Reuse
