@@ -2205,6 +2205,128 @@ class SimulationOrchestratorTools:
         )
 
         # =====================================================================
+        # 9. CHECK OBSERVABLE CONVERGENCE (post-run analysis)
+        # =====================================================================
+        _CONVERGENCE_FLAG_KEYS = frozenset({
+            "plateau_reached", "converged", "linear_regime",
+            "extreme_narrowing",
+        })
+
+        def check_observable_convergence(
+            output_dir: str, research_goal: str,
+        ) -> str:
+            from .simulation_analysis_agent import SimulationAnalysisAgent
+
+            try:
+                agent = SimulationAnalysisAgent(
+                    output_dir=output_dir,
+                    api_key=self.orch.api_key,
+                    base_url=self.orch.base_url,
+                    model_name=self.orch.model_name,
+                )
+                analysis = agent.run_analysis(research_goal, run_dir=output_dir)
+            except Exception as e:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Analysis failed: {e}",
+                })
+
+            if analysis.get("status") == "error":
+                return json.dumps({
+                    "status": "error",
+                    "message": analysis.get("message", "analysis returned error"),
+                })
+
+            results = analysis.get("results") or {}
+            properties = {}
+            unconverged = []
+
+            for prop, result in results.items():
+                if result.get("status") == "error":
+                    properties[prop] = {
+                        "status": "error",
+                        "message": result.get("message", ""),
+                    }
+                    continue
+
+                flag_key = None
+                flag_value = None
+                for key in _CONVERGENCE_FLAG_KEYS:
+                    if key in result:
+                        flag_key = key
+                        flag_value = result[key]
+                        break
+
+                prop_converged = flag_value if flag_key is not None else True
+                properties[prop] = {
+                    k: v for k, v in result.items()
+                    if k in ("value", "units", "verification")
+                }
+                properties[prop]["converged"] = bool(prop_converged)
+                if flag_key is not None:
+                    properties[prop]["convergence_flag"] = flag_key
+                    properties[prop]["flag_value"] = flag_value
+
+                if not prop_converged:
+                    unconverged.append(prop)
+
+            all_converged = len(unconverged) == 0
+            out = {
+                "status": "success",
+                "converged": all_converged,
+                "properties": properties,
+                "unconverged": unconverged,
+                "skills_used": analysis.get("skills_used", []),
+                "data_kinds": analysis.get("data_kinds", []),
+            }
+            if unconverged:
+                out["recommendation"] = (
+                    "One or more observables have not converged. Consider "
+                    "extending the production run or adding independent "
+                    "replicas with different velocity seeds to improve "
+                    "statistical sampling."
+                )
+            return json.dumps(out, default=str)
+
+        self._register_tool(
+            func=check_observable_convergence,
+            name="check_observable_convergence",
+            description=(
+                "Post-run convergence check for time-series observables. "
+                "Runs the simulation analysis agent on a finished run "
+                "directory and inspects each computed property for "
+                "convergence flags (plateau_reached, converged, etc.). "
+                "Returns which properties have converged and which have "
+                "not, with a recommendation to extend production or add "
+                "replicas when convergence is incomplete. Use after a "
+                "successful simulation to verify that computed observables "
+                "(e.g. Green-Kubo viscosity) have adequate statistical "
+                "sampling. Not needed for DFT or single-point "
+                "calculations — only for MD production runs with "
+                "time-series data."
+            ),
+            parameters={
+                "output_dir": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the finished run's output "
+                        "directory containing trajectory and/or thermo "
+                        "log files."
+                    ),
+                },
+                "research_goal": {
+                    "type": "string",
+                    "description": (
+                        "What the simulation was meant to compute — "
+                        "drives which analysis skills are selected and "
+                        "which convergence flags are checked."
+                    ),
+                },
+            },
+            required=["output_dir", "research_goal"],
+        )
+
+        # =====================================================================
         # 12. SUBMIT VASP JOB
         # =====================================================================
         def submit_simulation_job(
