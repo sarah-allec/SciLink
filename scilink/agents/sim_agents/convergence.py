@@ -13,7 +13,7 @@ results here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
 @dataclass
@@ -101,3 +101,70 @@ def converged_setting(
         True, setting, best_value, deltas,
         f"converged at {setting}: observable within {tolerance} of the "
         f"most-accurate setting from here up")
+
+
+@dataclass
+class SweepResult:
+    """Outcome of running one parameter ladder to convergence.
+
+    Attributes:
+        convergence: The comparator verdict over the ladder.
+        observations: ``(setting, value)`` for each ladder rung, in order
+            (``value`` is None where the run failed or produced no reading).
+        run_dirs: ``setting -> run directory`` for every rung that ran.
+        param_name: The parameter that was swept (for reporting).
+    """
+
+    convergence: ConvergenceResult
+    observations: List[Tuple[Any, Optional[float]]]
+    run_dirs: Dict[Any, str]
+    param_name: str
+
+
+def run_convergence_sweep(
+    *,
+    ladder: Sequence[Any],
+    build_member: Callable[[Any], Dict[str, str]],
+    run_ladder: Callable[[Dict[Any, Dict[str, str]]], Dict[Any, str]],
+    read_observable: Callable[[Optional[str]], Optional[float]],
+    tolerance: float,
+    param_name: str = "parameter",
+) -> SweepResult:
+    """Run a parameter ladder as a batch fan-out and assess convergence.
+
+    Engine-neutral. The three callbacks carry all engine-specific knowledge, so
+    this driver has no dependency on any engine, agent, or executor and is
+    exercised with fakes in tests:
+
+    - ``build_member(setting)`` returns the input-file map for that rung (the
+      base deck with the swept parameter set to ``setting`` — the engine skill's
+      param-setter).
+    - ``run_ladder({setting: inputs})`` executes every rung (in production, one
+      fan-out campaign through the existing executor path) and returns
+      ``{setting: run_dir}``. Rungs it omits are treated as failed.
+    - ``read_observable(run_dir)`` extracts the convergence observable from a
+      finished rung, or returns None if it cannot (the engine's output parser).
+
+    Args:
+        ladder: Settings from least to most accurate/expensive.
+        tolerance: Passed to :func:`converged_setting`.
+        param_name: Name of the swept parameter, for the result.
+
+    Returns:
+        A :class:`SweepResult` pairing the comparator verdict with the raw
+        observations and run directories.
+    """
+    members = {setting: build_member(setting) for setting in ladder}
+    run_dirs = run_ladder(members)
+    observations: List[Tuple[Any, Optional[float]]] = []
+    for setting in ladder:
+        run_dir = run_dirs.get(setting)
+        value = read_observable(run_dir) if run_dir is not None else None
+        observations.append((setting, value))
+    convergence = converged_setting(observations, tolerance)
+    return SweepResult(
+        convergence=convergence,
+        observations=observations,
+        run_dirs=run_dirs,
+        param_name=param_name,
+    )

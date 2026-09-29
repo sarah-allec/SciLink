@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from scilink.agents.sim_agents.convergence import (  # noqa: E402
-    converged_setting, ConvergenceResult,
+    converged_setting, ConvergenceResult, run_convergence_sweep, SweepResult,
 )
 
 
@@ -85,6 +85,76 @@ def test_result_is_dataclass_with_deltas():
     r = converged_setting([(400, -5.401), (500, -5.4012)], tolerance=0.001)
     assert isinstance(r, ConvergenceResult)
     assert [s for s, _ in r.deltas] == [400, 500]
+
+
+# ---------------------------------------------------------------------------
+# run_convergence_sweep — engine-neutral driver, tested with fakes
+# ---------------------------------------------------------------------------
+
+def _fake_energies(mapping):
+    """read_observable that maps a run_dir string to a canned energy."""
+    return lambda run_dir: mapping.get(run_dir)
+
+
+def test_sweep_converges_and_reports_cheapest_setting():
+    ladder = [300, 400, 500, 600]
+    built = {}
+
+    def build_member(setting):
+        m = {"INCAR": f"ENCUT = {setting}", "POSCAR": "..."}
+        built[setting] = m
+        return m
+
+    def run_ladder(members):
+        # Verify each rung got its own param-set deck, then "run" it.
+        assert set(members) == set(ladder)
+        return {s: f"/run/{s}" for s in members}
+
+    energies = {"/run/300": -5.20, "/run/400": -5.401,
+                "/run/500": -5.4015, "/run/600": -5.4012}
+
+    res = run_convergence_sweep(
+        ladder=ladder, build_member=build_member, run_ladder=run_ladder,
+        read_observable=_fake_energies(energies), tolerance=0.001,
+        param_name="ENCUT",
+    )
+    assert isinstance(res, SweepResult)
+    assert res.param_name == "ENCUT"
+    assert res.convergence.converged is True
+    assert res.convergence.setting == 400
+    assert res.convergence.value == -5.4012
+    assert built[600]["INCAR"] == "ENCUT = 600"          # param-setter ran per rung
+    assert res.observations[0] == (300, -5.20)
+
+
+def test_sweep_marks_failed_rung_as_none():
+    ladder = [300, 400, 500]
+
+    def run_ladder(members):
+        # The 400 rung failed to produce a run dir.
+        return {300: "/run/300", 500: "/run/500"}
+
+    res = run_convergence_sweep(
+        ladder=ladder, build_member=lambda s: {"INCAR": str(s)},
+        run_ladder=run_ladder,
+        read_observable=_fake_energies({"/run/300": -5.0, "/run/500": -5.4}),
+        tolerance=0.001,
+    )
+    assert res.observations == [(300, -5.0), (400, None), (500, -5.4)]
+    assert res.convergence.converged is False   # only two points, still drifting
+
+
+def test_sweep_unreadable_observable_is_none():
+    ladder = [400, 500]
+
+    res = run_convergence_sweep(
+        ladder=ladder, build_member=lambda s: {"INCAR": str(s)},
+        run_ladder=lambda m: {s: f"/run/{s}" for s in m},
+        read_observable=lambda run_dir: None,   # parser found nothing
+        tolerance=0.001,
+    )
+    assert [v for _, v in res.observations] == [None, None]
+    assert res.convergence.converged is False
 
 
 if __name__ == "__main__":
