@@ -168,3 +168,77 @@ def run_convergence_sweep(
         run_dirs=run_dirs,
         param_name=param_name,
     )
+
+
+@dataclass
+class ParameterConvergence:
+    """The result of converging a set of parameters for one calculation.
+
+    Attributes:
+        final_inputs: The deck with every converged parameter adopted (a
+            parameter that did not converge is left at its base value).
+        sweeps: One :class:`SweepResult` per parameter, in the order swept.
+        all_converged: True only if every parameter showed a plateau.
+    """
+
+    final_inputs: Dict[str, str]
+    sweeps: List[SweepResult]
+    all_converged: bool
+
+
+def converge_parameters(
+    *,
+    base_inputs: Dict[str, str],
+    specs: Sequence[dict],
+    set_param: Callable[[Dict[str, str], str, Any], Dict[str, str]],
+    read_observable: Callable[[Optional[str], str], Optional[float]],
+    run_ladder: Callable[[str, Dict[Any, Dict[str, str]]], Dict[Any, str]],
+    tolerance_default: float = 0.0,
+) -> ParameterConvergence:
+    """Converge several numerical parameters in declared order (adopt-as-you-go).
+
+    Each spec (from the skill's ``convergence:`` frontmatter) is swept with
+    :func:`run_convergence_sweep`; when a parameter converges its value is
+    written into the working deck before the next parameter is swept, so later
+    ladders sit on the earlier converged settings — the standard protocol.
+
+    Engine-neutral. ``set_param`` / ``read_observable`` are the engine skill's
+    registry hooks; ``run_ladder(param, {setting: inputs})`` executes one ladder
+    (namespaced by ``param`` so run dirs don't collide) and returns
+    ``{setting: run_dir}``.
+
+    Args:
+        base_inputs: The generated base deck.
+        specs: Convergence specs, each ``{parameter, ladder, observable,
+            tolerance?}``.
+        set_param, read_observable, run_ladder: Injected engine/execution hooks.
+        tolerance_default: Tolerance for a spec that omits one.
+
+    Returns:
+        A :class:`ParameterConvergence`.
+    """
+    working = dict(base_inputs)
+    sweeps: List[SweepResult] = []
+    for spec in specs:
+        param = spec["parameter"]
+        ladder = spec["ladder"]
+        observable = spec["observable"]
+        tolerance = spec.get("tolerance", tolerance_default)
+
+        sweep = run_convergence_sweep(
+            ladder=ladder,
+            build_member=lambda v, w=working, p=param: set_param(w, p, v),
+            run_ladder=lambda members, p=param: run_ladder(p, members),
+            read_observable=lambda d, o=observable: read_observable(d, o),
+            tolerance=tolerance,
+            param_name=param,
+        )
+        sweeps.append(sweep)
+        if sweep.convergence.converged:
+            working = set_param(working, param, sweep.convergence.setting)
+
+    return ParameterConvergence(
+        final_inputs=working,
+        sweeps=sweeps,
+        all_converged=all(s.convergence.converged for s in sweeps),
+    )

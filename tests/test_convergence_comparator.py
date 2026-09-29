@@ -10,6 +10,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from scilink.agents.sim_agents.convergence import (  # noqa: E402
     converged_setting, ConvergenceResult, run_convergence_sweep, SweepResult,
+    converge_parameters, ParameterConvergence,
 )
 
 
@@ -155,6 +156,76 @@ def test_sweep_unreadable_observable_is_none():
     )
     assert [v for _, v in res.observations] == [None, None]
     assert res.convergence.converged is False
+
+
+# ---------------------------------------------------------------------------
+# converge_parameters — sequential multi-parameter orchestration (fakes)
+# ---------------------------------------------------------------------------
+
+def _fake_set_param(inputs, param, value):
+    # Store the parameter's current value in the deck dict for inspection.
+    return {**inputs, param: value}
+
+
+def test_converge_parameters_adopts_in_sequence():
+    # ENCUT plateaus at 400; k-points (KSPACING, descending) plateaus at 0.3.
+    energies = {
+        # ENCUT ladder run dirs
+        "/run/ENCUT/300": -5.20, "/run/ENCUT/400": -5.401,
+        "/run/ENCUT/500": -5.4015, "/run/ENCUT/600": -5.4012,
+        # k-points ladder run dirs
+        "/run/k-points/0.5": -5.30, "/run/k-points/0.4": -5.401,
+        "/run/k-points/0.3": -5.4013, "/run/k-points/0.2": -5.4012,
+    }
+    seen_members = {}
+
+    def run_ladder(param, members):
+        seen_members[param] = members
+        return {s: f"/run/{param}/{s}" for s in members}
+
+    specs = [
+        {"parameter": "ENCUT", "ladder": [300, 400, 500, 600],
+         "observable": "e", "tolerance": 0.001},
+        {"parameter": "k-points", "ladder": [0.5, 0.4, 0.3, 0.2],
+         "observable": "e", "tolerance": 0.001},
+    ]
+    pc = converge_parameters(
+        base_inputs={"INCAR": "base"}, specs=specs,
+        set_param=_fake_set_param,
+        read_observable=lambda d, o: energies.get(d),
+        run_ladder=run_ladder,
+    )
+    assert isinstance(pc, ParameterConvergence)
+    assert pc.all_converged is True
+    assert pc.final_inputs["ENCUT"] == 400
+    assert pc.final_inputs["k-points"] == 0.4    # cheapest KSPACING within tol
+    # Sequential adopt: the k-points members were built on the adopted ENCUT.
+    assert all(m["ENCUT"] == 400 for m in seen_members["k-points"].values())
+
+
+def test_converge_parameters_leaves_unconverged_param_unadopted():
+    # ENCUT never plateaus; k-points does. ENCUT stays at base (not adopted).
+    energies = {
+        "/run/ENCUT/300": -5.0, "/run/ENCUT/400": -5.2, "/run/ENCUT/500": -5.4,
+        "/run/k-points/0.5": -5.30, "/run/k-points/0.4": -5.401,
+        "/run/k-points/0.3": -5.4013,
+    }
+    specs = [
+        {"parameter": "ENCUT", "ladder": [300, 400, 500],
+         "observable": "e", "tolerance": 0.001},
+        {"parameter": "k-points", "ladder": [0.5, 0.4, 0.3],
+         "observable": "e", "tolerance": 0.001},
+    ]
+    pc = converge_parameters(
+        base_inputs={"INCAR": "base"}, specs=specs,
+        set_param=_fake_set_param,
+        read_observable=lambda d, o: energies.get(d),
+        run_ladder=lambda p, members: {s: f"/run/{p}/{s}" for s in members},
+    )
+    assert pc.all_converged is False
+    assert "ENCUT" not in pc.final_inputs           # not adopted
+    assert pc.final_inputs["k-points"] == 0.4       # cheapest within tol
+    assert len(pc.sweeps) == 2
 
 
 if __name__ == "__main__":
