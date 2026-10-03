@@ -17,18 +17,16 @@
 
 set -eo pipefail
 
-# NWChem toolchain — adjust to your cluster's build. NWChem is MPI-linked, so
-# an MPI module (for `mpirun`) is loaded too; set NWCHEM_RUN_CMD="nwchem job.nw"
-# to run serial instead.
-module load openmpi/5.0.7 2>/dev/null || true
-module load nwchem/7.2.3 2>/dev/null || module load nwchem 2>/dev/null || true
-
+# Python/driver env only here — NWChem's own toolchain (gcc, openmpi, nwchem +
+# NWCHEM_BASIS_LIBRARY) is set up per run inside tests/run_nwchem.sh, so it does
+# not collide with the conda env.
 module load python/miniconda25.5.1
 source /share/apps/python/miniconda25.5.1/etc/profile.d/conda.sh
 conda activate "${BENCH_ENV:-scilink_dev}"
 cd "${SCILINK_SRC:?set SCILINK_SRC to the SciLink checkout}"
 
-export NWCHEM_RUN_CMD="${NWCHEM_RUN_CMD:-mpirun nwchem job.nw}"
+# Each ladder rung runs NWChem through the wrapper (loads modules + basis lib).
+export NWCHEM_RUN_CMD="${NWCHEM_RUN_CMD:-bash --login ${SCILINK_SRC}/tests/run_nwchem.sh}"
 
 echo "node   : $(hostname)"
 echo "branch : $(git rev-parse --abbrev-ref HEAD) @ $(git log --oneline -1)"
