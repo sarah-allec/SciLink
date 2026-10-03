@@ -228,5 +228,39 @@ def test_converge_parameters_leaves_unconverged_param_unadopted():
     assert len(pc.sweeps) == 2
 
 
+# ---------------------------------------------------------------------------
+# Regression: real VASP Cu energies from the live Deception run (job 1369191)
+# ---------------------------------------------------------------------------
+
+# energy/atom (eV) at each KSPACING rung, ENCUT already converged to 400 eV.
+_CU_KPOINTS = [
+    (0.5, -3.75676533), (0.4, -3.68430451), (0.3, -3.72132136),
+    (0.25, -3.7166153), (0.2, -3.71651444), (0.15, -3.71432999),
+    (0.12, -3.71703282), (0.1, -3.71568771),
+]
+_CU_ENCUT = [
+    (300, -3.72864119), (400, -3.72132136), (500, -3.72140217),
+    (600, -3.72103981), (700, -3.72091285),
+]
+
+
+def test_cu_encut_converges_at_400():
+    r = converged_setting(_CU_ENCUT, tolerance=0.001)
+    assert r.converged is True and r.setting == 400
+
+
+def test_cu_kpoints_tolerance_too_strict_does_not_converge():
+    # 1 meV/atom is below the metal's k-sampling wobble — correctly not converged.
+    assert converged_setting(_CU_KPOINTS, tolerance=0.001).converged is False
+
+
+def test_cu_kpoints_converges_at_meaningful_tolerance():
+    # 5 meV/atom (the skill's k-point tolerance) converges at KSPACING 0.25
+    # (13x13x13 for this cell) — in the 11-16 mesh range a practitioner accepts.
+    r = converged_setting(_CU_KPOINTS, tolerance=0.005)
+    assert r.converged is True
+    assert r.setting == 0.25
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
