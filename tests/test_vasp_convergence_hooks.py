@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from scilink.skills.periodic_dft.vasp.vasp_convergence import (  # noqa: E402
-    set_convergence_param,
+    set_convergence_param, kspacing_to_mesh,
 )
 
 
@@ -61,6 +61,34 @@ class TestSetConvergenceParam:
     def test_missing_incar_raises(self):
         with pytest.raises(KeyError):
             set_convergence_param({"POSCAR": "..."}, "ENCUT", 500)
+
+
+class TestKspacingToMesh:
+    def _write_run(self, tmp_path, kspacing):
+        # Conventional cubic FCC Cu (a=3.61) so the mesh is isotropic and
+        # predictable: |b| = 2*pi/3.61 = 1.740 Å^-1.
+        from ase.build import bulk
+        from ase.io import write
+        atoms = bulk("Cu", "fcc", a=3.61, cubic=True)
+        write(str(tmp_path / "POSCAR"), atoms, format="vasp", sort=True)
+        (tmp_path / "INCAR").write_text(f"PREC = Accurate\nKSPACING = {kspacing}\n")
+        return str(tmp_path)
+
+    def test_coarse_kspacing_gives_small_mesh(self, tmp_path):
+        # ceil(1.740 / 0.5) = 4 -> 4x4x4
+        assert kspacing_to_mesh(self._write_run(tmp_path, 0.5)) == "4×4×4"
+
+    def test_denser_kspacing_gives_larger_mesh(self, tmp_path):
+        # ceil(1.740 / 0.2) = 9 -> 9x9x9
+        assert kspacing_to_mesh(self._write_run(tmp_path, 0.2)) == "9×9×9"
+
+    def test_none_without_kspacing(self, tmp_path):
+        (tmp_path / "INCAR").write_text("PREC = Accurate\nENCUT = 400\n")
+        (tmp_path / "POSCAR").write_text("dummy\n")
+        assert kspacing_to_mesh(str(tmp_path)) is None
+
+    def test_none_when_files_absent(self, tmp_path):
+        assert kspacing_to_mesh(str(tmp_path)) is None
 
 
 class TestConvergenceFrontmatter:

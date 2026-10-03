@@ -133,6 +133,39 @@ def read_convergence_observable(
     return None
 
 
+def kspacing_to_mesh(output_dir: str) -> Optional[str]:
+    """Return the k-mesh a KSPACING run generated, as ``"n1×n2×n3"``.
+
+    Computes the mesh VASP derives from KSPACING and the cell —
+    ``N_i = max(1, ceil(|b_i| / KSPACING))`` with reciprocal vectors ``b_i``
+    including the 2π factor — so a human-facing report can speak in meshes even
+    though the ladder is declared in KSPACING. Reads the run's INCAR (for
+    KSPACING) and POSCAR (for the cell). Returns ``None`` when the run has no
+    KSPACING (e.g. an ENCUT rung) or the cell cannot be read.
+    """
+    d = Path(output_dir)
+    incar, poscar = d / "INCAR", d / "POSCAR"
+    if not incar.is_file() or not poscar.is_file():
+        return None
+    m = re.search(r"^\s*KSPACING\s*=\s*([0-9.eE+-]+)", incar.read_text(),
+                  re.MULTILINE | re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        import math
+        import numpy as np
+        from ase.io import read as _read
+        kspacing = float(m.group(1))
+        atoms = _read(str(poscar), format="vasp")
+        recip = 2 * math.pi * np.linalg.inv(np.array(atoms.cell[:])).T  # rows b_i
+        dims = [max(1, math.ceil(float(np.linalg.norm(recip[i])) / kspacing))
+                for i in range(3)]
+        return "×".join(str(n) for n in dims)
+    except Exception as e:  # display-only; never break on it
+        logger.debug("kspacing_to_mesh failed in %s: %s", output_dir, e)
+        return None
+
+
 TOOL_SPECS = [
     ToolSpec(
         name="set_convergence_param",

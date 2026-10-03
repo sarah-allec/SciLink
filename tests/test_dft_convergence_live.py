@@ -111,6 +111,8 @@ def main():
     specs = load_skill("vasp", domain="periodic_dft")["meta"]["convergence"]
     print("convergence specs:", json.dumps(specs))
 
+    from scilink.skills.periodic_dft.vasp.vasp_convergence import kspacing_to_mesh
+
     set_param = get_tool_function("set_convergence_param", active_skills=["vasp"])
     read_obs = get_tool_function("read_convergence_observable", active_skills=["vasp"])
     executor = LocalExecutor(timeout=args.timeout)
@@ -140,9 +142,16 @@ def main():
     for s in pc.sweeps:
         print(f"\n{s.param_name}:")
         for setting, value in s.observations:
-            print(f"  {setting:>8}: {value}")
+            run_dir = s.run_dirs.get(setting)
+            mesh = kspacing_to_mesh(run_dir) if run_dir else None
+            label = f"KSPACING {setting:>5} ({mesh})" if mesh else f"{setting:>8}"
+            print(f"  {label}: {value}")
         c = s.convergence
-        print(f"  -> converged={c.converged} setting={c.setting} "
+        adopted_mesh = (kspacing_to_mesh(s.run_dirs.get(c.setting))
+                        if c.converged and c.setting in s.run_dirs else None)
+        setting_label = (f"{c.setting} ({adopted_mesh})" if adopted_mesh
+                         else c.setting)
+        print(f"  -> converged={c.converged} setting={setting_label} "
               f"value={c.value}\n     {c.reason}")
         # Every rung must have produced a readable energy — that is the real-VASP
         # extraction check. Convergence itself is reported, not required.

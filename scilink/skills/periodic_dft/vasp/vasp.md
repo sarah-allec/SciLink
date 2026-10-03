@@ -30,9 +30,9 @@ convergence:
     observable: energy_per_atom           # eV/atom
     tolerance: 0.001
   - parameter: k-points
-    ladder: [0.5, 0.4, 0.3, 0.2, 0.15]    # KSPACING in Å^-1, descending = denser
+    ladder: [0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.12, 0.1]  # KSPACING Å^-1, descending = denser
     observable: energy_per_atom           # eV/atom
-    tolerance: 0.001
+    tolerance: 0.001                       # metals converge slowly — ladder runs dense
 ---
 # VASP Input Generation Skill
 
