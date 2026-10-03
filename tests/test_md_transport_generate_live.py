@@ -99,8 +99,23 @@ def main():
             print("  !! no pxy/pxz/pyz logging found in the deck")
 
     print("\n(Interpretation: B1 wants pxy/pxz/pyz logged every few steps; "
-          "B2 wants several seed-varied members. B3 pooling is checked on "
-          "executed replicas separately.)")
+          "B2 wants several seed-varied members.)")
+
+    # B3: if LAMMPS executed (lmp on PATH, e.g. in an allocation), check the
+    # pooled convergence across replica members.
+    if result.get("status") == "success":
+        print(f"\n{'='*60}\nB3 pooled convergence (requires executed replicas)\n{'='*60}")
+        raw2 = orch.tools.functions_map["check_observable_convergence"](
+            output_dir=str(out_dir), research_goal=_GOAL)
+        conv = json.loads(raw2)
+        print("convergence status:", conv.get("status"))
+        for prop, ev in (conv.get("properties") or {}).items():
+            print(f"  {prop}: value={ev.get('value')} {ev.get('units')} "
+                  f"state={ev.get('state')}")
+        print("  unconverged:", conv.get("unconverged"),
+              "| not_assessed:", conv.get("not_assessed"))
+        print("(std_error / n_replicas, when >1 replica ran, are in the "
+              "analysis result the GK recipe produced.)")
 
 
 if __name__ == "__main__":

@@ -112,17 +112,19 @@ Transport coefficients (viscosity, self-diffusion) — equilibrium Green-Kubo/Ei
   autocorrelation integral, no `variable visc`/`${visc}`, no `fix ave/correlate`
   for the coefficient itself.
 - **Independent replicas for a trustworthy value.** Green-Kubo/Einstein transport
-  estimates are statistically noisy — a single run is rarely enough to stand behind.
-  When the goal is a *converged* transport coefficient, run several independent
-  replicas that are identical except for the initial velocity seed, and let the
-  analysis skill average across them (it reports the mean and the standard error).
-  Express this with the ordinary parameter-sweep mechanism — set
-  `requires_multiple_simulations`, `variable_parameter` = the velocity seed, and
-  `variable_values` to a handful of distinct seeds — so every replica shares the
-  same box, force field, length, and sampling cadence and differs only in the seed.
-  This is just one use of the sweep: other studies vary temperature, strain rate,
-  etc. the same way; the velocity seed is simply what decorrelates equilibrium
-  replicas.
+  estimates are statistically noisy — a single run is NOT enough to stand behind,
+  and one replica cannot give an uncertainty. When the goal is a *converged*
+  transport coefficient, you MUST run **several** independent replicas (at least
+  5 is a sound default) that are identical except for the initial velocity seed,
+  and let the analysis skill average across them (it reports the mean and the
+  standard error across replicas). Express this with the ordinary parameter-sweep
+  mechanism — set `requires_multiple_simulations` true, `variable_parameter` = the
+  velocity seed, and `variable_values` to **a list of ≥3 (ideally ~5) distinct
+  integer seeds** — so every replica shares the same box, force field, length, and
+  sampling cadence and differs only in the seed. A single seed is a single run,
+  not an ensemble; list multiple. This is just one use of the sweep: other studies
+  vary temperature, strain rate, etc. the same way; the velocity seed is simply
+  what decorrelates equilibrium replicas.
 - **Shear viscosity:** on the production run, log the full pressure tensor densely
   — add `pxy pxz pyz vol` to `thermo_style custom` with a tight `thermo` interval
   (every few fs), or define `variable pxy equal pxy` (and `pxz`, `pyz`) and write
