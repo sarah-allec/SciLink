@@ -1192,6 +1192,11 @@ class SimulationOrchestratorTools:
                     max_refinement_cycles=max_refinement_cycles,
                     max_run_cycles=max_run_cycles,
                     executor=executor, run_command=run_command,
+                    # Derive the observable-requirements contract for MD so a
+                    # transport goal (viscosity, diffusion) carries its dense
+                    # sampling-cadence requirement into planning and deck-gen.
+                    # Off for static scales — they use the convergence sweep.
+                    derive_observables=(scale == "molecular_dynamics"),
                 )
             except Exception as e:
                 return json.dumps({
