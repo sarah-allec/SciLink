@@ -45,9 +45,23 @@ then evaluate the Green-Kubo integral:
    report in mPa·s. A missing/incorrect unit conversion is the most common error
    and shows up as a value orders of magnitude off.
 
+6. **Pool independent replicas when present.** Green-Kubo is noisy, so a
+   trustworthy value comes from averaging independent runs that differ only in
+   their initial velocity seed. When the inputs contain **more than one**
+   pressure-tensor log — typically one per replica subdirectory
+   (`.../member_0/…`, `.../member_1/…`, or similarly keyed DATA_FILES entries) —
+   treat each as an independent replica: compute η for each replica by steps
+   1–5, then report the **mean across replicas** as `value` and the **standard
+   error of the mean** as `std_error`. A single log is just one replica (no
+   pooling). Base `plateau_reached` on both signals: each replica's running
+   integral should plateau, AND the inter-replica spread should be small
+   relative to the mean (a large spread means more replicas or longer runs are
+   needed, so `plateau_reached=false` even if individual integrals look flat).
+
 Print one JSON object as the last stdout line:
-`{"status":"success","value":<η in mPa·s>,"units":"mPa·s","plateau_reached":<bool>,"n_origins":<int>}`.
-On failure: `{"status":"error","message":<str>}`.
+`{"status":"success","value":<mean η in mPa·s>,"units":"mPa·s","plateau_reached":<bool>,"n_replicas":<int>,"std_error":<mPa·s or null>,"n_origins":<int>}`.
+With a single log, `n_replicas` is 1 and `std_error` is null. On failure:
+`{"status":"error","message":<str>}`.
 
 ## Validation
 
@@ -57,6 +71,9 @@ Green-Kubo viscosity is noisy; guard against false precision:
   converged (plateau_reached=false).
 - Typical liquid viscosities are ~0.1–10 mPa·s; a value orders of magnitude
   outside this range signals a unit error, not physics.
+- With replicas, report the standard error, not just the mean: a mean whose
+  standard error is a large fraction of it is not yet converged, regardless of
+  how flat any single replica's integral looks.
 
 ## Interpretation
 
