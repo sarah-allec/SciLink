@@ -25,6 +25,42 @@ logger = logging.getLogger(__name__)
 # `library <name>` inside a basis block — the token a basis sweep rewrites.
 _LIBRARY_RE = re.compile(r"(\blibrary\s+)(\S+)", re.IGNORECASE)
 
+_HARTREE_EV = 27.211386245988
+
+# NWChem's final energy line: "Total DFT energy = -76.35..." (DFT) or
+# "Total SCF energy = ..." (HF). Parsed directly so the primary observable
+# needs no cclib (which may be absent).
+_ENERGY_RE = re.compile(
+    r"Total\s+(?:DFT|SCF)\s+energy\s*=\s*(-?\d+\.\d+)", re.IGNORECASE)
+
+
+def _find_nwchem_log(output_dir: str):
+    """The NWChem output log in a run dir (LocalExecutor writes run_stdout.log)."""
+    from pathlib import Path
+    d = Path(output_dir)
+    for name in ("run_stdout.log", "stdout", "nwchem.out"):
+        if (d / name).is_file():
+            return d / name
+    for pattern in ("*.out", "*.nwo", "*.log"):
+        hits = sorted(d.glob(pattern))
+        if hits:
+            return hits[-1]
+    return None
+
+
+def _read_total_energy_eV(output_dir: str):
+    """Last 'Total DFT/SCF energy' from the NWChem log, in eV (or None)."""
+    log = _find_nwchem_log(output_dir)
+    if log is None:
+        return None
+    try:
+        matches = _ENERGY_RE.findall(log.read_text(errors="replace"))
+    except OSError:
+        return None
+    if not matches:
+        return None
+    return float(matches[-1]) * _HARTREE_EV
+
 
 def _deck_key(input_files: Dict[str, str]) -> str:
     """Return the NWChem deck filename (the single `.nw` file)."""
@@ -82,14 +118,15 @@ def read_convergence_observable(
         unparseable output, unknown observable). Never raises.
     """
     if observable == "total_energy":
+        # Regex the energy straight from the log — robust and cclib-free, since
+        # the total energy is the primary (universal) convergence observable.
         try:
-            from .nwchem_output import snapshot_run
-            return snapshot_run(output_dir).get("scf_energy")
+            return _read_total_energy_eV(output_dir)
         except Exception as e:
             logger.warning("total_energy read failed in %s: %s", output_dir, e)
             return None
 
-    # HOMO-LUMO gap and dipole go straight through cclib.
+    # HOMO-LUMO gap and dipole go through cclib (install cclib to use them).
     try:
         import cclib
         import numpy as np

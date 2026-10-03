@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from scilink.skills.molecular_qc.nwchem.nwchem_convergence import (  # noqa: E402
-    set_convergence_param,
+    set_convergence_param, read_convergence_observable,
 )
 
 _DECK = (
@@ -64,6 +64,37 @@ class TestSetConvergenceParam:
     def test_no_library_line_raises(self):
         with pytest.raises(ValueError):
             set_convergence_param({"job.nw": "task dft energy\n"}, "basis", "def2-tzvp")
+
+
+class TestReadTotalEnergy:
+    _HARTREE_EV = 27.211386245988
+
+    def test_reads_total_dft_energy_in_eV(self, tmp_path):
+        # Real NWChem footer line from the Deception water run.
+        (tmp_path / "run_stdout.log").write_text(
+            "   ...\n   Total DFT energy =      -76.358285492866\n"
+            " Total times  cpu: 0.2s\n")
+        v = read_convergence_observable(str(tmp_path), "total_energy")
+        assert v == pytest.approx(-76.358285492866 * self._HARTREE_EV)
+
+    def test_reads_scf_energy_for_hf(self, tmp_path):
+        (tmp_path / "run_stdout.log").write_text(
+            "Total SCF energy =    -76.02663\n")
+        v = read_convergence_observable(str(tmp_path), "total_energy")
+        assert v == pytest.approx(-76.02663 * self._HARTREE_EV)
+
+    def test_takes_last_energy(self, tmp_path):
+        (tmp_path / "run_stdout.log").write_text(
+            "Total DFT energy = -76.10\nTotal DFT energy = -76.358285\n")
+        v = read_convergence_observable(str(tmp_path), "total_energy")
+        assert v == pytest.approx(-76.358285 * self._HARTREE_EV)
+
+    def test_none_without_log(self, tmp_path):
+        assert read_convergence_observable(str(tmp_path), "total_energy") is None
+
+    def test_none_without_energy_line(self, tmp_path):
+        (tmp_path / "run_stdout.log").write_text("no energy here\n")
+        assert read_convergence_observable(str(tmp_path), "total_energy") is None
 
 
 class TestConvergenceFrontmatter:
