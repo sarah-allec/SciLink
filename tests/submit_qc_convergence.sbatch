@@ -17,8 +17,11 @@
 
 set -eo pipefail
 
-# NWChem toolchain — adjust the module to your cluster's build.
-module load nwchem 2>/dev/null || module load nwchem/7.2.0 2>/dev/null || true
+# NWChem toolchain — adjust to your cluster's build. NWChem is MPI-linked, so
+# an MPI module (for `mpirun`) is loaded too; set NWCHEM_RUN_CMD="nwchem job.nw"
+# to run serial instead.
+module load openmpi/5.0.7 2>/dev/null || true
+module load nwchem/7.2.3 2>/dev/null || module load nwchem 2>/dev/null || true
 
 module load python/miniconda25.5.1
 source /share/apps/python/miniconda25.5.1/etc/profile.d/conda.sh
