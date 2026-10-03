@@ -315,6 +315,15 @@ class MDSimulationAgent(SimulationAgent):
         for k, v in kwargs.items():
             params[k] = v
 
+        if params.get("requires_multiple_simulations"):
+            self.logger.info(
+                "Planner requested a sweep: variable_parameter=%r "
+                "variable_values=%r number_of_simulations=%s",
+                params.get("variable_parameter"),
+                params.get("variable_values"),
+                params.get("number_of_simulations"),
+            )
+
         return params
 
     # ================================================================
@@ -798,6 +807,12 @@ class MDSimulationAgent(SimulationAgent):
                 f"references, and use literal values for everything else. Each "
                 f"run is produced by substituting one value for {placeholder}, so "
                 f"the placeholder must appear wherever a {var} value would.\n"
+                f"- CRITICAL: emit the token {placeholder} ITSELF in the deck. Do "
+                f"NOT hardcode a representative value and describe the variation "
+                f"in a comment — the expander substitutes only the literal "
+                f"{placeholder}, so a hardcoded value collapses the sweep to a "
+                f"single run. The deck must contain {placeholder}, not a number "
+                f"plus a note to vary it.\n"
             )
         return block
 
@@ -848,6 +863,13 @@ class MDSimulationAgent(SimulationAgent):
         shared = self._campaign_shared_files(structure_file, force_field_files)
         members = self.tools_module.expand_parameter_sweep(
             base_script, sweep["var_name"], sweep["values"])
+        self.logger.info(
+            "Campaign expanded to %d member(s) over %r = %s",
+            len(members), sweep["var_name"], sweep["values"])
+        if len(members) <= 1:
+            self.logger.warning(
+                "Sweep produced a single member — the base deck likely did not "
+                "contain the sweep placeholder, so the parameter was not varied.")
         stages = _assemble_fanout_stage(members, entry, shared)
 
         # Validate a representative member (the placeholder is already resolved).
