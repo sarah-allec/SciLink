@@ -131,7 +131,7 @@ def check_lammps() -> Dict[str, Any]:
 
 
 def default_run_command(script: str = "{script}") -> Optional[str]:
-    """Conventional local LAMMPS run-command template for the on-PATH binary.
+    """Conventional LAMMPS run-command template for the resolved binary.
 
     Resolves the first available LAMMPS binary (lmp / lmp_serial / lmp_mpi) and
     returns ``"<binary> -in {script}"`` — the invocation the refinement loop
@@ -139,14 +139,38 @@ def default_run_command(script: str = "{script}") -> Optional[str]:
     is launched, so a one-shot workflow can execute LAMMPS without any engine
     name or command hardcoded in shared code.
 
+    Two environment overrides keep site-specific launch details out of the
+    skill (the value lives in the user's environment, never here):
+
+    * ``SCILINK_LAMMPS_BIN`` — use this binary instead of PATH resolution, for
+      an MPI build that is not on PATH or is shadowed by a serial conda build.
+    * ``SCILINK_MPI_LAUNCHER`` — prefix the command with a parallel launcher
+      (e.g. ``"srun"`` or ``"mpirun -np 8"``) so the engine runs across the
+      allocated cores instead of serially on one.
+
     Returns:
-        The run-command template, or ``None`` if no LAMMPS binary is on PATH —
-        the caller should then fall back to a user-supplied ``run_command``.
+        The run-command template, or ``None`` if no LAMMPS binary can be
+        resolved — the caller should then fall back to a user-supplied
+        ``run_command``.
     """
-    info = check_lammps()
-    if not info.get("available") or not info.get("path"):
-        return None
-    return f"{info['path']} -in {script}"
+    binary = (os.environ.get("SCILINK_LAMMPS_BIN") or "").strip()
+    if binary and not (os.path.isfile(binary) or shutil.which(binary)):
+        logger.warning(
+            "SCILINK_LAMMPS_BIN=%r not found; falling back to PATH resolution",
+            binary,
+        )
+        binary = ""
+    if not binary:
+        info = check_lammps()
+        if not info.get("available") or not info.get("path"):
+            return None
+        binary = info["path"]
+
+    command = f"{binary} -in {script}"
+    launcher = (os.environ.get("SCILINK_MPI_LAUNCHER") or "").strip()
+    if launcher:
+        command = f"{launcher} {command}"
+    return command
 
 
 # ─── Data File Parsing ───────────────────────────────────────────────
