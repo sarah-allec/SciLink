@@ -44,6 +44,10 @@ def main():
         derive_observables=True, validate=False,
     )
     print("\nfinal_status:", res.get("final_status"))
+    if res.get("final_status") == "failed_force_field":
+        print("force_field error:", (res.get("force_field") or {}).get("message"))
+        print("(FF parameterization failed before planning — likely the wrong "
+              "env: OpenFF must be importable. Run in scilink_ffmd.)")
     gen = res.get("input_generation") or {}
     print("is_campaign:", gen.get("is_campaign"), "| stages:", len(gen.get("stages") or []))
     # Count member decks produced on disk.
