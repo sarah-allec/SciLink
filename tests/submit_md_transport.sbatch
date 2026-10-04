@@ -33,6 +33,10 @@ echo "condaenv: ${CONDA_DEFAULT_ENV:-none}"
 echo "python  : $(command -v python)"
 python -c "import openff.toolkit; print('openff  : ok')" \
   || { echo "openff  : MISSING (wrong env — FF will fail; aborting)"; exit 1; }
+# Known drift: pydantic >=2.12 breaks openff-interchange serialization even
+# when OpenFF imports (failed_force_field, zero-byte interchange). Want <2.12.
+python -c "import pydantic,sys; v=tuple(int(x) for x in pydantic.VERSION.split('.')[:2]); print('pydantic:', pydantic.VERSION); sys.exit(0 if v < (2,12) else 1)" \
+  || { echo "pydantic: >=2.12 — openff-interchange will fail; run 'pip install \"pydantic>=2.11,<2.12\"'; aborting"; exit 1; }
 echo
 
 python tests/test_md_transport_generate_live.py

@@ -27,6 +27,9 @@ echo "key     : $([ -n "${SCILINK_API_KEY:-${ANTHROPIC_API_KEY:-}}" ] && echo se
 echo "condaenv: ${CONDA_DEFAULT_ENV:-none}"
 echo "python  : $(command -v python)"
 python -c "import openff.toolkit; print('openff  : ok')" || echo "openff  : MISSING (wrong env — FF will fail)"
+# Known drift: pydantic >=2.12 breaks openff-interchange serialization even
+# when OpenFF imports (failed_force_field, zero-byte interchange). Want <2.12.
+python -c "import pydantic; print('pydantic:', pydantic.VERSION)" || echo "pydantic: import failed"
 echo
 
 python tests/diag_md_sweep.py
