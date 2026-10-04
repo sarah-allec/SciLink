@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash --login
 # Live MD-transport run (B1 cadence + B2 replica ensemble + B3 pooling), in an
 # allocation so the real LAMMPS replicas run on a compute node, not a login node.
 #
@@ -23,10 +23,16 @@ cd "${SCILINK_SRC:?set SCILINK_SRC to the SciLink checkout}"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 export SCILINK_MODEL="${SCILINK_MODEL:-claude-opus-4-8-project}"
 
-echo "node   : $(hostname)"
-echo "branch : $(git rev-parse --abbrev-ref HEAD) @ $(git log --oneline -1)"
-echo "lmp    : $(command -v lmp || echo MISSING)"
-echo "key    : $([ -n "${SCILINK_API_KEY:-${ANTHROPIC_API_KEY:-}}" ] && echo set || echo MISSING)"
+echo "node    : $(hostname)"
+echo "branch  : $(git rev-parse --abbrev-ref HEAD) @ $(git log --oneline -1)"
+echo "lmp     : $(command -v lmp || echo MISSING)"
+echo "key     : $([ -n "${SCILINK_API_KEY:-${ANTHROPIC_API_KEY:-}}" ] && echo set || echo MISSING)"
+# Env sanity — the batch job must land in the env where OpenFF imports, or
+# every member fails force-field parameterization. Fail loud, up front.
+echo "condaenv: ${CONDA_DEFAULT_ENV:-none}"
+echo "python  : $(command -v python)"
+python -c "import openff.toolkit; print('openff  : ok')" \
+  || { echo "openff  : MISSING (wrong env — FF will fail; aborting)"; exit 1; }
 echo
 
 python tests/test_md_transport_generate_live.py
