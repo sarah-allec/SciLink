@@ -32,11 +32,15 @@ export PATH="$CONDA_PREFIX/bin:$PATH"
 cd "${SCILINK_SRC:?set SCILINK_SRC to the SciLink checkout}"
 
 # The conda `lmp` is a serial MPI-STUBS build; run the external CPU+MPI build
-# under srun instead. These are the general overrides default_run_command honors
-# (site-specific values stay here, never in the skill).
-module load openmpi/5.0.7
+# under mpirun instead. These are the general overrides default_run_command
+# honors (site-specific values stay here, never in the skill). NOTE: use
+# mpirun, not srun — this site's srun has no pmix plugin (`srun --mpi=list`
+# shows only none/cray_shasta/pmi2), so srun-launched OpenMPI-5 ranks fail to
+# form a communicator and each runs standalone (`1 MPI tasks`). The openmpi
+# module is compiler-dependent, so gcc must load first or mpirun stays off PATH.
+module load gcc/11.5.0 openmpi/5.0.7
 export SCILINK_LAMMPS_BIN="${SCILINK_LAMMPS_BIN:-/share/apps/lammps/lammps-29Aug2024/install/bin/lmp_rocky9}"
-export SCILINK_MPI_LAUNCHER="${SCILINK_MPI_LAUNCHER:-srun}"
+export SCILINK_MPI_LAUNCHER="${SCILINK_MPI_LAUNCHER:-mpirun -np ${SLURM_NTASKS}}"
 export OMP_NUM_THREADS=1   # pure MPI; no thread oversubscription
 export SCILINK_MODEL="${SCILINK_MODEL:-claude-opus-4-8-project}"
 
@@ -54,14 +58,20 @@ python -c "import openff.toolkit; print('openff  : ok')" \
 # when OpenFF imports (failed_force_field, zero-byte interchange). Want <2.12.
 python -c "import pydantic,sys; v=tuple(int(x) for x in pydantic.VERSION.split('.')[:2]); print('pydantic:', pydantic.VERSION); sys.exit(0 if v < (2,12) else 1)" \
   || { echo "pydantic: >=2.12 — openff-interchange will fail; run 'pip install \"pydantic>=2.11,<2.12\"'; aborting"; exit 1; }
-# LAMMPS engine sanity — the MPI binary must load and launch under the launcher.
+# LAMMPS engine sanity — confirm the launcher yields REAL parallel ranks, not
+# N standalone serial processes. Run a 0-step probe and read the "on N procs"
+# line; abort unless N matches the allocation. This is exactly the failure we
+# hit (srun gave "1 MPI tasks"), so it is worth catching before the campaign.
 echo "lmp bin : ${SCILINK_LAMMPS_BIN}"
 echo "launcher: ${SCILINK_MPI_LAUNCHER}"
-${SCILINK_MPI_LAUNCHER} -n 1 "${SCILINK_LAMMPS_BIN}" -h >/tmp/lmp_h.$$ 2>&1 \
-  && grep -qiE 'MPI v|Large-scale' /tmp/lmp_h.$$ \
-  && echo "lmp     : ok ($(grep -m1 -iE 'MPI v' /tmp/lmp_h.$$))" \
-  || { echo "lmp     : FAILED to launch under launcher — see below; aborting"; cat /tmp/lmp_h.$$; exit 1; }
-rm -f /tmp/lmp_h.$$
+_probe="mpi_probe_$$.in"
+printf 'units lj\natom_style atomic\nlattice fcc 0.8\nregion b block 0 8 0 8 0 8\ncreate_box 1 b\ncreate_atoms 1 box\nmass 1 1.0\npair_style lj/cut 2.5\npair_coeff 1 1 1.0 1.0\nrun 0\n' > "$_probe"
+_out=$(${SCILINK_MPI_LAUNCHER} "${SCILINK_LAMMPS_BIN}" -in "$_probe" 2>&1)
+_nproc=$(printf '%s\n' "$_out" | grep -oE 'on [0-9]+ procs' | grep -oE '[0-9]+' | head -1)
+rm -f "$_probe"
+echo "lmp     : launched on ${_nproc:-?} procs"
+[ "${_nproc:-1}" -gt 1 ] \
+  || { echo "lmp     : NOT parallel (want >1 procs) — see probe output; aborting"; printf '%s\n' "$_out" | tail -20; exit 1; }
 echo
 
 python tests/test_md_transport_generate_live.py
