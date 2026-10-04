@@ -20,25 +20,29 @@
 
 set -eo pipefail
 
+# Load ALL modules FIRST, then activate conda LAST. Loading modules after a
+# conda env is active runs the module system's conda de-init and drops the env
+# off PATH (python falls back to /usr/bin/python, OpenFF vanishes). The openmpi
+# module is compiler-dependent, so gcc must load before it or mpirun stays off
+# PATH ("No compiler loaded"). mpirun — not srun: this site's srun has no pmix
+# plugin (`srun --mpi=list` shows only none/cray_shasta/pmi2), so srun-launched
+# OpenMPI-5 ranks never form a communicator and each runs standalone
+# (`1 MPI tasks`). The conda `lmp` is a serial MPI-STUBS build, so point at the
+# external CPU+MPI build instead.
+module load gcc/11.5.0 openmpi/5.0.7
 module load python/miniconda25.5.1
 source /share/apps/python/miniconda25.5.1/etc/profile.d/conda.sh
 # SLURM --export=ALL inherits the login shell's active env, so a plain
-# `conda activate` is a no-op while `module load` has already prepended base
-# miniconda to PATH — env var right, python base. Drop the inherited env, then
-# activate cleanly and hard-prepend the env bin so nothing shadows it.
+# `conda activate` is a no-op; drop it, activate cleanly, and hard-prepend the
+# env bin so its python wins over base miniconda (mpirun stays reachable
+# further down PATH, since it is not in the conda env).
 conda deactivate 2>/dev/null || true
 conda activate "${BENCH_ENV:-scilink_ffmd}"   # provides SciLink's python + OpenFF
 export PATH="$CONDA_PREFIX/bin:$PATH"
 cd "${SCILINK_SRC:?set SCILINK_SRC to the SciLink checkout}"
 
-# The conda `lmp` is a serial MPI-STUBS build; run the external CPU+MPI build
-# under mpirun instead. These are the general overrides default_run_command
-# honors (site-specific values stay here, never in the skill). NOTE: use
-# mpirun, not srun — this site's srun has no pmix plugin (`srun --mpi=list`
-# shows only none/cray_shasta/pmi2), so srun-launched OpenMPI-5 ranks fail to
-# form a communicator and each runs standalone (`1 MPI tasks`). The openmpi
-# module is compiler-dependent, so gcc must load first or mpirun stays off PATH.
-module load gcc/11.5.0 openmpi/5.0.7
+# General overrides default_run_command honors (site values stay here, never in
+# the skill).
 export SCILINK_LAMMPS_BIN="${SCILINK_LAMMPS_BIN:-/share/apps/lammps/lammps-29Aug2024/install/bin/lmp_rocky9}"
 export SCILINK_MPI_LAUNCHER="${SCILINK_MPI_LAUNCHER:-mpirun -np ${SLURM_NTASKS}}"
 export OMP_NUM_THREADS=1   # pure MPI; no thread oversubscription
@@ -52,6 +56,7 @@ echo "key     : $([ -n "${SCILINK_API_KEY:-${ANTHROPIC_API_KEY:-}}" ] && echo se
 # every member fails force-field parameterization. Fail loud, up front.
 echo "condaenv: ${CONDA_DEFAULT_ENV:-none}"
 echo "python  : $(command -v python)"
+echo "mpirun  : $(command -v mpirun || echo MISSING)"
 python -c "import openff.toolkit; print('openff  : ok')" \
   || { echo "openff  : MISSING (wrong env — FF will fail; aborting)"; exit 1; }
 # Known drift: pydantic >=2.12 breaks openff-interchange serialization even
