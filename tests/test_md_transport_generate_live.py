@@ -74,9 +74,16 @@ def main():
     # Each member is a full MPI replica (~10 ns), so the per-run timeout must be
     # well above the 1 h default — override via SCILINK_RUN_TIMEOUT (seconds).
     run_timeout = int(os.environ.get("SCILINK_RUN_TIMEOUT", str(4 * 3600)))
+    # A replica ensemble needs IDENTICAL decks across members (only the seed may
+    # differ) so Green-Kubo can pool them. expand_parameter_sweep clones the deck
+    # deterministically, but per-member refinement (run->assess->fix) then edits
+    # each member's deck independently and they diverge (observed: 5M vs 2.5M vs
+    # 1e10 steps across seeds — see upstream #682). max_run_cycles=1 runs each
+    # cloned deck once with no per-member editing, keeping the ensemble poolable.
+    run_cycles = int(os.environ.get("SCILINK_RUN_CYCLES", "1"))
     raw = orch.tools.functions_map["run_simulation"](
         description=_GOAL, scale="molecular_dynamics", software="lammps",
-        run_timeout=run_timeout,
+        run_timeout=run_timeout, max_run_cycles=run_cycles,
     )
     result = json.loads(raw)
     out_dir = Path(result.get("output_directory", RUN_DIR))
