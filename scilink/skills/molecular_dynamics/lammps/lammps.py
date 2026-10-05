@@ -954,6 +954,26 @@ def validate_script(
             result["has_minimize"] = True
         elif keyword == "run":
             result["has_run"] = True
+            # Sanity-cap the step count: a literal `run` far beyond any
+            # tractable MD length is almost always a generation slip (e.g. an
+            # extra zero), and it silently burns an entire allocation. Flag it
+            # rather than let it through. A variable/expression count is skipped.
+            if len(parts) >= 2:
+                try:
+                    nsteps = int(float(parts[1]))
+                except ValueError:
+                    nsteps = None
+                if nsteps is not None and nsteps > 1_000_000_000:
+                    result["errors"].append(
+                        f"'run {parts[1]}' is ~{nsteps:.0e} steps — intractable "
+                        "and almost certainly a typo (classical MD production is "
+                        "rarely >1e8 steps)."
+                    )
+                elif nsteps is not None and nsteps > 100_000_000:
+                    result["warnings"].append(
+                        f"'run {parts[1]}' is ~{nsteps:.0e} steps — unusually "
+                        "long; verify this is intended."
+                    )
         elif keyword == "fix" and len(parts) >= 4:
             fix_id = parts[1]
             group = parts[2]

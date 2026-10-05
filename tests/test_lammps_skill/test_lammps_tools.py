@@ -758,3 +758,43 @@ class TestPrepareDryRun:
         # A deck with no run/minimize still needs a run 0 so setup executes.
         out = lammps_tools.prepare_dry_run("units real\nread_data system.data\n")
         assert out.strip().endswith("run 0")
+
+
+# =====================================================================
+# validate_script — run-length sanity guard
+# =====================================================================
+
+class TestRunLengthGuard:
+    """A literal `run` far beyond any tractable MD length is flagged so a
+    generation slip (e.g. an extra zero) can't silently burn an allocation."""
+
+    _DECK = (
+        "units real\natom_style full\nread_data system.data\n"
+        "pair_style lj/cut/coul/long 10.0\nkspace_style pppm 1e-4\n"
+        "fix 1 all nvt temp 298 298 100\ntimestep 2.0\nrun {n}\n"
+    )
+
+    def _validate(self, tmp_path, n):
+        p = tmp_path / "in.lammps"
+        p.write_text(self._DECK.format(n=n))
+        return lammps_tools.validate_script(str(p))
+
+    def test_runaway_is_error(self, tmp_path):
+        r = self._validate(tmp_path, "10000000000")   # 1e10 — the observed runaway
+        assert r["valid"] is False
+        assert any("intractable" in e for e in r["errors"])
+
+    def test_unusually_long_is_warning_not_error(self, tmp_path):
+        r = self._validate(tmp_path, "200000000")      # 2e8 — long but not fatal
+        assert any("unusually" in w for w in r["warnings"])
+        assert not any("intractable" in e for e in r["errors"])
+
+    def test_normal_run_is_silent(self, tmp_path):
+        r = self._validate(tmp_path, "5000000")        # 5e6 — a normal 10 ns run
+        assert not any("intractable" in e for e in r["errors"])
+        assert not any("unusually" in w for w in r["warnings"])
+
+    def test_variable_run_count_is_skipped(self, tmp_path):
+        r = self._validate(tmp_path, "${nsteps}")      # expression — not checked
+        assert not any("intractable" in e for e in r["errors"])
+        assert not any("unusually" in w for w in r["warnings"])

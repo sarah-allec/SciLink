@@ -126,14 +126,19 @@ Transport coefficients (viscosity, self-diffusion) — equilibrium Green-Kubo/Ei
   vary temperature, strain rate, etc. the same way; the velocity seed is simply
   what decorrelates equilibrium replicas.
 - **Shear viscosity:** on the production run, log the full pressure tensor densely
-  — add `pxy pxz pyz vol` to `thermo_style custom` with a tight `thermo` interval
-  (every few fs), or define `variable pxy equal pxy` (and `pxz`, `pyz`) and write
-  them with `fix ave/time {N} 1 {N} v_pxy v_pxz v_pyz file stress.dat` (`fix
-  ave/time` averages variables/computes, not bare thermo keywords, so the
-  `variable` lines are required). The `viscosity_greenkubo` skill reads that log
-  (it also needs T and
-  vol) and does the Green-Kubo integral. It converges slowly for viscous liquids →
-  the production run must be long (tens of ns) with stress sampled every few fs.
+  to its **own** file — define `variable pxy equal pxy` (and `pxz`, `pyz`) and write
+  them with `fix ave/time {N} 1 {N} v_pxy v_pxz v_pyz v_vol v_temp file stress.dat`
+  (`fix ave/time` averages variables/computes, not bare thermo keywords, so the
+  `variable` lines are required), with `{N}` small — every few fs. The
+  `viscosity_greenkubo` skill reads that file (it also needs T and vol) and does
+  the Green-Kubo integral. It converges slowly for viscous liquids → the production
+  run must be long (tens of ns) with the stress file sampled every few fs.
+  **Keep `thermo` coarse** (e.g. every 1000 steps): the Green-Kubo data comes from
+  the `fix ave/time` file, not from screen/log thermo, so a tight `thermo` interval
+  only adds I/O and can noticeably slow the run (it does NOT improve the stress
+  sampling). Do NOT force dense output by putting the stress tensor on
+  `thermo_style` with a small `thermo` — use the dedicated `fix ave/time` file and
+  leave `thermo` infrequent.
 - **Self-diffusion:** dump the unwrapped coordinate trajectory at a regular
   interval; the diffusion analysis skill computes the MSD/Einstein slope.
 
