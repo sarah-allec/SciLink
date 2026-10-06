@@ -63,4 +63,6 @@ echo "lmp     : launched on ${_nproc:-?} procs"
   || { echo "lmp     : NOT parallel (want >1 procs) — aborting"; printf '%s\n' "$_out" | tail -20; exit 1; }
 echo
 
-python tests/run_uc2_autonomous.py
+# -u: unbuffered stdout so the meta's print() handoffs appear live in %j.out
+# (logging already streams to %j.err).
+python -u tests/run_uc2_autonomous.py
