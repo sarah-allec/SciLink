@@ -47,14 +47,26 @@ then evaluate the Green-Kubo integral:
 
 6. **Pool independent replicas when present.** Green-Kubo is noisy, so a
    trustworthy value comes from averaging independent runs that differ only in
-   their initial velocity seed. When the inputs contain **more than one**
-   pressure-tensor log — typically one per replica subdirectory
-   (`.../member_0/…`, `.../member_1/…`, or similarly keyed DATA_FILES entries) —
-   treat each as an independent replica: compute η for each replica by steps
-   1–5, then report the **mean across replicas** as `value` and the **standard
-   error of the mean** as `std_error`. A single log is just one replica (no
-   pooling). Base `plateau_reached` on both signals: each replica's running
-   integral should plateau, AND the inter-replica spread should be small
+   their initial velocity seed. **Discover replicas from DATA_FILES by content,
+   not by filename** — each run names its own stress file:
+   - From DATA_FILES, keep every file whose **header actually contains the
+     off-diagonal pressure columns** (`pxy pxz pyz`, case-insensitive, whether
+     from a `thermo_style custom … pxy pxz pyz` log or a `fix ave/time` file).
+     That header test *is* how you find the stress series — discard plain thermo
+     logs (`log.lammps`, `run_stdout.log`) that lack those columns, instead of
+     matching any particular filename.
+   - **Skip dry-run artifacts:** ignore any path with a component containing
+     `dryrun` (e.g. `.../_dryrun/…`) — short setup checks, not production.
+   - **One replica per parent directory:** group the kept files by parent
+     directory, so replicas in sibling subdirectories named *anything*
+     (`velocityseed_12345/`, `member_0/`, `rep_1/`, …) are each counted once; if
+     a directory has more than one qualifying file, keep a single stress series.
+   Compute η for each replica by steps 1–5, then report the **mean across
+   replicas** as `value` and the **standard error of the mean** as `std_error`.
+   One qualifying file is a single replica (no pooling, `std_error` null). If the
+   header test finds no pressure-tensor file at all, fail with a message naming
+   what was searched. Base `plateau_reached` on both signals: each replica's
+   running integral should plateau, AND the inter-replica spread should be small
    relative to the mean (a large spread means more replicas or longer runs are
    needed, so `plateau_reached=false` even if individual integrals look flat).
 
