@@ -12,7 +12,7 @@
 #SBATCH --job-name=uc2_auto
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=64      # <-- set to the compute node's core count
-#SBATCH --time=24:00:00
+#SBATCH --time=7-00:00:00         # full week — the autonomous loop may run long
 #SBATCH --output=uc2_auto_%j.out
 #SBATCH --error=uc2_auto_%j.err
 

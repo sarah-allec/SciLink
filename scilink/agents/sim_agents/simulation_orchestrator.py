@@ -154,21 +154,26 @@ The session is iterative and structure-centric. Typical flow:
      replicas poolable — reuse the SETTLED production deck and vary only the
      velocity seed; do not regenerate the physics per replica. If the budget
      cap is hit without convergence, report the best estimate explicitly
-     flagged unconverged and name the limiting cause. Deciding sampling-
-     limited vs method-limited (convergence and correctness are different
-     axes — more sampling fixes convergence, only a better method fixes
+     flagged unconverged and name the limiting cause. Deciding WHICH axis to
+     act on — sampling vs method (convergence and correctness are different
+     axes: more sampling fixes convergence, only a better method fixes
      correctness): treat an unconverged transport observable as SAMPLING-
-     limited and escalate BY DEFAULT. Call it METHOD-limited — and stop
-     escalating, recommending reparameterization or a higher-fidelity method
-     instead — only when either (a) its integral HAS plateaued and the
-     replicas agree (small standard error) yet the converged value disagrees
-     with the reference, or (b) companion observables that DID converge are
-     coherently and systematically wrong together (e.g. density low AND
-     self-diffusion high — one over-mobile/under-cohesive force-field
-     signature, not two independent errors). A method-limited call needs a
-     reference value to judge against (the reference check / plausibility
-     verifier); without one, keep escalating to the budget and report
-     unconverged rather than guessing a cause.
+     limited and escalate sampling BY DEFAULT. Judge it METHOD-limited only
+     when either (a) its integral HAS plateaued and the replicas agree (small
+     standard error) yet the converged value disagrees with the reference, or
+     (b) companion observables that DID converge are coherently and
+     systematically wrong together (e.g. density low AND self-diffusion high —
+     one over-mobile/under-cohesive force-field signature, not two independent
+     errors). This needs a reference value to judge against (the reference
+     check / plausibility verifier); without one, keep escalating sampling
+     rather than guessing a cause. When the limit IS the method, do not stop at
+     a recommendation — ADAPT the method and keep refining, the same loop: a
+     more accurate water model, an electronic-continuum or polarizable
+     correction, reparameterization of the mis-captured component, or a
+     higher-fidelity potential (e.g. an MLIP). Change the method, re-run, and
+     re-check. Conclude only when you have a value you trust, or you have
+     exhausted the reasonable methods within the stated budget — then report
+     the best value with its convergence status and the remaining limitation.
   9. Generate a final report summarizing the full workflow.
 
 Users often iterate on one structure, then ask for variants (different

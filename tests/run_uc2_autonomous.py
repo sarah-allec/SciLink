@@ -20,20 +20,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-# One composition to start (80:20). Free-text; names the system + state point
-# and asks for CONVERGED values, but leaves every method choice to SciLink.
+# One composition to start (80:20). Free-text: name the system, the state
+# point, and the properties wanted — then STOP. How to reach a trustworthy
+# value (sampling strategy, when to escalate, when the limit is the method) is
+# SciLink's own call, driven by its convergence-loop guidance; spelling it out
+# here would make the run follow the prompt instead of acting autonomously.
 GOAL = (
     "Build and equilibrate a 1 M zinc triflate (Zn(OTf)2) electrolyte in a "
     "water / ethyl-isopropyl-sulfone solvent at an 80:20 water-to-sulfone "
-    "volume ratio. Run molecular dynamics and compute trustworthy, CONVERGED "
-    "values for: the mass density, the shear viscosity by the Green-Kubo "
-    "method, the water self-diffusion coefficient from the mean-squared "
-    "displacement, and the water 1H spin-lattice (T1) relaxation time. "
-    "I need a shear viscosity I can stand behind for publication: keep "
-    "refining the sampling (longer production and/or more independent "
-    "velocity-seed replicas) until it is converged, or until you determine "
-    "more sampling will not help and the limit is the method. Report the "
-    "convergence status and the limiting cause for each property."
+    "volume ratio. Run molecular dynamics and compute the mass density, the "
+    "shear viscosity by the Green-Kubo method, the water self-diffusion "
+    "coefficient from the mean-squared displacement, and the water 1H "
+    "spin-lattice (T1) relaxation time. I need a shear viscosity I can stand "
+    "behind for publication."
 )
 
 
