@@ -20,15 +20,21 @@ Read the pressure-tensor time series and its timestep from the thermo/stress log
 then evaluate the Green-Kubo integral:
 
 1. **Parse** the off-diagonal pressure components Pxy, Pxz, Pyz as a time series
-   with the sampling interval dt. **Identify the columns from the header,
-   matching `pxy`/`pxz`/`pyz` as a case-insensitive substring** — a `fix
-   ave/time` file writes a **two-line** comment header and labels these columns
-   `v_pxy v_pxz v_pyz` (the LAMMPS `v_` variable prefix) on the *second* `#` line,
-   e.g. `# TimeStep v_pxy v_pxz v_pyz v_temp v_vol`; a `thermo_style custom … pxy
-   pxz pyz` log names them `pxy pxz pyz`. **Scan every leading `#` line, not just
-   the first** (the first `fix ave/time` line is just a title). Map data columns
-   by position from that label line. Also read the volume V and temperature T —
-   the `v_vol` and `v_temp` columns here — or from the run metadata.
+   with the sampling interval dt. **Identify which columns these are by reading
+   the run deck in `INPUT_DECKS`, not by guessing from the output header.** The
+   deck's `fix ave/time`/`thermo_style`/`compute` line lists its outputs in the
+   same order as the file's columns; resolve each label to a quantity by tracing
+   it through the deck — `v_<name>` → its `variable <name> equal <expr>` (e.g.
+   `variable pxy equal pxy`), `c_<id>[i]` → its `compute <id> ... pressure` (the
+   pressure vector's off-diagonals are `[4]=xy, [5]=xz, [6]=yz`), a bare
+   `thermo_style custom ... pxy pxz pyz` → those names. This handles any column
+   naming. The deck also names the file: a `fix ave/time ... file <name>` line
+   maps that output file to these columns. Map data columns by position from the
+   file's own header line (a `fix ave/time` file writes a two-line `#` header;
+   the labels are on the second). Read V and T the same way (the `vol`/`temp`
+   columns, e.g. `v_vol`/`v_temp`), or from the run metadata. Only if no deck is
+   available in `INPUT_DECKS`, fall back to matching `pxy`/`pxz`/`pyz` as a
+   case-insensitive substring across the output's `#` header lines.
 
 2. **Autocorrelation.** For each independent stress component P_k(t), compute the
    autocorrelation C_k(τ) = ⟨P_k(t) P_k(t+τ)⟩ averaged over time origins. Use an
@@ -55,13 +61,13 @@ then evaluate the Green-Kubo integral:
    trustworthy value comes from averaging independent runs that differ only in
    their initial velocity seed. **Discover replicas from DATA_FILES by content,
    not by filename** — each run names its own stress file:
-   - From DATA_FILES, keep every file whose header contains the off-diagonal
-     pressure columns, **matching `pxy`/`pxz`/`pyz` as a case-insensitive
-     substring across ALL leading `#` header lines** — so a `fix ave/time` file
-     labeling them `v_pxy v_pxz v_pyz` on its second comment line qualifies (see
-     step 1). That substring test *is* how you find the stress series — discard
-     plain thermo logs (`log.lammps`, `run_stdout.log`) that lack those columns,
-     instead of matching any particular filename.
+   - **Identify the stress file from the deck** (step 1): the `fix ave/time …
+     file <name>` line (or the `thermo_style` target) in `INPUT_DECKS` names
+     which output holds the pressure tensor, so the matching DATA_FILES entries
+     are the stress series. Discard plain thermo logs (`log.lammps`,
+     `run_stdout.log`) that carry no stress columns. Only without a deck, fall
+     back to keeping files whose `#` header lines contain `pxy`/`pxz`/`pyz` as a
+     case-insensitive substring (so `v_pxy …` qualifies).
    - **Skip dry-run artifacts:** ignore any path with a component containing
      `dryrun` (e.g. `.../_dryrun/…`) — short setup checks, not production.
    - **One replica per parent directory:** group the kept files by parent
