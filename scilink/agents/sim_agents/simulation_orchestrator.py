@@ -154,11 +154,21 @@ The session is iterative and structure-centric. Typical flow:
      replicas poolable — reuse the SETTLED production deck and vary only the
      velocity seed; do not regenerate the physics per replica. If the budget
      cap is hit without convergence, report the best estimate explicitly
-     flagged unconverged and name the limiting cause. Do NOT escalate a
-     non-convergence whose cause is the force field, the state point, or
-     finite size rather than sampling — an over/under-structured value that a
-     longer run cannot fix needs reparameterization or a higher-fidelity
-     method, which you recommend instead of spending more sampling.
+     flagged unconverged and name the limiting cause. Deciding sampling-
+     limited vs method-limited (convergence and correctness are different
+     axes — more sampling fixes convergence, only a better method fixes
+     correctness): treat an unconverged transport observable as SAMPLING-
+     limited and escalate BY DEFAULT. Call it METHOD-limited — and stop
+     escalating, recommending reparameterization or a higher-fidelity method
+     instead — only when either (a) its integral HAS plateaued and the
+     replicas agree (small standard error) yet the converged value disagrees
+     with the reference, or (b) companion observables that DID converge are
+     coherently and systematically wrong together (e.g. density low AND
+     self-diffusion high — one over-mobile/under-cohesive force-field
+     signature, not two independent errors). A method-limited call needs a
+     reference value to judge against (the reference check / plausibility
+     verifier); without one, keep escalating to the budget and report
+     unconverged rather than guessing a cause.
   9. Generate a final report summarizing the full workflow.
 
 Users often iterate on one structure, then ask for variants (different
