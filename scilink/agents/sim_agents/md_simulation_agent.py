@@ -30,6 +30,7 @@ def _assemble_fanout_stage(
     members: List[Dict[str, str]],
     entry_file: str,
     shared_files: Dict[str, str],
+    refine_members: bool = True,
 ) -> List[Dict[str, Any]]:
     """Assemble a one-stage fan-out campaign from expanded member scripts.
 
@@ -56,7 +57,8 @@ def _assemble_fanout_stage(
             "input_files": input_files,
             "entry_file": entry_file,
         })
-    return [{"name": "production", "parallel": True, "members": member_specs}]
+    return [{"name": "production", "parallel": True, "members": member_specs,
+             "refine_members": refine_members}]
 
 
 def _assemble_sequential_stages(
@@ -275,7 +277,13 @@ class MDSimulationAgent(SimulationAgent):
             "vary one quantity (e.g. a set of temperatures, pressures, strain rates,\n"
             "or restraint positions) — set requires_multiple_simulations true, set\n"
             "variable_parameter to that quantity's name, and set variable_values to\n"
-            "the list of values. Otherwise leave them false/null.\n\n"
+            "the list of values. Otherwise leave them false/null.\n"
+            "If those runs are independent REPLICAS of the SAME physical system —\n"
+            "varying only an initial-condition seed to pool a noisy observable for\n"
+            "statistics/uncertainty (e.g. Green-Kubo viscosity), NOT a physical\n"
+            "parameter — also set independent_replicas true, so the runs are kept\n"
+            "identical except for the seed and stay poolable. For a physical sweep\n"
+            "(different temperatures, pressures, strain rates), leave it false.\n\n"
             "Return JSON:\n"
             "{\n"
             '    "simulation_technique": "standard_md",\n'
@@ -289,6 +297,7 @@ class MDSimulationAgent(SimulationAgent):
             '    "number_of_simulations": 1,\n'
             '    "variable_parameter": null,\n'
             '    "variable_values": null,\n'
+            '    "independent_replicas": false,\n'
             '    "required_outputs": ["energy", "trajectory"],\n'
             '    "methodology_description": "brief explanation"\n'
             "}"
@@ -310,6 +319,7 @@ class MDSimulationAgent(SimulationAgent):
         params.setdefault("number_of_simulations", 1)
         params.setdefault("variable_parameter", None)
         params.setdefault("variable_values", None)
+        params.setdefault("independent_replicas", False)
         params.setdefault("required_outputs", ["energy", "trajectory"])
 
         for k, v in kwargs.items():
@@ -870,7 +880,11 @@ class MDSimulationAgent(SimulationAgent):
             self.logger.warning(
                 "Sweep produced a single member — the base deck likely did not "
                 "contain the sweep placeholder, so the parameter was not varied.")
-        stages = _assemble_fanout_stage(members, entry, shared)
+        # A replica ensemble (seed-only, pooled for statistics) must stay
+        # consistent, so its members run once rather than being refined apart.
+        stages = _assemble_fanout_stage(
+            members, entry, shared,
+            refine_members=not plan.get("independent_replicas", False))
 
         # Validate a representative member (the placeholder is already resolved).
         rep_files = stages[0]["members"][0]["input_files"]

@@ -115,8 +115,9 @@ class Stage:
       production). Typically one phase per stage.
     * **parallel fan-out** (``parallel=True``): independent member phases that
       differ only in their inputs — a temperature sweep, or the windows of an
-      umbrella-sampling run. Members are refined independently; one member's
-      failure does not abort its siblings.
+      umbrella-sampling run. Members are refined independently (unless
+      ``refine_members`` is False); one member's failure does not abort its
+      siblings.
     * **combine** (``kind="combine"``): a single post-processing phase that
       consumes a prior fan-out's outputs (e.g. assembling a free-energy
       profile). Run once and judged, never iterated.
@@ -130,6 +131,11 @@ class Stage:
             post-processing stage.
         min_success: For a fan-out, the minimum number of members that must
             succeed for the stage to succeed. ``None`` requires all of them.
+        refine_members: For a fan-out, whether to refine each member on its
+            own (run → assess → fix). ``True`` for a general sweep; ``False``
+            for a replica ensemble that must stay identical except for its
+            seed, where per-member fixes would drift the decks apart and break
+            pooling — those members run exactly once.
     """
 
     name: str
@@ -137,6 +143,7 @@ class Stage:
     parallel: bool = False
     kind: str = "run"
     min_success: Optional[int] = None
+    refine_members: bool = True
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -948,14 +955,26 @@ def run_campaign(
             })
 
         else:
-            # Fan-out: every member is refined independently. A failing member
-            # does not abort its siblings — collect them all, then judge the
-            # stage against its success quorum.
+            # Fan-out: members are independent. A failing member does not abort
+            # its siblings — collect them all, then judge the stage against its
+            # success quorum.
+            #
+            # refine_members gates per-member refinement. For a general fan-out
+            # (a temperature sweep, umbrella windows) each member is refined on
+            # its own. For a REPLICA ENSEMBLE (members differ only by an
+            # initial-condition seed and must stay identical otherwise so a
+            # pooled observable is valid), refining each member independently
+            # drifts their decks apart — so run each exactly once instead, and
+            # let the deck's quality come from the shared pre-run gate and from
+            # the orchestrator's escalation loop, not from per-member fixes.
             members = []
             n_success = 0
             any_aborted = False
             for ph in stage.phases:
-                rec = _refine_phase(ph, executor, run_critic, policy, ctx)
+                if stage.refine_members:
+                    rec = _refine_phase(ph, executor, run_critic, policy, ctx)
+                else:
+                    rec = _run_once_phase(ph, executor, run_critic, ctx)
                 flat.append(rec)
                 members.append(rec)
                 if rec["status"] == "success":

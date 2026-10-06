@@ -298,6 +298,18 @@ class TestStages:
         assert [p["phase"] for p in result["phases"]] == ["equil", "prod"]
         assert len(result["stages"]) == 1
 
+    def test_fanout_refine_members_false_runs_each_member_once(self):
+        # A replica ensemble (refine_members=False) must NOT apply per-member
+        # fixes (that would drift replicas apart): each member runs exactly once
+        # with its original deck, even when the critic suggests a fix.
+        ex = FakeExecutor()
+        critic = ScriptedCritic([_needs_fixes({"in.sim": "edited"}), _good()])
+        fanout = Stage(name="replicas", parallel=True, refine_members=False,
+                       phases=[self._member("seed1"), self._member("seed2")])
+        run_campaign([fanout], ex, critic, AutonomousPolicy(), _ctx())
+        assert len(ex.calls) == 2                      # one run per member, no re-run
+        assert all(c["input_files"]["in.sim"] == "original" for c in ex.calls)
+
     def test_fanout_members_are_independent(self):
         # 3 independent members: A good, B needs a fix then good, C poor with no
         # fix (stops). B's refinement and C's failure must not disturb A.

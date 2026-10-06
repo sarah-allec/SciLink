@@ -1095,6 +1095,7 @@ def _collect_stages(
             stages.append(Stage(
                 name=name, parallel=True, phases=members,
                 min_success=spec.get("min_success"),
+                refine_members=spec.get("refine_members", True),
             ))
         else:
             # Sequential step: share the base run_dir so restart files chain.
