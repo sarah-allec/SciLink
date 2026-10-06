@@ -36,7 +36,10 @@ export OMP_NUM_THREADS=1
 export SCILINK_MODEL="${SCILINK_MODEL:-claude-opus-4-8-project}"
 # Per-run wall floor so a long production run isn't killed at the 1 h default
 # (the autonomous loop calls run_simulation itself and can't pass the arg).
-export SCILINK_RUN_TIMEOUT="${SCILINK_RUN_TIMEOUT:-21600}"   # 6 h
+export SCILINK_RUN_TIMEOUT="${SCILINK_RUN_TIMEOUT:-86400}"   # 24 h/run — a
+# single staged run (equil + long GK production, one lmp invocation) can take
+# most of a day for a big box, and the loop may escalate to longer ones; the
+# 7-day wall is the real bound, so keep the per-run floor from truncating.
 
 echo "node    : $(hostname)"
 echo "branch  : $(git rev-parse --abbrev-ref HEAD) @ $(git log --oneline -1)"
