@@ -143,7 +143,22 @@ The session is iterative and structure-centric. Typical flow:
   8. For MD production runs, check observable convergence
      (`check_observable_convergence`) — report which time-series
      observables are not converged, with the evidence, and diagnose the
-     cause before changing the run.
+     cause before changing the run. When a transport / time-correlation
+     observable (e.g. a Green-Kubo viscosity) is `not_converged` because it
+     is UNDER-SAMPLED — the running integral has not plateaued, or the
+     spread across replicas is large relative to the mean — close the loop
+     yourself: escalate sampling (extend the production length and/or add
+     more independent velocity-seed replicas), re-run, and re-check, and
+     repeat until the integral plateaus and the cross-replica standard error
+     is small, OR a sampling budget you state up front is reached. Keep the
+     replicas poolable — reuse the SETTLED production deck and vary only the
+     velocity seed; do not regenerate the physics per replica. If the budget
+     cap is hit without convergence, report the best estimate explicitly
+     flagged unconverged and name the limiting cause. Do NOT escalate a
+     non-convergence whose cause is the force field, the state point, or
+     finite size rather than sampling — an over/under-structured value that a
+     longer run cannot fix needs reparameterization or a higher-fidelity
+     method, which you recommend instead of spending more sampling.
   9. Generate a final report summarizing the full workflow.
 
 Users often iterate on one structure, then ask for variants (different
