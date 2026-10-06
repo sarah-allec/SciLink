@@ -245,3 +245,20 @@ class TestInputDecks:
         agent.run_analysis("compute viscosity", run_dir=str(tmp_path))
         assert captured["input_decks"] and "run.lammps" in captured["input_decks"]
         assert "v_pxy" in captured["input_decks"]["run.lammps"]
+
+    def test_run_analysis_resolves_relative_run_dir_to_absolute(self, agent, tmp_path, monkeypatch):
+        import os
+        (tmp_path / "log.lammps").write_text("Step Temp\n0 298\n")
+        captured = {}
+        def fake_compute(task, data_files, **kw):
+            captured["data_files"] = data_files
+            return {"status": "success", "value": 1.0}
+        monkeypatch.setattr(agent, "compute_property", fake_compute)
+        monkeypatch.setattr(agent, "_skill_catalog",
+                            lambda: [_skill("gk", ["shear_viscosity"], ["thermo_log"])])
+        monkeypatch.setattr(agent, "_select_properties", lambda g, e: e)
+        agent._llm = lambda p: "{}"
+        monkeypatch.chdir(tmp_path.parent)
+        agent.run_analysis("x", run_dir=tmp_path.name)        # RELATIVE run_dir
+        assert captured["data_files"]
+        assert all(os.path.isabs(v) for v in captured["data_files"].values())

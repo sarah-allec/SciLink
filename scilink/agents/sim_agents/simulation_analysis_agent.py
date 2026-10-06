@@ -327,7 +327,11 @@ class SimulationAnalysisAgent(BaseAnalysisAgent):
         when no output data is recognized, else ``"success"`` even if individual
         analyses fail (their per-property error is recorded).
         """
-        run_dir = run_dir or str(self.output_dir)
+        # Resolve to an ABSOLUTE path up front: DATA_FILES paths must be openable
+        # from the sandbox's own working directory, not the caller's CWD, so a
+        # relative run_dir (what a tool call often passes) would otherwise yield
+        # relative, unopenable paths in the generated code.
+        run_dir = str(Path(run_dir or self.output_dir).resolve())
         # Deck-grounded resolution (superset of the static filename match) so an
         # output written to a self-named file still reaches the analysis.
         by_kind = self.resolve_outputs(run_dir)
