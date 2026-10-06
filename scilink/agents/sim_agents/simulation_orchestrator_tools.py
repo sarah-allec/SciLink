@@ -1160,7 +1160,15 @@ class SimulationOrchestratorTools:
             if run_command and (getattr(self.orch, "hpc_connection", None) is None
                                 or in_allocation):
                 from .refinement import LocalExecutor
-                executor = LocalExecutor(timeout=run_timeout)
+                # Per-run wall-clock. SCILINK_RUN_TIMEOUT (seconds) raises the
+                # floor so a long in-allocation production run isn't killed at
+                # the 1 h default — the autonomous loop calls run_simulation
+                # itself and cannot pass the argument. The env never lowers it.
+                try:
+                    _env_floor = int(os.environ.get("SCILINK_RUN_TIMEOUT", "0"))
+                except ValueError:
+                    _env_floor = 0
+                executor = LocalExecutor(timeout=max(run_timeout, _env_floor))
 
             # A reused structure lands each run in its own subdir under the
             # structure dir (runs/<NN>_<slug>/), so repeated runs on one structure
