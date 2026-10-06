@@ -39,7 +39,7 @@ GOAL = (
 
 def main():
     from scilink.agents.meta_agent.meta_orchestrator import (
-        MetaOrchestrator, MetaMode,
+        MetaOrchestratorAgent, MetaMode,
     )
     key = os.environ.get("SCILINK_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not key:
@@ -56,7 +56,7 @@ def main():
     if os.environ.get("SCILINK_META_MAX_ITERS"):
         kwargs["max_iterations"] = int(os.environ["SCILINK_META_MAX_ITERS"])
 
-    meta = MetaOrchestrator(**kwargs)
+    meta = MetaOrchestratorAgent(**kwargs)
     print("=== GOAL ===\n" + GOAL, flush=True)
     print("\n=== LAUNCHING META ORCHESTRATOR (autonomous) ===\n", flush=True)
     out = meta.chat(GOAL)
