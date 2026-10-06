@@ -31,8 +31,10 @@ GOAL = (
     "volume ratio. Run molecular dynamics and compute the mass density, the "
     "shear viscosity by the Green-Kubo method, the water self-diffusion "
     "coefficient from the mean-squared displacement, and the water 1H "
-    "spin-lattice (T1) relaxation time. I need a shear viscosity I can stand "
-    "behind for publication."
+    "spin-lattice (T1) relaxation time. I need values I can stand behind for "
+    "publication, especially the shear viscosity. Keep refining until every "
+    "one of these observables is publication-quality, or until you no longer "
+    "see a path toward improving it; then report where each one landed and why."
 )
 
 
