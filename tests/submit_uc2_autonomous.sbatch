@@ -34,6 +34,10 @@ export SCILINK_LAMMPS_BIN="${SCILINK_LAMMPS_BIN:-/share/apps/lammps/lammps-29Aug
 export SCILINK_MPI_LAUNCHER="${SCILINK_MPI_LAUNCHER:-mpirun -np ${SLURM_NTASKS}}"
 export OMP_NUM_THREADS=1
 export SCILINK_MODEL="${SCILINK_MODEL:-claude-opus-4-8-project}"
+# Write the (large, multi-GB) MD output to a project filesystem, NOT the home
+# quota on /qfs/people — a prior run filled home (148 G of T1 trajectories) and
+# died with ENOSPC. Override SCILINK_UC2_BASE to point elsewhere if needed.
+export SCILINK_UC2_BASE="${SCILINK_UC2_BASE:-/rcfs/projects/matsci_ai_ldrd/${USER}/uc2_autonomous}"
 # Per-run wall floor so a long production run isn't killed at the 1 h default
 # (the autonomous loop calls run_simulation itself and can't pass the arg).
 export SCILINK_RUN_TIMEOUT="${SCILINK_RUN_TIMEOUT:-86400}"   # 24 h/run — a
@@ -49,6 +53,9 @@ echo "condaenv: ${CONDA_DEFAULT_ENV:-none}"
 echo "python  : $(command -v python)"
 echo "mpirun  : $(command -v mpirun || echo MISSING)"
 echo "run_to  : ${SCILINK_RUN_TIMEOUT}s per run"
+echo "outbase : ${SCILINK_UC2_BASE}"
+mkdir -p "${SCILINK_UC2_BASE}" \
+  || { echo "outbase : CANNOT create ${SCILINK_UC2_BASE} — aborting"; exit 1; }
 python -c "import openff.toolkit; print('openff  : ok')" \
   || { echo "openff  : MISSING (wrong env — FF will fail; aborting)"; exit 1; }
 python -c "import pydantic,sys; v=tuple(int(x) for x in pydantic.VERSION.split('.')[:2]); print('pydantic:', pydantic.VERSION); sys.exit(0 if v < (2,12) else 1)" \

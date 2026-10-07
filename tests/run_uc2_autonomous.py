@@ -46,8 +46,14 @@ def main():
     if not key:
         raise SystemExit("set SCILINK_API_KEY or ANTHROPIC_API_KEY")
 
+    # MD trajectories are large (tens of GB per replica), so the output dir must
+    # live on a project/scratch filesystem with room — never a home quota.
+    # Set SCILINK_UC2_BASE to that location; falls back to the repo for a quick
+    # local smoke test only.
+    base_dir = os.environ.get(
+        "SCILINK_UC2_BASE", str(REPO_ROOT / "tests" / "_uc2_autonomous"))
     kwargs = dict(
-        base_dir=str(REPO_ROOT / "tests" / "_uc2_autonomous"),
+        base_dir=base_dir,
         api_key=key,
         model_name=os.environ.get("SCILINK_MODEL", "claude-opus-4-8-project"),
         meta_mode=MetaMode.AUTONOMOUS,
@@ -58,6 +64,7 @@ def main():
         kwargs["max_iterations"] = int(os.environ["SCILINK_META_MAX_ITERS"])
 
     meta = MetaOrchestratorAgent(**kwargs)
+    print(f"=== OUTPUT BASE ===\n{base_dir}", flush=True)
     print("=== GOAL ===\n" + GOAL, flush=True)
     print("\n=== LAUNCHING META ORCHESTRATOR (autonomous) ===\n", flush=True)
     out = meta.chat(GOAL)
